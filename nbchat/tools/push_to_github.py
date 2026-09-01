@@ -178,9 +178,9 @@ def push_to_github(
             plan["committed"] = True
         else:
             plan["committed"] = False
-            if not unstaged and not untracked:
-                # Clean tree, nothing to commit, nothing to push (fast path).
-                return json.dumps({"status": "success", **plan})
+            # Note: a clean tree only means "nothing to commit" - the active
+            # branch may still be ahead of the remote, so we always proceed to
+            # push (a push that is already up to date is a harmless no-op).
 
         # ---- 5. Ensure the repo + remote + sync ---------------------------
         client.ensure_repo(target)

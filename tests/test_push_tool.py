@@ -312,7 +312,9 @@ def test_push_nothing_to_commit_fast_path(monkeypatch):
     out = _out(push_to_github("msg"))
     assert out["status"] == "success"
     assert out["committed"] is False
-    assert "push_branch" not in fake.calls     # clean tree: nothing to push
+    # A clean tree still pushes the active branch (it may be ahead of remote);
+    # it just does not create a commit.
+    assert any(c == "push_branch:main" for c in fake.calls)
 
 
 def test_push_rebase_triggers_sync(monkeypatch):
