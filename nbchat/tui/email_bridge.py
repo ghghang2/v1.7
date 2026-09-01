@@ -213,9 +213,6 @@ class EmailBridge:
                 continue
             self._enqueue(msg)
             _log.info("enqueued email: %r from %s", msg.subject, msg.from_addr)
-            # Send immediate acknowledgment so the user knows the email
-            # was received and queued.
-            self._send_ack(msg)
         # Mark all skipped fresh mail read in ONE IMAP session (was: one
         # connection per message).  Stale mail was never added to this list.
         if mark_uids:
@@ -250,8 +247,6 @@ class EmailBridge:
                 _prio, _seq, msg = self._queue.get(timeout=1)
             except queue.Empty:
                 continue
-            # Notify the user that processing has started.
-            self._send_processing(msg)
             # Track what we are processing (for preemption checks).
             self._processing_msg = msg
             self._processing_prio = _prio
@@ -316,14 +311,13 @@ class EmailBridge:
         except Exception as exc:
             _log.warning("failed to mark read %s: %s", msg.uid, exc)
 
-        # If the turn was interrupted (preemption), re-queue this email.
-        if self._agent._stop_event.is_set():
-            _log.info("turn interrupted; re-queuing %r", msg.subject)
-            with self._seq_lock:
-                seq = self._seq
-                self._seq += 1
-            self._queue.put((PRIO_LOW, seq, msg))
-            return
+        # NOTE: if the turn was interrupted (high-priority preemption) we do
+        # NOT re-queue this email.  The interrupt only stops the agent's LLM
+        # loop; it leaves _stop_event set until the next turn starts, so
+        # re-queueing would loop the message forever (and every pass through
+        # the queue used to fire a "Working on:" email).  The preemption
+        # target is the high-priority email; the low-priority turn that was
+        # interrupted simply loses its reply.
 
         # Optionally reply to the sender by email (in the same thread).
         if self._auto_reply and reply:
@@ -389,51 +383,7 @@ class EmailBridge:
                 _log.warning("supervisor auto-reply failed: %s: %s",
                              type(exc).__name__, exc)
 
-    # ── Acknowledgment & notification helpers ──────────────────────────────────────────────
-
-    def _send_ack(self, msg) -> None:
-        """Send an immediate acknowledgment for a newly enqueued email.
-
-        This gives the user instant feedback that their email was received
-        and queued, without waiting for the LLM turn to complete.
-        """
-        subj = (msg.subject or "").lower()
-        prio_label = "high" if any(kw in subj for kw in HIGH_PRIORITY_KEYWORDS) else "low"
-        body = (
-            f"Received: {msg.subject}\n"
-            f"Priority: {prio_label}\n"
-            f"You are in the queue."
-        )
-        try:
-            in_reply_to, references = self._thread_headers(msg)
-            email_smtp.send(
-                to=self._parse_addr(msg.from_addr) or msg.from_addr,
-                subject=msg.subject,
-                body=body,
-                in_reply_to=in_reply_to,
-                references=references,
-            )
-            _log.info("ack sent for %r", msg.subject)
-        except Exception as exc:
-            _log.warning("ack send failed for %r: %s: %s",
-                         msg.subject, type(exc).__name__, exc)
-
-    def _send_processing(self, msg) -> None:
-        """Send a notification that the email is now being processed."""
-        body = f"Working on: {msg.subject}\nThis may take a moment."
-        try:
-            in_reply_to, references = self._thread_headers(msg)
-            email_smtp.send(
-                to=self._parse_addr(msg.from_addr) or msg.from_addr,
-                subject=msg.subject,
-                body=body,
-                in_reply_to=in_reply_to,
-                references=references,
-            )
-            _log.info("processing notification sent for %r", msg.subject)
-        except Exception as exc:
-            _log.warning("processing notification failed for %r: %s: %s",
-                         msg.subject, type(exc).__name__, exc)
+    # ── Threading & subject helpers ──────────────────────────────────────────────
 
     def _thread_headers(self, msg) -> tuple[str, str]:
         """Build In-Reply-To and References headers for a reply to *msg*.

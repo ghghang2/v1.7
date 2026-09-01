@@ -905,33 +905,71 @@ def test_urgent_preempts_low_priority():
     # The agent's _stop_event should have been set by the interrupt.
     assert agent._stop_event.is_set(), "urgent email should preempt low-priority turn"
 
-def test_send_ack_uses_original_subject_and_no_re_prefix():
-    """The acknowledgment email uses the original subject (no 'Re: ' prefix)
-    and says 'You are in the queue.' without a position number."""
+def test_no_intermediate_emails_for_processed_command():
+    """Regression: the bridge used to email the user a 'Received: …'
+    acknowledgment and a 'Working on: …' notification for every command.
+    Those self-sent pings were the 'nonsense emails' in the inbox.  A
+    processed command must produce at most ONE outbound email (the auto
+    reply, and only when auto_reply is on)."""
     from nbchat.tui.email_bridge import EmailBridge
 
     agent = TerminalAgent(color=False)
-    bridge = EmailBridge(agent, auto_reply=False, poll_interval=1)
+    bridge = EmailBridge(agent, auto_reply=True, poll_interval=1)
 
     msg = email_inbox.EmailMessage(
-        message_id="<ack@x>", from_addr=email_smtp.LOGIN,
+        message_id="<cmd@x>", from_addr=email_smtp.LOGIN,
         subject="nbchat: do a thing", body="please",
         date=None, uid="10",
     )
 
-    sent = {}
-    with patch("nbchat.tui.email_bridge.email_smtp.send") as mock_send:
+    with patch("nbchat.tui.email_bridge.email_smtp.send") as mock_send, \
+         patch("nbchat.core.email_inbox.mark_read"):
         mock_send.return_value = "ok"
-        bridge._send_ack(msg)
+        agent._stop_event.clear()
+        # full path: detect -> enqueue -> worker dequeue -> process
+        # drive the two stages synchronously: detect -> worker process
+        with patch.object(agent, "send_from_email", return_value="done"), \
+             patch("nbchat.core.email_inbox.peek_unseen", return_value=[msg]), \
+             patch("nbchat.core.email_inbox.fetch_body", return_value="please"):
+            bridge._detect_and_enqueue()
+            while not bridge._queue.empty():
+                _prio, _seq, m = bridge._queue.get_nowait()
+                bridge._process_email(m)
+
+        # exactly one outbound email: the auto-reply itself
         assert mock_send.call_count == 1
-        kwargs = mock_send.call_args
-        # Subject must be the original, not "Re: ..."
-        assert kwargs[1]["subject"] == "nbchat: do a thing"
-        # Body must contain the queue wording without a position number
-        body = kwargs[1]["body"]
-        assert "You are in the queue." in body
-        assert "Received: nbchat: do a thing" in body
-        assert "Priority: low" in body
-        # Must carry X-Nbchat via email_smtp (implicit)
-        # Must have threading headers
-        assert kwargs[1]["in_reply_to"] == "<ack@x>"
+        kwargs = mock_send.call_args[1]
+        assert kwargs["subject"].startswith("Re: ")
+        assert kwargs["body"] == "done"
+        assert kwargs["in_reply_to"] == "<cmd@x>"
+        # and no ping wording anywhere
+        assert "You are in the queue" not in kwargs["body"]
+
+
+def test_interrupted_turn_is_not_requeued_forever():
+    """Regression: an interrupted (preempted) turn used to re-queue its
+    email at the end of _process_email, but the interrupt only clears
+    _stop_event at the *next* turn start - so the re-queued message failed
+    the check again, re-queued again, looping forever (each pass used to
+    send a 'Working on:' email).  Now an interrupted message is dropped:
+    the high-priority email that caused the preemption is processed next."""
+    from nbchat.tui.email_bridge import EmailBridge
+
+    agent = TerminalAgent(color=False)
+    bridge = EmailBridge(agent, auto_reply=False, poll_interval=1)
+    agent._stop_event.set()  # simulate a preempted (interrupted) turn
+
+    msg = email_inbox.EmailMessage(
+        message_id="<i@x>", from_addr=email_smtp.LOGIN,
+        subject="nbchat: interrupted", body="x",
+        date=None, uid="9",
+    )
+    with patch.object(agent, "send_from_email", return_value=""), \
+         patch("nbchat.core.email_inbox.mark_read"), \
+         patch("nbchat.tui.email_bridge.email_smtp.send") as mock_send:
+        bridge._process_email(msg)
+        # message was consumed exactly once and NOT put back on the queue
+        assert agent.send_from_email.call_count == 1
+        assert bridge._queue.qsize() == 0
+        # and no outbound email at all (auto_reply is off; nothing re-queued)
+        mock_send.assert_not_called()
