@@ -125,9 +125,9 @@ class RemoteClient:
     #  Working-tree inspection
     # ------------------------------------------------------------------ #
     def dirty_files(self, include_untracked: bool = True) -> List[str]:
-        """Sorted relative paths of tracked changes plus (by default) untracked files."""
-        files = {p for p in self.repo.git.diff("--name-only").splitlines() if p}
-        files |= {p for p in self.repo.git.diff("--cached", "--name-only").splitlines() if p}
+        """Sorted relative paths of dirty tracked files (staged or unstaged,
+        i.e. anything differing from HEAD) plus, by default, untracked files."""
+        files = {p for p in self.repo.git.diff("HEAD", "--name-only").splitlines() if p}
         if include_untracked:
             files |= {
                 p for p in self.repo.git.ls_files(

@@ -68,6 +68,10 @@ def test_dirty_files_and_staged(tmp_git_repo):
     tmp_git_repo.repo.git.add("f.txt")
     assert tmp_git_repo.has_staged() is True
     assert tmp_git_repo.staged_files() == ["f.txt"]
+    # dirty_files is diff-vs-HEAD: staged files stay listed, untracked
+    # files only appear when requested.
+    assert tmp_git_repo.dirty_files(include_untracked=False) == ["f.txt"]
+    assert tmp_git_repo.dirty_files() == ["f.txt", "new.txt"]
 
 
 def test_commit_staged_only_touches_staged(tmp_git_repo):
