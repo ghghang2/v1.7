@@ -99,6 +99,7 @@ def push_to_github(
     commit_message: str = "Auto commit",
     rebase: bool = False,
     repo_name: Optional[str] = None,
+    remote_branch: Optional[str] = None,
     stage_all: bool = False,
     skip_tests: bool = False,
     dry_run: bool = False,
@@ -116,6 +117,10 @@ def push_to_github(
         Target repository (``user``-scoped, e.g. ``"v1.7"``).  Defaults to
         the repository the current ``origin`` points at, else
         ``repo_config.yaml``'s ``repo_name``.
+    remote_branch:
+        Destination ref on the remote when it differs from the local branch
+        name (e.g. local ``v1.7`` -> remote ``main``).  Defaults to the
+        local branch name.
     stage_all:
         Stage every change (tracked + untracked) before committing.  Default
         ``False`` commits staged changes only.
@@ -149,6 +154,7 @@ def push_to_github(
             "repo": f"{client.user.login}/{target}",
             "repo_source": source,
             "branch": client.branch_name,
+            "remote_branch": remote_branch or client.branch_name,
             "rebase": rebase,
             "tests": tests,
         }
@@ -189,7 +195,7 @@ def push_to_github(
             client.sync_from_remote(client.branch_name)
 
         # ---- 6. Push the active branch -------------------------------------
-        client.push_branch(client.branch_name)
+        client.push_branch(client.branch_name, remote_branch=remote_branch)
         return json.dumps({"status": "success", **plan})
     except Exception as exc:  # pragma: no cover - defensive
         return json.dumps({"error": str(exc), "type": type(exc).__name__})
@@ -215,6 +221,7 @@ schema = {
             "commit_message": {"type": "string"},
             "rebase": {"type": "boolean"},
             "repo_name": {"type": "string"},
+            "remote_branch": {"type": "string"},
             "stage_all": {"type": "boolean"},
             "skip_tests": {"type": "boolean"},
             "dry_run": {"type": "boolean"},

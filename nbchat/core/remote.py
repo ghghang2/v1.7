@@ -212,15 +212,22 @@ class RemoteClient:
     # ------------------------------------------------------------------ #
     def push_branch(self, branch: Optional[str] = None,
                     remote: str = "origin",
+                    remote_branch: Optional[str] = None,
                     set_upstream: bool = True) -> None:
-        """Push the given branch (default: the active branch) to ``remote``."""
+        """Push the given local branch (default: active) to ``remote``.
+
+        ``remote_branch`` names the destination ref on the remote when it
+        differs from the local branch name (e.g. local ``v1.7`` -> remote
+        ``main``).  Defaults to the local branch name.
+        """
         branch = branch or self.branch_name
         if remote not in self.repo.remotes:
             raise RuntimeError(f"No remote named '{remote}'")
-        args = [remote, branch]
+        dest = remote_branch or branch
+        args = [remote, f"{branch}:{dest}"]
         if set_upstream:
             args.append("-u")
-        log.info("Pushing branch '%s' to %s", branch, remote)
+        log.info("Pushing branch '%s' to %s/%s", branch, remote, dest)
         self.repo.git.push(*args)
 
     # ------------------------------------------------------------------ #

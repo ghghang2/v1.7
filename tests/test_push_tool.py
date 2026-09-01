@@ -219,8 +219,9 @@ class _FakeClient:
     def sync_from_remote(self, branch):
         self.calls.append(f"sync_from_remote:{branch}")
 
-    def push_branch(self, branch):
-        self.calls.append(f"push_branch:{branch}")
+    def push_branch(self, branch, remote=None,
+                    remote_branch=None, set_upstream=True):
+        self.calls.append(f"push_branch:{branch}:{remote_branch or branch}")
 
 
 def _out(result):
@@ -314,7 +315,19 @@ def test_push_nothing_to_commit_fast_path(monkeypatch):
     assert out["committed"] is False
     # A clean tree still pushes the active branch (it may be ahead of remote);
     # it just does not create a commit.
-    assert any(c == "push_branch:main" for c in fake.calls)
+    assert "push_branch:main:main" in fake.calls
+
+
+def test_push_remote_branch_maps_refspec(monkeypatch):
+    """remote_branch pushes local branch to a differently-named remote ref."""
+    monkeypatch.setattr(push_tool, "_run_pytest", lambda timeout=300:
+                        {"passed": 5, "failed": 0, "errors": 0})
+    fake = _FakeClient(staged=["a.txt"])
+    monkeypatch.setattr(push_tool, "RemoteClient", lambda p: fake)
+    out = _out(push_to_github("msg", remote_branch="main"))
+    assert out["status"] == "success"
+    assert out["remote_branch"] == "main"
+    assert "push_branch:main:main" in fake.calls
 
 
 def test_push_rebase_triggers_sync(monkeypatch):
