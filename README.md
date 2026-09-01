@@ -281,7 +281,7 @@ The model decides when to call them; you don't invoke them directly.
 | `make_change_to_file` | Apply a unified diff (create/update/delete). | `make_change_to_file(path="a.py", op_type="update", diff="…")` |
 | `get_weather` | Current/forecast weather for a city. | `get_weather(city="Berlin")` |
 | `browser` | Visit a URL, perform actions, extract page text. | `browser(url="https://example.com")` |
-| `push_to_github` | Commit + push the repo to GitHub. | `push_to_github(commit_message="…")` |
+| `push_to_github` | Commit **staged** changes (pass `stage_all=true` for everything), run the pytest suite and refuse to push on failure, then push the active branch. `repo_name` targets a different repo; `dry_run=true` previews the plan. | `push_to_github(commit_message="…")` |
 | `repo_overview` | Build a markdown table of all Python functions. | `repo_overview()` |
 | `send_email` | Send a plain-text Gmail email (stamped `X-Nbchat: outbound` so the email bridge never re-injects it). | `send_email(subject="…", body="…")` |
 
