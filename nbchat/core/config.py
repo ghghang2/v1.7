@@ -114,6 +114,11 @@ SUPERVISOR_ENABLED: bool = bool(_cfg.get("supervisor_enabled", False))
 SUPERVISOR_INTERVAL: int = int(_cfg.get("supervisor_interval", 60))
 SUPERVISOR_COOLDOWN: int = int(_cfg.get("supervisor_cooldown", 300))
 SUPERVISOR_MAX_OUTPUT_TOKENS: int = int(_cfg.get("supervisor_max_output_tokens", 512))
+# Bound for supervisor LLM calls (ask / review / voice status).  With
+# n_parallel == 1 these calls share the assistant's single slot, so without
+# an explicit timeout they would inherit the client's 600s read timeout and
+# could pin the watchdog thread for ~10 minutes behind an in-flight turn.
+SUPERVISOR_LLM_TIMEOUT: float = float(_cfg.get("supervisor_llm_timeout", 60.0))
 
 # Voice channel (Alfred) — laptop bridge over an SSH tunnel.
 VOICE_ENABLED: bool = bool(_cfg.get("voice_enabled", False))
@@ -194,6 +199,7 @@ __all__ = [
     "SUPERVISOR_INTERVAL",
     "SUPERVISOR_COOLDOWN",
     "SUPERVISOR_MAX_OUTPUT_TOKENS",
+    "SUPERVISOR_LLM_TIMEOUT",
     # Voice channel (Alfred)
     "VOICE_ENABLED",
     "VOICE_PORT",

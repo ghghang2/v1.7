@@ -115,6 +115,10 @@ supervisor_enabled: false    # default off; also gated by the --supervisor flag
 supervisor_interval: 60      # seconds between watchdog reviews
 supervisor_cooldown: 300     # min seconds between two interjections
 supervisor_max_output_tokens: 512
+supervisor_llm_timeout: 60   # per-call timeout (s) for the supervisor's LLM requests
+                             # (ask / review / voice status).  Keep low when
+                             # n_parallel=1 so a queued call can't pin the
+                             # watchdog for minutes behind an in-flight turn.
 
 # Voice channel (Alfred) — laptop bridge over an SSH tunnel.
 # The TUI runs a localhost FastAPI bridge (voice_port); the laptop reaches

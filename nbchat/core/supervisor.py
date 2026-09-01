@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sqlite3
 import subprocess
 import threading
@@ -106,17 +107,18 @@ def _git_status() -> dict:
 
 
 def _parse_ahead(branch_line: str) -> int:
-    for part in branch_line.split():
-        if part.startswith("ahead"):
-            return int(part.split()[1].split(",")[0]) if "," in part else int(part.split()[1])
-    return 0
+    """Extract the ahead count from a ``git status --porcelain=v1 --branch``
+    branch line.  Modern git emits ``## br...up [ahead N]`` /
+    ``[ahead N, behind M]`` (bracketed); older git emits ``[ahead N]``.
+    Never raises — returns 0 when the marker is absent or malformed."""
+    m = re.search(r"\[ahead (\d+)", branch_line)
+    return int(m.group(1)) if m else 0
 
 
 def _parse_behind(branch_line: str) -> int:
-    for part in branch_line.split():
-        if part.startswith("behind"):
-            return int(part.split()[1])
-    return 0
+    """Extract the behind count (see :func:`_parse_ahead` for format notes)."""
+    m = re.search(r"\[?behind (\d+)", branch_line)
+    return int(m.group(1)) if m else 0
 
 
 def _server_info() -> dict:
@@ -365,6 +367,7 @@ class Supervisor:
                 messages=messages,
                 max_tokens=self._max_tokens,
                 temperature=0.3,
+                timeout=config.SUPERVISOR_LLM_TIMEOUT,
             )
             answer = resp.choices[0].message.content or ""
             _log.info("supervisor answered question (%d chars)", len(answer))
@@ -423,6 +426,7 @@ class Supervisor:
                 messages=messages,
                 max_tokens=64,
                 temperature=0.3,
+                timeout=config.SUPERVISOR_LLM_TIMEOUT,
             )
             response = (resp.choices[0].message.content or "").strip()
         except Exception as exc:
@@ -477,6 +481,7 @@ class Supervisor:
                 messages=messages,
                 max_tokens=128,
                 temperature=0.2,
+                timeout=config.SUPERVISOR_LLM_TIMEOUT,
             )
             response = (resp.choices[0].message.content or "").strip()
         except Exception as exc:

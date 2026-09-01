@@ -504,6 +504,74 @@ def test_email_supervisor_not_routed_when_no_supervisor():
 
 # ── Watchdog loop integration (short-lived) ────────────────────────────────────
 
+# ── git ahead/behind parsing (regression: git's bracketed format) ────────────────────────────
+
+@pytest.mark.parametrize("line,expected", [
+    ("## main...origin/main", 0),
+    ("## main...origin/main [ahead 3]", 3),
+    ("## feature...upstream/x [ahead 12]", 12),
+    ("## feature", 0),
+    ("", 0),
+])
+def test_parse_ahead_bracketed(line, expected):
+    from nbchat.core.supervisor import _parse_ahead
+    assert _parse_ahead(line) == expected
+
+
+@pytest.mark.parametrize("line,expected", [
+    ("## main...origin/main", 0),
+    ("## main...origin/main [behind 5]", 5),
+    ("## main...origin/main [ahead 3, behind 5]", 5),
+    ("## main", 0),
+    ("", 0),
+])
+def test_parse_behind_bracketed(line, expected):
+    from nbchat.core.supervisor import _parse_behind
+    assert _parse_behind(line) == expected
+
+
+def test_parse_ahead_behind_diverged_together():
+    """A diverged branch (both ahead AND behind) must parse, not raise."""
+    from nbchat.core.supervisor import _parse_ahead, _parse_behind
+    line = "## main...origin/main [ahead 3, behind 5]"
+    assert (_parse_ahead(line), _parse_behind(line)) == (3, 5)
+
+
+# ── LLM call timeout (regression: unbounded 600s default on shared slot) ────────────────────
+
+@pytest.mark.parametrize("max_tokens", ["self._max_tokens", "64", "128"])
+def test_llm_call_sites_pass_explicit_timeout(max_tokens):
+    """Every supervisor LLM call must pass an explicit timeout so a queued
+    call on a shared slot (n_parallel=1) cannot pin a thread for ~10 min."""
+    import inspect
+    import nbchat.core.supervisor as sup_mod
+    from nbchat.core import config
+    src = inspect.getsource(sup_mod.Supervisor)
+    # Exactly one timeout kwarg per each of the three create() call sites.
+    assert src.count("client.chat.completions.create(") == 3
+    assert src.count("timeout=config.SUPERVISOR_LLM_TIMEOUT") == 3
+    assert config.SUPERVISOR_LLM_TIMEOUT > 0
+
+
+def test_ask_timeout_is_enforced_on_mock():
+    """The /sup ask() call must forward the configured timeout to the client."""
+    agent = TerminalAgent(color=False)
+    sup = Supervisor(agent, interval=10, cooldown=5, max_output_tokens=128)
+
+    mock_resp = MagicMock()
+    mock_resp.choices = [MagicMock()]
+    mock_resp.choices[0].message.content = "ok"
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = mock_resp
+
+    from nbchat.core import config
+    with patch("nbchat.core.client.get_client", return_value=mock_client):
+        sup.ask("status?")
+
+    call_kwargs = mock_client.chat.completions.create.call_args[1]
+    assert call_kwargs["timeout"] == config.SUPERVISOR_LLM_TIMEOUT
+
+
 def test_watchdog_loop_fires_and_stops():
     """Start the watchdog with a very short interval, let it fire once,
     then stop it.  The LLM is mocked."""

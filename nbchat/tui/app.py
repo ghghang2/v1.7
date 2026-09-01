@@ -300,6 +300,12 @@ def run(argv: list[str] | None = None) -> int:
         print(p.magenta("  supervisor ")
               + f"ACTIVE (review every {supervisor._interval}s, "
                 f"cooldown {supervisor._cooldown}s)")
+        if config.N_PARALLEL < 2:
+            print(p.yellow(
+                "  ! supervisor is sharing the assistant's single slot "
+                "(n_parallel=1): its calls will queue behind in-flight "
+                f"turns and time out after {int(config.SUPERVISOR_LLM_TIMEOUT)}s. "
+                "Set n_parallel: 2 in repo_config.yaml for a dedicated slot."))
 
     # Email bridge: pipe the Gmail inbox into the chat stream.
     bridge = None
