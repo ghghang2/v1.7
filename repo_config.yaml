@@ -1,0 +1,137 @@
+# Repository configuration for nbchat
+#
+# This file centralises runtime configuration values used throughout the
+# application.  Each key corresponds to a constant that was previously
+# hard‑coded in the code base.  The values below are suitable defaults
+# for a local development setup.
+
+SERVER_URL: "http://localhost:8080"
+# MODEL_NAME: "unsloth/gpt-oss-20b-GGUF:F16"
+# MODEL_NAME: "unsloth/Qwen3.5-9B-GGUF:Q8_0" #Q4_K_M, UD-Q5_K_XL, Q8_0(fails on tool calls...)
+# MODEL_NAME: "unsloth/Qwen3.5-27B-GGUF:UD-IQ3_XXS"
+# MODEL_NAME: "unsloth/Qwen3.5-27B-GGUF:Q3_K_M"
+# MODEL_NAME: "unsloth/Qwen3.6-27B-GGUF:UD-Q8_K_XL"
+# MODEL_NAME: "unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL"
+# MODEL_NAME: "Inferact/Qwen3.8-27B-NVFP4"
+MODEL_NAME: "qwen3.8-27b"
+# MODEL_NAME: "unsloth/Qwen3.5-35B-A3B-GGUF:UD-Q4_K_XL"
+# MODEL_NAME: "unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q6_K_XL"
+# MODEL_NAME: "unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_XL"
+# MODEL_NAME: "unsloth/gemma-4-26B-A4B-it-GGUF:UD-IQ4_NL" # 550/35tks on T4 @ ctx32768 np2 | stops prematurely in middle of task completion.
+DEFAULT_SYSTEM_PROMPT: |
+  You are a helpful assistant with the singular goal of understanding and satisfying the user's requests. Never be lazy and always think step‑by‑step. Always list out multiple options before deciding on the best next step to take. You have tools available to you so leverage them when appropriate. You must always review how the tool is designed to be used and ensure that you are using each tool correctly. If a tool call fails, you must immediately review what you did and assess thoroughly what caused the failure. You must be vigilant and self‑assessing at every thinking step to ensure you are executing the best trajectory possible to helping the user with the user's requests. Never use emoji in any of your content. When working on code that is version-controlled, check git status at the start of the task and before any push to verify you are committing the intended changes. After modifying any file that is tracked by git, always stage, commit with a descriptive message, and push before considering the task complete. Never push to git unless all tests are passing. Run the test suite immediately before any push. Run the test suite, list all failures, fix them in order of independence (fixes with no cross-dependencies first), verify after each fix, then push when all pass.
+
+user_name: "ghghang2"
+repo_name: "v1.6"
+tail_len: 10
+max_tool_output_chars: 32768
+max_history_turns: 10
+# Max completion tokens per LLM call.  Must be a real token count (not a
+# char count) or llama.cpp silently truncates the output mid-tool-call,
+# causing the agent to stop prematurely.
+max_llm_output_tokens: 8192
+
+port: 8080
+n_parallel: 1
+ctx_size: 131072
+n_gpu_layers: 999
+service_info_path: "service_info.json"
+llama_log_path: "llama_server.log"
+
+IGNORED_ITEMS:
+  - ".*"
+  - "sample_data"
+  - "llama-server"
+  - "__pycache__"
+  - "*.log"
+  - "*.yml"
+  - "*.json"
+  - "*.out"
+  - "*.db"
+  - "*.ipynb"
+
+SUMMARY_PROMPT: |
+  Write a detailed summary of the conversation above.
+  Use plain text, no markdown.
+  Include relevant code blocks.
+  Cover: what the user asked for, what was done, which files were changed, and current status.
+  Be specific — include actual file paths, function names, key implementation details, code and outcomes.
+  Do not include any preamble or closing remarks.
+
+# Context management constants
+window_turns: 8
+max_window_rows: 30
+max_exchanges: 50
+keep_recent_exchanges: 30
+
+# Conversation loop constants
+max_tool_turns: 200
+stall_turns: 3
+
+
+# L2 retrieval and context management
+# l2_write_threshold: 2.0
+l2_retrieval_limit: 5
+# l2_min_importance_for_retrieval: 3.0
+core_memory_active_entities_limit: 20
+core_memory_error_history_limit: 5
+summarizer_tool_chars: 2000
+
+# NEW context management parameters
+context_headroom_ratio: 0.82 # fraction of context_len usable (leaves room for prefix)
+prefix_token_reserve: 2000 # token budget reserved for L1+L2+prior context blocks
+persist_fraction: 0.40 # top 40% of exchanges by importance go to L2
+
+# Compression parameters
+lossless_window: 10
+
+# Retry parameters
+max_retries: 3
+initial_delay: 1.0
+max_delay: 30.0
+backoff_multiplier: 2.0
+
+# Monitoring thresholds
+log_tail_bytes: 8000
+reread_rate_threshold: 0.15
+error_compression_threshold: 0.10
+llm_failure_threshold: 0.20
+no_output_threshold: 0.40
+poor_ratio_threshold: 0.85
+low_sim_threshold: 0.70
+high_invalidation_threshold: 0.30
+
+# Email parameters
+smtp_port: 587
+# Email bridge (TUI) — poll the Gmail inbox and inject replies into the chat
+email_poll_interval: 3       # seconds between IMAP polls when --email is on
+email_auto_reply: true       # send the agent's reply back to the sender
+
+# Supervisor — a second, always-on LLM instance on the server's 2nd
+# parallel slot. It answers state questions (via /sup or 'nbchat-sup'
+# email) and periodically reviews the assistant's work, interjecting a
+# one-line correction when it believes the assistant is off track.
+supervisor_enabled: false    # default off; also gated by the --supervisor flag
+supervisor_interval: 60      # seconds between watchdog reviews
+supervisor_cooldown: 300     # min seconds between two interjections
+supervisor_max_output_tokens: 512
+
+# Voice channel (Alfred) — laptop bridge over an SSH tunnel.
+# The TUI runs a localhost FastAPI bridge (voice_port); the laptop reaches
+# it via:  ssh -L 8765:127.0.0.1:8765 user@server
+voice_enabled: true          # also gated by the --voice flag
+voice_port: 8765
+voice_status_min_interval: 300  # min seconds between supervisor voice updates
+
+# UI parameters
+max_visible_widgets: 20
+
+# Timeout parameters (in seconds)
+browser_timeout: 60
+tests_timeout: 60
+other_tools_timeout: 30
+
+# Browser default parameters (in milliseconds)
+default_navigation_timeout: 30000
+default_action_timeout: 5000
+default_max_content_length: 8000

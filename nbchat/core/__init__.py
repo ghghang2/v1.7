@@ -1,0 +1,2 @@
+"""Core logic for nbchat.
+"""

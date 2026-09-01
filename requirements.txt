@@ -1,0 +1,9 @@
+playwright
+openai
+gitpython
+pygithub
+markdown
+ipywidgets
+IPython
+pytest
+psutil

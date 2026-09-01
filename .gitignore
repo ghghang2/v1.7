@@ -1,0 +1,34 @@
+# --- Heavy / downloaded runtime artifacts (never commit) ---
+/llama-server
+/llama-bench
+*.gguf
+hf_cache/
+.hf/
+
+# --- Logs & runtime state ---
+*.log
+llama_server.log
+compaction.log
+inference_metrics.log
+whatsapp_server.log
+whatsapp_bridge.log
+service_info.json
+
+# --- Local DB ---
+*.db
+nbchat/chat_history.db
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+# --- Node ---
+nbchat/channels/node_modules/
+
+# --- Misc ---
+Untitled.ipynb
+repo_overview.md
+
+# --- Stale runtime state ---
+*.pid
