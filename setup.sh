@@ -6,7 +6,9 @@
 #             Idempotent: safe to re-run.
 #
 # Automates the previous manual startup sequence, ordered for speed:
-#   1. GITHUB_TOKEN: exported for this run AND persisted to ~/.bashrc.
+#   1. GITHUB_TOKEN + GHG_APP_PASSWORD: exported for this run AND
+#      persisted to ~/.bashrc (the Gmail app password is required by the
+#      email bridge:  python -m nbchat.tui --email).
 #   2. apt: ONE session does update + install (single dpkg lock, quiet,
 #      noninteractive).
 #   3. pip: requirements.txt + playwright in a SINGLE pass (one resolver
@@ -20,11 +22,14 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 # ---------------------------------------------------------------------------
-# GITHUB_TOKEN — same value as the previous manual export.
-# Pre-setting the GITHUB_TOKEN env var overrides the hard-coded default.
+# Credentials — same values as the previous manual exports.  Pre-setting
+# either env var overrides the hard-coded default.
 # ---------------------------------------------------------------------------
 GITHUB_TOKEN="${GITHUB_TOKEN:-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}"
 export GITHUB_TOKEN
+# Gmail app password (email bridge / send_email tool).
+GHG_APP_PASSWORD="${GHG_APP_PASSWORD:-ubrfalxeokqmsitc}"
+export GHG_APP_PASSWORD
 
 # Re-exec with sudo if not root (preserving GITHUB_TOKEN).
 if [ "$(id -u)" -ne 0 ]; then
@@ -35,9 +40,12 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-# Persist the token for future shells (idempotent: one line, only if absent).
+# Persist the credentials for future shells (idempotent: only if absent).
 if ! grep -qs 'GITHUB_TOKEN' "$HOME/.bashrc" 2>/dev/null; then
     echo "export GITHUB_TOKEN=\"$GITHUB_TOKEN\"" >> "$HOME/.bashrc"
+fi
+if ! grep -qs 'GHG_APP_PASSWORD' "$HOME/.bashrc" 2>/dev/null; then
+    echo "export GHG_APP_PASSWORD=\"$GHG_APP_PASSWORD\"" >> "$HOME/.bashrc"
 fi
 
 export DEBIAN_FRONTEND=noninteractive
