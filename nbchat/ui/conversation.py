@@ -285,6 +285,9 @@ class ConversationMixin:
 
         Returns (reasoning_accum, content_accum, tool_calls, finish_reason).
         """
+        # Session reasoning effort ("" = model template default).  Sent on
+        # every call so the loaded model uses it this turn and later ones.
+        _effort = getattr(self, "reasoning_effort", "") or ""
         reasoning_accum = ""
         content_accum = ""
         tool_buffer: dict = {}
@@ -294,10 +297,12 @@ class ConversationMixin:
         _sanitize_messages(messages)
 
         try:
-            stream = client.chat.completions.create(
+            _create_kwargs = dict(
                 model=self.model_name, messages=messages, stream=True,
-                tools=tools_mod.get_tools(), max_tokens=config.MAX_LLM_OUTPUT_TOKENS,
-            )
+                tools=tools_mod.get_tools(), max_tokens=config.MAX_LLM_OUTPUT_TOKENS)
+            if _effort:
+                _create_kwargs["reasoning_effort"] = _effort
+            stream = client.chat.completions.create(**_create_kwargs)
             for chunk in stream:
                 if self._stop_event.is_set():
                     stream.close()

@@ -37,7 +37,9 @@ _HELP = """Commands
   /sessions          List terminal sessions (id prefix 'tui:').
   /load <id>         Load one of the sessions from /sessions.
   /history           Print the current session's message history.
-  /model             Show the active model and server.
+  /model             Show the active model, server and reasoning effort.
+  /effort [E]        Show/set session reasoning effort (none, low, medium,
+                     xhigh); no argument resets to the model default.
   /clear             Clear the screen.
   /quit              Exit (Ctrl+C / Ctrl+D also work).
   /sup <question>    Ask the supervisor about system state (requires --supervisor).
@@ -123,10 +125,22 @@ def handle_command(agent: TerminalAgent, line: str, supervisor=None) -> bool:
                 if len(text) > 200:
                     text = text[:197] + "..."
                 print(f"  {label}: {text}")
+    elif cmd == "/effort":
+        effort = arg.lower()
+        if not effort:
+            agent.reasoning_effort = ""
+            print(f"reasoning effort reset to model default ({config.MODEL_NAME}).")
+        elif effort in ("none", "low", "medium", "xhigh"):
+            agent.reasoning_effort = effort
+            print(f"reasoning effort set to {agent.palette.bold(effort)} for this session.")
+        else:
+            current = agent.reasoning_effort or "(model default)"
+            print(f"current: {current}  " + agent.palette.gray("usage: /effort none|low|medium|xhigh"))
     elif cmd in ("/model", "/about"):
         print(f"model   {agent.model_name}")
         print(f"server  {config.SERVER_URL}")
         print(f"session {agent.session_id}")
+        print("effort  " + (agent.reasoning_effort or "(model default)"))
     elif cmd == "/clear":
         sys.stdout.write("\033[2J\033[H")
     elif cmd == "/sup":

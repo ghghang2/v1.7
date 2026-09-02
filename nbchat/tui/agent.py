@@ -54,6 +54,10 @@ class TerminalAgent(ContextMixin, ConversationMixin):
         self.palette = Palette(color)
         self.system_prompt = config.DEFAULT_SYSTEM_PROMPT
         self.model_name = config.MODEL_NAME
+        # Session reasoning effort ("" = model template default).
+        # Set with /effort <value>; reset to default with /effort (no arg).
+        # Valid values for the loaded model: none, low, medium, xhigh.
+        self.reasoning_effort = ""
 
         self.session_id = self._new_session_id()
         self.history: List[Tuple[str, str, str, str, str, int]] = []

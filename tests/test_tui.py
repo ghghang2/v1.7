@@ -271,3 +271,107 @@ def test_midstream_redirect_serializes_and_keeps_both_messages():
     assert len(calls) == 2
     # The final response reflects the last (redirect) turn, not the old one.
     assert agent.busy is False
+
+
+# ── Session reasoning effort (/effort) ────────────────────────────────────────
+
+class _Delta:
+    def __init__(self, content=None, reasoning_content=None, tool_calls=None):
+        self.content = content
+        self.reasoning_content = reasoning_content
+        self.tool_calls = tool_calls
+
+
+class _Choice:
+    def __init__(self, content, finish_reason=None):
+        self.finish_reason = finish_reason
+        self.delta = _Delta(content)
+
+
+class _Chunk:
+    """Mimics an OpenAI stream chunk (empty choices == final usage chunk)."""
+    def __init__(self, content=None, finish_reason=None):
+        self.choices = ([_Choice(content, finish_reason)]
+                        if content is not None else [])
+
+
+class _FakeCompletions:
+    def __init__(self, captured):
+        self._captured = captured
+
+    def create(self, **kwargs):
+        self._captured.update(kwargs)
+        # last content chunk carries the finish_reason; the trailing chunk
+        # has empty choices (the stream_options include_usage shape).
+        return [_Chunk("hello", finish_reason="stop"), _Chunk()]
+
+
+class _FakeChat:
+    def __init__(self, captured):
+        self.completions = _FakeCompletions(captured)
+
+
+class _FakeClient:
+    def __init__(self, captured):
+        self.chat = _FakeChat(captured)
+
+
+def test_reasoning_effort_defaults_to_empty():
+    agent = TerminalAgent(color=False)
+    assert agent.reasoning_effort == ""
+
+
+def test_effort_command_sets_level(capsys):
+    agent = TerminalAgent(color=False)
+    for level in ("none", "low", "medium", "xhigh"):
+        assert handle_command(agent, f"/effort {level}") is False
+        assert agent.reasoning_effort == level
+    out = capsys.readouterr().out
+    assert "set" in out and "medium" in out
+
+
+def test_effort_command_no_arg_resets_to_default(capsys):
+    agent = TerminalAgent(color=False)
+    agent.reasoning_effort = "xhigh"
+    assert handle_command(agent, "/effort") is False
+    assert agent.reasoning_effort == ""
+    out = capsys.readouterr().out
+    assert "reset" in out
+
+
+def test_effort_command_invalid_keeps_current(capsys):
+    agent = TerminalAgent(color=False)
+    agent.reasoning_effort = "low"
+    assert handle_command(agent, "/effort max") is False
+    assert agent.reasoning_effort == "low"  # unchanged
+    out = capsys.readouterr().out
+    assert "usage: /effort none|low|medium|xhigh" in out
+
+
+def test_model_command_shows_current_effort(capsys):
+    agent = TerminalAgent(color=False)
+    handle_command(agent, "/model")
+    out = capsys.readouterr().out
+    assert "effort  (model default)" in out
+    agent.reasoning_effort = "medium"
+    handle_command(agent, "/model")
+    out = capsys.readouterr().out
+    assert "effort  medium" in out
+
+
+def test_stream_response_sends_effort_when_set():
+    agent = TerminalAgent(color=False)
+    agent.reasoning_effort = "medium"
+    captured = {}
+    reasoning, content, tool_calls, finish = agent._stream_response(
+        _FakeClient(captured), [{"role": "user", "content": "hi"}])
+    assert captured.get("reasoning_effort") == "medium"
+    assert content == "hello" and tool_calls is None and finish == "stop"
+
+
+def test_stream_response_omits_effort_when_default():
+    agent = TerminalAgent(color=False)
+    captured = {}
+    agent._stream_response(_FakeClient(captured),
+                           [{"role": "user", "content": "hi"}])
+    assert "reasoning_effort" not in captured

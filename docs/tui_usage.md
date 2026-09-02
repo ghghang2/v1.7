@@ -95,6 +95,7 @@ Type these at the prompt (they are not sent to the model):
 | `/load <id>`     | Load/switch to a specific session from `/sessions`.     |
 | `/history`       | Print the current session's messages.                   |
 | `/model`         | Show the active model, server URL, and session id.      |
+| `/effort [level]`| Show or set the session's reasoning effort: `none`, `low`, `medium`, `xhigh`; bare `/effort` resets to the model's default. |
 | `/clear`         | Clear the screen.                                       |
 | `/quit`          | Exit (as do **Ctrl+D**, and **Ctrl+C** at the prompt).  |
 
