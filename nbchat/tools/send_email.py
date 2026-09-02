@@ -1,11 +1,20 @@
 """app.tools.send_email
 =========================
 
-This module implements a very small email‑notification tool that can be
-invoked by the OpenAI function‑calling interface.  The tool uses the
-``smtplib`` standard library to send a plain‑text email via Gmail's SMTP
-server.  All credentials and the recipient address are hard‑coded; only
-``subject`` and ``body`` are supplied by the caller.
+This module implements a small, **stateless** email-sending tool that can be
+invoked by the OpenAI function-calling interface.  It delegates all SMTP
+handling to :mod:`nbchat.core.email_smtp` (shared with the TUI email
+bridge) so that every outbound message carries the same ``X-Nbchat:
+outbound`` marker and the same thread-safe header handling.
+
+Threading
+---------
+When the user's request arrives via the TUI email bridge, the injected
+message includes a ``Message-ID: <...>`` line.  Supplying that value as
+``message_id`` makes this tool emit ``In-Reply-To`` / ``References``
+headers so the email client (e.g. Gmail) groups the sent message into the
+original thread instead of opening a new one.  For non-email requests
+leave ``message_id`` empty - the message is a standalone send.
 
 The public API of this module follows the same pattern as the
 ``get_weather`` tool: a callable named :data:`func` that returns a JSON
@@ -17,63 +26,59 @@ contains an ``error`` key.  The tool is automatically discovered by
 from __future__ import annotations
 
 import json
-import smtplib
-from email import policy
-from email.message import EmailMessage
-import os
 
 # ---------------------------------------------------------------------------
-# Hard‑coded configuration – replace these with your own values.
+# Recipient.  The tool is stateless: the agent passes the recipient address
+# explicitly (taken from the email header block of an incoming email, or
+# from the user's request).  All credentials are resolved by the shared
+# SMTP helper.
 # ---------------------------------------------------------------------------
-SMTP_SERVER = "smtp.gmail.com"
-SMTP_PORT = 587
-LOGIN = "ghghang2@gmail.com"          # your Gmail address
-PASSWORD = os.getenv("GHG_APP_PASSWORD")          # Gmail app password
-TO_ADDR = LOGIN       # recipient email address
+DEFAULT_TO = "ghghang2@gmail.com"
 
 
-def _send_email(subject: str, body: str) -> str:
-    """Send an email via Gmail.
+def _send_email(subject: str, body: str, to: str = "", message_id: str = "") -> str:
+    """Send a plain-text email via Gmail SMTP.
 
     Parameters
     ----------
-    subject: str
-        Subject line of the email.
-    body: str
-        Plain‑text body of the email.
+    subject: Subject line.  Prefix with ``Re: `` when answering a request
+        that arrived by email so the thread reads naturally.
+    body: Plain-text body.  Do NOT include ``<voice>`` blocks - any that
+        slip in are stripped before sending; the voice channel is for
+        speech, not for email.
+    to: Recipient address.  Defaults to the account owner.
+    message_id: The ``Message-ID`` (in ``<...>`` form) of the email this
+        message replies to.  When set, the outgoing mail carries
+        ``In-Reply-To`` / ``References`` headers so it lands in the same
+        thread as the original.  Empty for standalone messages.
 
     Returns
     -------
     str
         JSON string containing either ``result`` or ``error``.
-
-    Every message is stamped with an ``X-Nbchat: outbound`` header so the
-    email bridge never re-injects the agent's own outbound mail.
     """
     try:
-        # max_line_length=9999 prevents line-folding of long headers
-        # (In-Reply-To, References) which Gmail's threading engine can't parse.
-        msg = EmailMessage(policy=policy.SMTP.clone(max_line_length=9999))
-        msg["From"] = LOGIN
-        msg["To"] = TO_ADDR
-        msg["Subject"] = subject
-        msg["X-Nbchat"] = "outbound"
-        msg.set_content(body)
-
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-            server.ehlo()
-            server.starttls()
-            server.ehlo()
-            server.login(LOGIN, PASSWORD)
-            server.send_message(msg)
-
+        from nbchat.core import email_smtp
+        email_smtp.send(
+            to=to or DEFAULT_TO,
+            subject=subject,
+            body=body,
+            in_reply_to=message_id,
+            references=message_id,
+        )
         return json.dumps({"result": "Email sent successfully"})
     except Exception as exc:
         return json.dumps({"error": str(exc)})
 
 
-# Public attributes for auto‑discovery -------------------------------------------------
+# Public attributes for auto-discovery -------------------------------------------------
 
 func = _send_email
 name = "send_email"
-description = "Send a simple plain‑text email via Gmail using hard‑coded credentials."
+description = (
+    "Send a plain-text email via Gmail.  Provide `to` (recipient), "
+    "`subject` and `body`.  If the message answers a request that arrived "
+    "by email, also provide `message_id` (the Message-ID of the incoming "
+    "email, in <...> form) so the reply is grouped into the same thread. "
+    "For standalone messages leave `message_id` empty."
+)

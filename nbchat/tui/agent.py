@@ -226,18 +226,23 @@ class TerminalAgent(ContextMixin, ConversationMixin):
         sys.stdout.write(p.dim(f"  \u266a Alfred: {text}\n"))
         sys.stdout.flush()
 
-    def send_from_email(self, sender: str, subject: str, body: str) -> str:
+    def send_from_email(self, sender: str, subject: str, body: str,
+                        message_id: str = "") -> str:
         """Inject an inbound email into the chat as a user turn.
 
         The email is composed into a clearly-labelled user message so the
         model treats it as a normal user interjection, streamed through the
-        same agentic loop as a terminal message.  Returns the agent's reply
-        text (the caller may choose to send it back by email).
+        same agentic loop as a terminal message.  The ``Message-ID`` of the
+        inbound email is included so a tool that answers the request by
+        email can thread its reply into the original conversation
+        (In-Reply-To / References).  Returns the agent's reply text (the
+        caller may choose to send it back by email).
         """
         text = (
             f"[Email message from {sender}]\n"
-            f"Subject: {subject}\n\n"
-            f"{body}"
+            f"Subject: {subject}\n"
+            + (f"Message-ID: {message_id}\n" if message_id else "")
+            + f"\n{body}"
         )
         with self._send_lock:
             return self._run_turn(text, lambda t: self._print_mail(sender, subject, t))

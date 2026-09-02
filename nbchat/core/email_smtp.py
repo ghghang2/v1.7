@@ -49,6 +49,10 @@ def send(to: str, subject: str, body: str, *, in_reply_to: str = "", references:
     Exception
         On any SMTP / authentication failure.
     """
+    # Voice blocks are spoken on the voice channel only — strip them so a
+    # reply that also contains <voice>...</voice> lines never ships them
+    # as email text.
+    body = _strip_voice_blocks(body)
     # Use a generous max_line_length so In-Reply-To / References headers
     # are NOT line-folded.  Gmail's threading engine fails to extract
     # Message-IDs from folded continuation lines, which causes replies
@@ -72,3 +76,31 @@ def send(to: str, subject: str, body: str, *, in_reply_to: str = "", references:
         server.send_message(msg)
 
     return f"Email sent to {to}: {subject}"
+
+
+def _strip_voice_blocks(text: str) -> str:
+    """Remove ``<voice>...</voice>`` blocks (and their surrounding blank
+    lines) from *text* before it is sent as email."""
+    if not text or "<voice>" not in text:
+        return text
+    out = ""
+    rest = text
+    while True:
+        i = rest.find("<voice>")
+        if i < 0:
+            out += rest
+            break
+        j = rest.find("</voice>", i + len("<voice>"))
+        if j < 0:
+            # Unterminated tag: drop it and everything after.
+            out += rest[:i]
+            break
+        out += rest[:i]
+        rest = rest[j + len("</voice>"):]
+    # Collapse the 3+ blank lines left behind into a single blank line.
+    return _collapse_blank_lines(out)
+
+
+def _collapse_blank_lines(text: str) -> str:
+    import re
+    return re.sub(r"\n{3,}", "\n\n", text).strip()

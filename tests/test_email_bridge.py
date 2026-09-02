@@ -307,8 +307,9 @@ def test_poll_injects_matching_email_only():
     )
 
     captured = {}
-    def fake_send(sender, subject, body):
+    def fake_send(sender, subject, body, message_id=""):
         captured["args"] = (sender, subject, body)
+        captured["message_id"] = message_id
         return "hi there"
 
     with patch("nbchat.core.email_inbox.peek_unseen",
@@ -973,3 +974,188 @@ def test_interrupted_turn_is_not_requeued_forever():
         assert bridge._queue.qsize() == 0
         # and no outbound email at all (auto_reply is off; nothing re-queued)
         mock_send.assert_not_called()
+
+
+# ─── Regression: email replies must thread, and <voice> must not email ───
+
+
+def test_send_from_email_includes_message_id():
+    """The injected turn must expose the inbound Message-ID so a tool can
+    reply in the same thread (In-Reply-To / References)."""
+    agent = TerminalAgent(color=False)
+    with patch.object(agent, "_run_turn", return_value="ok") as mock_turn:
+        agent.send_from_email("a@b.com", "nbchat test", "do x",
+                              message_id="<orig@x>")
+    text = mock_turn.call_args[0][0]
+    assert "Message-ID: <orig@x>" in text
+    assert "[Email message from a@b.com]" in text
+
+
+def test_send_from_email_no_message_id_line_when_absent():
+    """Without a message_id the injected turn carries no Message-ID line."""
+    agent = TerminalAgent(color=False)
+    with patch.object(agent, "_run_turn", return_value="ok") as mock_turn:
+        agent.send_from_email("a@b.com", "nbchat test", "do x")
+    text = mock_turn.call_args[0][0]
+    assert "Message-ID" not in text
+
+
+def test_process_email_passes_message_id_to_agent():
+    """The bridge forwards the inbound Message-ID to the agent turn."""
+    from nbchat.tui.email_bridge import EmailBridge
+    agent = TerminalAgent(color=False)
+    bridge = EmailBridge(agent, auto_reply=False, poll_interval=1)
+    msg = email_inbox.EmailMessage(
+        message_id="<orig@x>", from_addr=email_smtp.LOGIN,
+        subject="nbchat test", body="do x", date=None, uid="50",
+    )
+    with patch.object(agent, "send_from_email", return_value="") as mock_send, \
+         patch("nbchat.core.email_inbox.mark_read"):
+        bridge._process_email(msg)
+    assert mock_send.call_args[1]["message_id"] == "<orig@x>"
+
+
+def test_strip_voice_blocks():
+    """<voice> blocks are removed; surrounding text is kept intact."""
+    from nbchat.core import email_smtp
+    text = (
+        "Here is the report.\n"
+        "\n"
+        "<voice>All done, sir.</voice>\n"
+        "\n"
+        "Let me know if you need more."
+    )
+    out = email_smtp._strip_voice_blocks(text)
+    assert "All done, sir." not in out
+    assert "<voice>" not in out and "</voice>" not in out
+    assert "Here is the report." in out
+    assert "Let me know if you need more." in out
+    # No run of 3+ newlines left behind.
+    assert "\n\n\n" not in out
+
+
+def test_strip_voice_blocks_voice_only_text():
+    """A reply consisting solely of a voice block becomes empty."""
+    from nbchat.core import email_smtp
+    assert email_smtp._strip_voice_blocks(
+        "\n<voice>All done, sir.</voice>\n"
+    ) == ""
+
+
+def test_strip_voice_blocks_leaves_plain_text_alone():
+    from nbchat.core import email_smtp
+    text = "Plain body, no tags."
+    assert email_smtp._strip_voice_blocks(text) == text
+
+
+def test_smtp_send_strips_voice_before_sending():
+    """email_smtp.send() never puts <voice> text on the wire."""
+    from nbchat.core import email_smtp
+
+    captured = {}
+
+    class FakeSMTP:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def ehlo(self):
+            return (250, b"ok")
+
+        def starttls(self):
+            return (220, b"ok")
+
+        def login(self, user, pw):
+            return (235, b"ok")
+
+        def send_message(self, msg):
+            captured["msg"] = msg
+
+    with patch("smtplib.SMTP", FakeSMTP), \
+         patch.dict(os.environ, {"GHG_APP_PASSWORD": "x"}):
+        email_smtp.send(
+            to="a@b.com", subject="Re: nbchat",
+            body="Report done.\n\n<voice>All done, sir.</voice>\n",
+            in_reply_to="<orig@x>", references="<orig@x>",
+        )
+    body = captured["msg"].get_content()
+    assert "<voice>" not in body and "All done, sir." not in body
+    assert "Report done." in body
+    # Threading headers must survive too.
+    assert captured["msg"]["In-Reply-To"] == "<orig@x>"
+    assert "<orig@x>" in captured["msg"]["References"]
+
+
+def test_send_email_tool_threads_via_message_id():
+    """The send_email tool emits In-Reply-To/References when message_id is
+    given (so a reply to an email request lands in the same thread), and
+    sends standalone messages otherwise."""
+    import json
+    import nbchat.tools.send_email as tool
+
+    captured = {}
+
+    def fake_send(to, subject, body, *, in_reply_to="", references=""):
+        captured.update(to=to, subject=subject, in_reply_to=in_reply_to,
+                        references=references)
+        return "sent"
+
+    with patch("nbchat.core.email_smtp.send", side_effect=fake_send):
+        out = json.loads(tool.func("Re: nbchat", "the answer",
+                                   to="a@b.com", message_id="<orig@x>"))
+        assert "result" in out
+        assert captured["in_reply_to"] == "<orig@x>"
+        assert "<orig@x>" in captured["references"]
+        assert captured["to"] == "a@b.com"
+
+    # Standalone message: no threading headers.
+    with patch("nbchat.core.email_smtp.send", side_effect=fake_send):
+        out = json.loads(tool.func("hello", "body"))
+        assert "result" in out
+        assert captured["in_reply_to"] == ""
+        # Defaults to the account owner.
+        assert captured["to"] == "ghghang2@gmail.com"
+
+
+def test_auto_reply_skips_email_when_reply_is_voice_only():
+    """Regression: a turn whose only output is a <voice> block must NOT
+    produce an email (this is the stray '<voice>Very well, sir...' email)."""
+    from nbchat.tui.email_bridge import EmailBridge
+    agent = TerminalAgent(color=False)
+    bridge = EmailBridge(agent, auto_reply=True, poll_interval=1)
+    msg = email_inbox.EmailMessage(
+        message_id="<v@x>", from_addr=email_smtp.LOGIN,
+        subject="nbchat test", body="do x", date=None, uid="51",
+    )
+    with patch.object(agent, "send_from_email",
+                      return_value="\n<voice>Very well, sir. I'm on it.</voice>\n"), \
+         patch("nbchat.core.email_inbox.mark_read"), \
+         patch("nbchat.tui.email_bridge.email_smtp.send") as mock_send:
+        bridge._process_email(msg)
+        mock_send.assert_not_called()
+
+
+def test_auto_reply_strips_voice_blocks_from_content():
+    """A mixed reply emails the content but never the <voice> lines."""
+    from nbchat.tui.email_bridge import EmailBridge
+    agent = TerminalAgent(color=False)
+    bridge = EmailBridge(agent, auto_reply=True, poll_interval=1)
+    msg = email_inbox.EmailMessage(
+        message_id="<m@x>", from_addr=email_smtp.LOGIN,
+        subject="nbchat test", body="do x", date=None, uid="52",
+    )
+    with patch.object(agent, "send_from_email",
+                      return_value="Here is the summary.\n\n<voice>All done, sir.</voice>\n"), \
+         patch("nbchat.core.email_inbox.mark_read"), \
+         patch("nbchat.tui.email_bridge.email_smtp.send") as mock_send:
+        bridge._process_email(msg)
+        mock_send.assert_called_once()
+        kwargs = mock_send.call_args[1]
+        assert "All done, sir." not in kwargs["body"]
+        assert "Here is the summary." in kwargs["body"]
+        assert kwargs["in_reply_to"] == "<m@x>"

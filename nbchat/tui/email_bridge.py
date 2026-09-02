@@ -301,8 +301,11 @@ class EmailBridge:
             return
 
         # Inject into the chat stream (blocks until the turn completes).
+        # Pass the inbound Message-ID so any tool-level reply the agent
+        # sends during the turn can be threaded into the original email.
         reply = self._agent.send_from_email(
-            msg.from_addr, msg.subject, msg.body
+            msg.from_addr, msg.subject, msg.body,
+            message_id=msg.message_id,
         )
 
         # Mark read (only after successful inject).
@@ -323,10 +326,17 @@ class EmailBridge:
         if self._auto_reply and reply:
             try:
                 in_reply_to, references = self._thread_headers(msg)
+                # Strip any <voice> blocks: the voice channel is for
+                # spoken acknowledgements, never for email content.
+                body = email_smtp._strip_voice_blocks(reply)
+                if not body:
+                    _log.info("no email content after voice-strip; "
+                              "skipping auto-reply to %s", msg.from_addr)
+                    return
                 email_smtp.send(
                     to=self._parse_addr(msg.from_addr) or msg.from_addr,
                     subject=self._reply_subject(msg.subject),
-                    body=reply,
+                    body=body,
                     in_reply_to=in_reply_to,
                     references=references,
                 )
@@ -371,6 +381,12 @@ class EmailBridge:
         if self._auto_reply:
             try:
                 in_reply_to, references = self._thread_headers(msg)
+                # Strip any <voice> blocks before emailing.
+                answer = email_smtp._strip_voice_blocks(answer)
+                if not answer:
+                    _log.info("supervisor answer had no email content; "
+                              "skipping auto-reply")
+                    return
                 email_smtp.send(
                     to=self._parse_addr(msg.from_addr) or msg.from_addr,
                     subject=self._reply_subject(msg.subject),
