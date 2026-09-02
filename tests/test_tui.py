@@ -11,7 +11,7 @@ import pytest
 from nbchat.tui import TerminalAgent, Palette, run  # noqa: F401  (run importable)
 from nbchat.tui.agent import short_arg, _arg_hint
 from nbchat.tui.colors import Palette as _Palette  # same object
-from nbchat.tui.app import handle_command, read_line
+from nbchat.tui.app import handle_command, read_line, last_turn_stats
 
 
 # ── Palette ────────────────────────────────────────────────────────────────
@@ -375,3 +375,86 @@ def test_stream_response_omits_effort_when_default():
     agent._stream_response(_FakeClient(captured),
                            [{"role": "user", "content": "hi"}])
     assert "reasoning_effort" not in captured
+
+
+# ── /model speed stats (last 50 turns) ─────────────────────────────────────
+
+_LINE = ("2026-09-02 10:{m:02d}:{s:02d},000 [INFO] Inference_Metrics: "
+         "Latency: {lat:.2f}s | P:100 C:{c} T:{t}")
+
+
+def _write_metrics(tmp_path, rows):
+    path = tmp_path / "inference_metrics.log"
+    path.write_text("\n".join(
+        _LINE.format(m=m, s=s, lat=lat, c=c, t=100 + c)
+        for m, s, lat, c in rows))
+    return path
+
+
+def _patch_log(tmp_path, monkeypatch):
+    """Point the stats reader at the tmp log (chdir beats CWD lookup).
+
+    When the tmp dir holds no metrics log, also make the lookup return
+    None so the repo-root fallback can't leak the real log in.
+    """
+    monkeypatch.chdir(tmp_path)
+    if not (tmp_path / "inference_metrics.log").exists():
+        monkeypatch.setattr("nbchat.tui.app._metric_log_path", lambda: None)
+
+
+def test_last_turn_stats_averages_last_n_turns(tmp_path, monkeypatch):
+    # 5 turns, one LLM call each, 60s apart -> each is its own turn.
+    rows = [(0, 0, 1.0, 100),   # 100 tok/s
+            (1, 0, 2.0, 100),   # 50 tok/s  (60s gap)
+            (2, 0, 1.0, 50),    # 50 tok/s
+            (3, 0, 1.0, 200),   # 200 tok/s
+            (4, 0, 2.0, 200)]   # 100 tok/s
+    _write_metrics(tmp_path, rows)
+    _patch_log(tmp_path, monkeypatch)
+    out = last_turn_stats()
+    assert out is not None
+    # avg of (100, 50, 50, 200, 100) = 100 tok/s
+    assert "100.0 tok/s" in out and "last 5 turn(s)" in out
+
+
+def test_last_turn_stats_groups_calls_into_one_turn(tmp_path, monkeypatch):
+    # Two calls 5s apart = ONE turn: 300 tokens over a 5s wall span
+    # (span 5s exceeds the summed 3s of LLM latency).
+    rows = [(0, 0, 1.0, 100), (0, 5, 2.0, 200)]
+    _write_metrics(tmp_path, rows)
+    _patch_log(tmp_path, monkeypatch)
+    out = last_turn_stats()
+    assert "60.0 tok/s" in out and "last 1 turn(s)" in out
+
+
+def test_last_turn_stats_caps_at_50_turns(tmp_path, monkeypatch):
+    # 60 turns, each exactly 60s apart -> not merged, capped at 50.
+    rows = [(i, 0, 1.0, 100) for i in range(60)]
+    _write_metrics(tmp_path, rows)
+    _patch_log(tmp_path, monkeypatch)
+    out = last_turn_stats()
+    assert "last 50 turns" in out
+
+
+def test_last_turn_stats_no_log_returns_none(tmp_path, monkeypatch):
+    monkeypatch.setattr("nbchat.tui.app._metric_log_path",
+                        lambda: tmp_path / "missing.log")
+    assert last_turn_stats() is None
+
+
+def test_model_command_prints_speed(capsys, tmp_path, monkeypatch):
+    _write_metrics(tmp_path, [(0, 0, 1.0, 100)])
+    _patch_log(tmp_path, monkeypatch)
+    agent = TerminalAgent(color=False)
+    assert handle_command(agent, "/model") is False
+    out = capsys.readouterr().out
+    assert "speed   avg 100.0 tok/s" in out
+
+
+def test_model_command_speed_placeholder_when_no_data(capsys, tmp_path,
+                                                      monkeypatch):
+    _patch_log(tmp_path, monkeypatch)
+    agent = TerminalAgent(color=False)
+    assert handle_command(agent, "/model") is False
+    out = capsys.readouterr().out
+    assert "speed   - (no inference data yet)" in out

@@ -18,6 +18,9 @@ still start, but LLM calls will fail until you run ``python run.py``.
 from __future__ import annotations
 
 import argparse
+import re
+from datetime import datetime
+from pathlib import Path
 import sys
 import threading
 import urllib.request
@@ -37,7 +40,8 @@ _HELP = """Commands
   /sessions          List terminal sessions (id prefix 'tui:').
   /load <id>         Load one of the sessions from /sessions.
   /history           Print the current session's message history.
-  /model             Show the active model, server and reasoning effort.
+  /model             Show the active model, server, reasoning effort and
+                     average tokens/sec for the last 50 turns.
   /effort [E]        Show/set session reasoning effort (none, low, medium,
                      xhigh); no argument resets to the model default.
   /clear             Clear the screen.
@@ -141,6 +145,11 @@ def handle_command(agent: TerminalAgent, line: str, supervisor=None) -> bool:
         print(f"server  {config.SERVER_URL}")
         print(f"session {agent.session_id}")
         print("effort  " + (agent.reasoning_effort or "(model default)"))
+        stats = last_turn_stats()
+        if stats is None:
+            print("speed   - (no inference data yet)")
+        else:
+            print(stats)
     elif cmd == "/clear":
         sys.stdout.write("\033[2J\033[H")
     elif cmd == "/sup":
@@ -172,6 +181,88 @@ def handle_command(agent: TerminalAgent, line: str, supervisor=None) -> bool:
 
 
 # ── Input reading (with backslash continuation) ────────────────────────────
+
+# ── Inference stats (tokens per second, last N turns) ──────────────────────
+
+# Matches one LLM call's metrics line, e.g.
+# "2026-09-02 18:46:25,369 [INFO] Inference_Metrics: Latency: 1.22s | P:2447 C:95 T:2542"
+_RE_METRIC = re.compile(
+    r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+ \[INFO\] Inference_Metrics:"
+    r" Latency: ([0-9.]+)s \| P:\d+ C:(\d+) T:\d+$"
+)
+
+# Two metric entries this close (seconds) are treated as the same
+# conversation turn (a turn may span several LLM calls via tool-calling).
+_TURN_GAP_SECONDS = 60.0
+
+
+def _metric_log_path() -> Path | None:
+    """Locate inference_metrics.log (CWD, then this file's repo root)."""
+    for base in (Path.cwd(), Path(__file__).resolve().parent.parent.parent):
+        cand = base / "inference_metrics.log"
+        if cand.exists():
+            return cand
+    return None
+
+
+def last_turn_stats(n_turns: int = 50) -> str | None:
+    """Average tokens/second over the last *n_turns* turns, or None.
+
+    Each LLM call is logged by ``nbchat.core.client`` as one
+    ``Latency: Xs | P:p C:c T:t`` line; a conversation turn may contain
+    several such calls (tool-calling loop), so entries are grouped into
+    turns when their timestamps are within ``_TURN_GAP_SECONDS``.  A turn's
+    speed is its total completion tokens divided by the elapsed time
+    (first to last call); single-call turns use that call's latency.
+    """
+    path = _metric_log_path()
+    if path is None:
+        return None
+    try:
+        lines = path.read_text(errors="ignore").splitlines()
+    except OSError:
+        return None
+
+    entries = []  # (timestamp, latency_s, completion_tokens)
+    for line in lines:
+        m = _RE_METRIC.match(line)
+        if not m:
+            continue
+        ts = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S").timestamp()
+        latency, completion = float(m.group(2)), int(m.group(3))
+        if latency > 0 and completion > 0:
+            entries.append((ts, latency, completion))
+
+    if not entries:
+        return None
+
+    # Group consecutive calls into turns: a new call starts a new turn only
+    # when it lands _TURN_GAP_SECONDS or more after the previous call.
+    turns = []  # list of [start_ts, end_ts, latency_sum, completion_sum]
+    last_ts = None
+    for ts, latency, completion in entries:
+        if last_ts is not None and ts - last_ts < _TURN_GAP_SECONDS:
+            t = turns[-1]
+            t[1] = max(t[1], ts)
+            t[2] += latency
+            t[3] += completion
+        else:
+            turns.append([ts, ts, latency, completion])
+        last_ts = ts
+
+    samples = []
+    for start, end, latency_sum, completion_sum in turns[-n_turns:]:
+        span = max(end - start, 1e-3)
+        tps = completion_sum / max(latency_sum, span)
+        if tps > 0:
+            samples.append(tps)
+    if not samples:
+        return None
+    avg = sum(samples) / len(samples)
+    label = (f"last {len(samples)} turn(s)" if len(samples) < n_turns
+             else "last 50 turns")
+    return f"speed   avg {avg:.1f} tok/s ({label})"
+
 
 def read_line(prompt: str) -> str:
     line = input(prompt)
