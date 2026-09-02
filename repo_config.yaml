@@ -39,7 +39,7 @@ max_history_turns: 10
 max_llm_output_tokens: 32768
 
 port: 8080
-n_parallel: 1
+n_parallel: 2
 ctx_size: 131072
 n_gpu_layers: 999
 service_info_path: "service_info.json"
