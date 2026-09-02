@@ -3,7 +3,8 @@ openai
 gitpython
 pygithub
 markdown
-ipywidgets
-IPython
 pytest
 psutil
+uvicorn
+fastapi
+pyyaml
