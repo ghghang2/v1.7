@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import uuid
 
 import nbchat.core.db as db
 import nbchat.core.config as config
@@ -31,6 +33,54 @@ def _normalise_args(args_str: str) -> str:
         return json.dumps(json.loads(args_str), sort_keys=True)
     except Exception:
         return args_str
+
+
+_TOOL_BLOCK_RE = re.compile(
+    r"<tool_call>\s*<function=([A-Za-z_]\w*)>\s*(.*?)</function>\s*</tool_call>",
+    re.DOTALL,
+)
+_PARAM_RE = re.compile(
+    r"<parameter=([A-Za-z_]\w*)>\s*(.*?)\s*</parameter>", re.DOTALL
+)
+
+
+def _recover_text_tool_calls(content: str) -> list[dict] | None:
+    """Parse legacy XML <tool_call> blocks out of assistant *text*.
+
+    Some models emit tool calls as <tool_call><function=name>
+    <parameter=k>v</parameter></function></tool_call> text instead of the
+    structured tool_calls channel.  Returns tool-call dicts in the same
+    shape as the structured channel, or None if no complete block parsed.
+    """
+    calls: list[dict] = []
+    for m in _TOOL_BLOCK_RE.finditer(content or ""):
+        name, body = m.group(1), m.group(2)
+        args = {pm.group(1): pm.group(2) for pm in _PARAM_RE.finditer(body)}
+        if not args:
+            continue
+        try:
+            args_json = json.dumps(args)
+        except (TypeError, ValueError):
+            continue
+        calls.append({
+            "id": f"recovered_{uuid.uuid4().hex[:12]}",
+            "type": "function",
+            "function": {"name": name, "arguments": args_json},
+        })
+    return calls or None
+
+
+def _strip_tool_blocks(content: str) -> str:
+    """Remove legacy <tool_call> markup from text, keeping surrounding prose.
+
+    A truncated trailing block (an unclosed <tool_call> at the end) is
+    removed too, so a half-emitted call is never re-fed to the model.
+    """
+    if not content:
+        return ""
+    text = _TOOL_BLOCK_RE.sub(" ", content)
+    text = re.sub(r"<tool_call>.*$", " ", text, flags=re.DOTALL)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
 class ConversationMixin:
@@ -123,6 +173,58 @@ class ConversationMixin:
                 with self._history_lock:
                     self.history.append(("analysis", reasoning, "", "", "", 0))
                 db.log_message(self.session_id, "analysis", reasoning)
+
+            # ── Legacy XML tool-call recovery ───────────────────────────────
+            # Some models emit tool calls as <tool_call>...</tool_call> text
+            # in the content instead of the structured tool_calls channel.
+            # Treated as a final answer, nothing executes — and the
+            # unexecuted markup stored in history is re-fed on every
+            # subsequent turn, reinforcing the drift.  Recover complete,
+            # parseable blocks and route them through the normal
+            # tool-execution path below; if the markup is malformed or
+            # truncated, nudge the model to re-emit via the proper channel.
+            if not tool_calls and content and "<tool_call" in content:
+                recovered = _recover_text_tool_calls(content)
+                if recovered:
+                    _log.warning(
+                        "Recovered %d tool call(s) emitted as legacy XML text; "
+                        "executing via normal path.", len(recovered),
+                    )
+                    self._on_agent_message(
+                        f"Recovered {len(recovered)} tool call(s) emitted as "
+                        "text markup; executing them now."
+                    )
+                    tool_calls = recovered
+                    finish_reason = "tool_calls"
+                    content = _strip_tool_blocks(content)
+                elif turn < self.MAX_TOOL_TURNS:
+                    _log.warning(
+                        "Unparseable <tool_call> text markup in content "
+                        "(tail=%r); nudging model to re-emit.",
+                        (content or "")[-80:],
+                    )
+                    _nudge = (
+                        "Your previous reply contained a tool call written as text "
+                        "markup (e.g. <tool_call>), which was NOT executed. Re-issue "
+                        "that tool call using the structured tool-calling mechanism, "
+                        "not as text."
+                    )
+                    self._on_agent_message(
+                        "Detected unexecuted tool call in text; asking the "
+                        "model to re-emit it."
+                    )
+                    _clean = _strip_tool_blocks(content) or (
+                        "[tool call emitted as text markup; not executed]"
+                    )
+                    with self._history_lock:
+                        self.history.append(("assistant", _clean, "", "", "", 0))
+                    db.log_message(self.session_id, "assistant", _clean)
+                    with self._history_lock:
+                        self.history.append(("user", _nudge, "", "", "", 0))
+                    db.log_message(self.session_id, "user", _nudge)
+                    messages.append({"role": "assistant", "content": _clean})
+                    messages.append({"role": "user", "content": _nudge})
+                    continue
 
             if not tool_calls or finish_reason != "tool_calls":
                 # Truncation guard: if the model ran out of output tokens

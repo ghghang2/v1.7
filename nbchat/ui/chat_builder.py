@@ -15,12 +15,32 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Dict, List, Tuple
 
 _log = logging.getLogger("nbchat.compaction")
 
 _CTX_LABEL = "[SESSION CONTEXT — updated each turn]"
 _CTX_ACK = "Context received."
+
+
+_TOOL_BLOCK_RE = re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL)
+_TOOL_TRAIL_RE = re.compile(r"<tool_call>.*$", re.DOTALL)
+
+
+def _scrub_tool_markup(content: str) -> str:
+    """Remove unexecuted legacy <tool_call> XML markup from assistant text.
+
+    The model occasionally emits tool calls as text instead of the
+    structured tool_calls channel.  Re-feeding that markup to the model
+    reinforces the drift, so message lists are built with it stripped.
+    Surrounding prose is preserved.
+    """
+    if not content:
+        return ""
+    text = _TOOL_BLOCK_RE.sub(" ", content)
+    text = _TOOL_TRAIL_RE.sub(" ", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
 def build_messages(
@@ -80,7 +100,13 @@ def build_messages(
                                     "function": {"name": tool_name, "arguments": tool_args}}],
                 })
             else:
-                messages.append({"role": "assistant", "content": content})
+                cleaned = _scrub_tool_markup(content)
+                if content and not cleaned:
+                    cleaned = (
+                        "[Your previous reply contained only a tool call written as "
+                        "text markup; it was not executed.]"
+                    )
+                messages.append({"role": "assistant", "content": cleaned})
 
         elif role == "assistant_full":
             try:
@@ -88,6 +114,9 @@ def build_messages(
                 msg.pop("reasoning_content", None)
                 if msg.get("tool_calls") and not msg.get("content"):
                     msg["content"] = None
+                if msg.get("content"):
+                    # Scrub any text-emitted tool markup that slipped in.
+                    msg["content"] = _scrub_tool_markup(msg["content"]) or None
                 messages.append(msg)
             except Exception:
                 messages.append({"role": "assistant", "content": content})
