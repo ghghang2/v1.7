@@ -57,6 +57,10 @@ MAX_LLM_OUTPUT_TOKENS: int = int(_cfg.get("max_llm_output_tokens", 8192))
 # Conversation loop constants
 MAX_TOOL_TURNS: int = int(_cfg["max_tool_turns"])
 STALL_TURNS: int = int(_cfg["stall_turns"])
+# Mid-stream transport-drop continuations (continue-from-break-point
+# nudges) before a dropped LLM stream is fatal.  .get(): the key is
+# optional so configs written before the setting still load.
+MAX_STREAM_RETRIES: int = int(_cfg.get("max_stream_retries", 2))
 
 PORT: int = int(_cfg["port"])
 N_PARALLEL: int = int(_cfg["n_parallel"])
@@ -156,6 +160,7 @@ __all__ = [
     # "KEEP_RECENT_EXCHANGES",
     "MAX_TOOL_TURNS",
     "STALL_TURNS",
+    "MAX_STREAM_RETRIES",
     "PORT",
     "N_PARALLEL",
     "CTX_SIZE",

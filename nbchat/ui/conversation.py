@@ -50,7 +50,6 @@ _TOOL_OPEN_RE = re.compile(r"<tool_call>")
 # body was complete).  The retry is only attempted when partial content was
 # already rendered: that text stays in the transcript, so the model is
 # nudged to continue from the break point rather than restarting.
-MAX_STREAM_RETRIES = 2
 
 class MidStreamError(Exception):
     """An LLM stream died mid-call before the message body was complete.
@@ -190,7 +189,7 @@ class ConversationMixin:
             )
             reasoning, content, tool_calls, finish_reason = (None, "", None, None)
             _stream_exc = None
-            for _attempt in range(MAX_STREAM_RETRIES + 1):
+            for _attempt in range(config.MAX_STREAM_RETRIES + 1):
                 try:
                     reasoning, content, tool_calls, finish_reason = self._stream_response(
                         client, messages

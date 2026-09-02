@@ -74,6 +74,10 @@ keep_recent_exchanges: 30
 # Conversation loop constants
 max_tool_turns: 200
 stall_turns: 3
+# Max mid-stream continuation retries before a dropped LLM stream is
+# fatal (a dropped stream with rendered partial content nudges the
+# model to continue from the break point, up to this many times).
+max_stream_retries: 2
 
 
 # L2 retrieval and context management

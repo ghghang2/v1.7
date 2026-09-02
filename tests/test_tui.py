@@ -489,7 +489,8 @@ def test_stream_drop_with_partial_content_is_retried():
 def test_stream_drop_retries_bounded():
     """A stream that dies mid-content every time must not loop forever:
     after MAX_STREAM_RETRIES continue attempts the error propagates."""
-    from nbchat.ui.conversation import MAX_STREAM_RETRIES
+    from nbchat.core import config as _config
+    MAX_STREAM_RETRIES = _config.MAX_STREAM_RETRIES
     client = _StreamingClient([
         ["partial one"],
         ["partial two"],
