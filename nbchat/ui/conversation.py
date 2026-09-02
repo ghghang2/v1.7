@@ -21,7 +21,7 @@ import nbchat.core.config as config
 import nbchat.core.compressor as comp
 import nbchat.core.monitoring as mon
 from nbchat.core.client import get_client
-from nbchat.core.db import is_error_content
+from nbchat.core.db import is_error_content, is_tool_error
 from nbchat.ui import chat_builder, tool_executor as executor
 import nbchat.tools as tools_mod
 
@@ -398,9 +398,15 @@ class ConversationMixin:
             msg_for_model = {"role": "assistant", "content": content or None, "tool_calls": tool_calls}
             messages.append(msg_for_model)
             full_msg_json = json.dumps(msg_for_model)
+            # Keep the full message JSON in tool_args (the history readers —
+            # chat_builder and chatui — parse it) AND store the assistant text
+            # in the readable content column so monitoring/analysis can inspect
+            # assistant output without JSON parsing (fixes the previously
+            # empty assistant_full.content column).
+            _af_content = content or ""
             with self._history_lock:
-                self.history.append(("assistant_full", "", "full", "full", full_msg_json, 0))
-            db.log_row(self.session_id, "assistant_full", "", "full", "full", full_msg_json)
+                self.history.append(("assistant_full", _af_content, "full", "full", full_msg_json, 0))
+            db.log_row(self.session_id, "assistant_full", _af_content, "full", "full", full_msg_json)
 
             for tc in tool_calls:
                 tool_name = tc["function"]["name"]
@@ -424,7 +430,9 @@ class ConversationMixin:
                 )
 
                 self._log_action(tool_name, tool_args, model_result)
-                error_flag = int(is_error_content(raw_result))
+                # Derived from the structured tool outcome (exit code / status),
+                # not keyword matching — see db.is_tool_error.
+                error_flag = int(is_tool_error(tool_name, raw_result))
 
                 with self._history_lock:
                     self.history.append(("tool", raw_result, tc["id"], tool_name, tool_args, error_flag))

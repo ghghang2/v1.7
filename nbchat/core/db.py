@@ -23,6 +23,84 @@ def is_error_content(content: str) -> bool:
     return any(p in low for p in _ERROR_PATTERNS)
 
 
+# Tools whose output is a JSON object carrying a machine-readable outcome.
+# For these, error_flag must be derived from the structured outcome, not from
+# keyword scanning of the text (a successful `grep` that merely prints the word
+# "error" was previously mislabelled as a failure, driving needless reruns).
+_STRUCTURED_TOOLS = frozenset({
+    "run_command", "run_tests", "push_to_github", "browser",
+    "get_weather", "create_file", "make_change_to_file", "send_email",
+})
+
+
+def _structured_error(parsed, tool_name: str) -> bool:
+    """Return True if a parsed structured tool payload indicates failure."""
+    if isinstance(parsed, dict):
+        # Explicit error key: {"error": "..."}
+        if "error" in parsed:
+            return True
+        res = parsed.get("result")
+        if isinstance(res, dict):
+            status = str(res.get("status", "")).lower()
+            if status and status not in ("success", "ok", "dry_run"):
+                return True
+            return bool(res.get("error"))
+        if isinstance(res, str):
+            return res.strip().lower().startswith("error")
+        # push_to_github reports its outcome at the top level.
+        if tool_name == "push_to_github":
+            status = str(parsed.get("status", "")).lower()
+            return bool(status) and status not in ("success", "ok", "dry_run")
+        return False
+    return False
+
+
+def is_tool_error(tool_name: str, content: str) -> bool:
+    """Derive the error flag for a *tool* result from its structured outcome.
+
+    ``error_flag`` is a telemetry signal (monitoring, supervisor stats, history
+    rendering) — it never changes the string handed back to the model, so this
+    only ever makes the books more honest.
+
+    Structured tools are judged by their payload (exit code / failed count /
+    status).  A non-zero ``exit_code`` on ``run_command`` is a failure even when
+    the text looks fine; a green ``run_tests`` run is a success even when its
+    summary happens to print the word "error".
+
+    Tools without a recognisable structured payload fall back to the keyword
+    heuristic so genuinely unstructured errors are still flagged.
+    """
+    if not tool_name or tool_name not in _STRUCTURED_TOOLS:
+        return is_error_content(content)
+    try:
+        parsed = json.loads(content)
+    except Exception:
+        # Not JSON (e.g. "Tool 'x' failed after N retries: ..." or an empty
+        # string).  Preserve the old behaviour for those.
+        return is_error_content(content)
+    if tool_name == "run_command":
+        if isinstance(parsed, dict) and "exit_code" in parsed:
+            try:
+                return int(parsed["exit_code"]) != 0
+            except (TypeError, ValueError):
+                return True
+    if tool_name == "run_tests":
+        if isinstance(parsed, dict):
+            return int(parsed.get("failed", 0) or 0) != 0 or \
+                int(parsed.get("errors", 0) or 0) != 0
+    if tool_name == "browser":
+        if isinstance(parsed, dict):
+            status = str(parsed.get("status", "")).lower()
+            if status == "error" or "exception" in str(parsed.get("error", "")):
+                return True
+            if "error" in parsed and parsed["error"]:
+                return True
+            return False
+    if isinstance(parsed, dict) and "result" in parsed:
+        return _structured_error(parsed, tool_name)
+    return _structured_error(parsed, tool_name)
+
+
 # ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------
@@ -138,10 +216,65 @@ def log_tool_msg(session_id: str, tool_id: str, tool_name: str,
         conn.execute(
             "INSERT INTO chat_log (session_id, role, content, tool_id, tool_name, tool_args, error_flag) "
             "VALUES (?,'tool',?,?,?,?,?)",
-            (session_id, content, tool_id, tool_name, tool_args, int(is_error_content(content))),
+            (session_id, content, tool_id, tool_name, tool_args, int(is_tool_error(tool_name, content))),
         )
         conn.commit()
 
+
+def backfill_tool_rows() -> int:
+    """Recompute ``error_flag`` on existing ``role='tool'`` rows using
+    :func:`is_tool_error`.
+
+    Safe to run repeatedly: it only writes when the derived flag differs from
+    the stored one.  Returns the number of rows whose flag was corrected.
+    """
+    fixed = 0
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            "SELECT id, tool_name, COALESCE(content,'') FROM chat_log WHERE role='tool'"
+        ).fetchall()
+        for rid, tool_name, content in rows:
+            new_flag = int(is_tool_error(tool_name or "", content or ""))
+            row = conn.execute(
+                "SELECT error_flag FROM chat_log WHERE id=?", (rid,)
+            ).fetchone()
+            if row is not None and int(row[0]) != new_flag:
+                conn.execute("UPDATE chat_log SET error_flag=? WHERE id=?",
+                             (new_flag, rid))
+                fixed += 1
+        conn.commit()
+    return fixed
+
+
+def backfill_assistant_full() -> int:
+    """Populate ``content`` on ``assistant_full`` rows that were written with an
+    empty content column (the full payload was duplicated into ``tool_args``).
+
+    The readable assistant text is recovered from the ``content`` field of the
+    JSON stored in ``tool_args``.  Safe to run repeatedly: rows that already
+    have non-empty content are skipped.  Returns the number of rows updated.
+    """
+    fixed = 0
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            "SELECT id, tool_args FROM chat_log "
+            "WHERE role='assistant_full' AND (content IS NULL OR content='')"
+        ).fetchall()
+        for rid, tool_args in rows:
+            text = ""
+            if tool_args:
+                try:
+                    msg = json.loads(tool_args)
+                    text = msg.get("content") or ""
+                except Exception:
+                    text = ""
+            if text:
+                conn.execute(
+                    "UPDATE chat_log SET content=? WHERE id=?", (text, rid)
+                )
+                fixed += 1
+        conn.commit()
+    return fixed
 
 def load_history(session_id: str, limit: int | None = None) -> list[tuple]:
     with sqlite3.connect(DB_PATH) as conn:

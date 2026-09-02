@@ -169,9 +169,13 @@ def _parse_update_diff(lines: list[str], input_str: str):
                     cursor = already_applied_match.new_index + len(first_chunk_ins)
                     continue
             ctx_text = "\n".join(section.next_context)
+            # Self-correcting hint: surface the actual file lines so the caller
+            # can re-issue a correct diff in one step (avoids a separate
+            # read/grep round-trip on every mismatch).
+            diag = _context_diagnostic(input_lines, section.next_context, cursor)
             if section.eof:
-                raise ValueError(f"Invalid EOF Context {cursor}:\n{ctx_text}")
-            raise ValueError(f"Invalid Context {cursor}:\n{ctx_text}")
+                raise ValueError(f"Invalid EOF Context {cursor}:\n{ctx_text}{diag}")
+            raise ValueError(f"Invalid Context {cursor}:\n{ctx_text}{diag}")
 
         match_start_index = match.new_index
         parser.fuzz += match.fuzz
@@ -253,6 +257,18 @@ def _equals_slice(
             return False
     return True
 
+# Lenient normalisation tiers used when exact/whitespace matching fails.
+# These absorb the Unicode drift and internal-whitespace differences that
+# previously produced "Invalid Context" failures (the diff context the model
+# emits can differ from the on-disk file by Unicode normalisation form or by
+# how consecutive whitespace was folded).  Applied only after the stricter
+# tiers miss, so normal diffs are unaffected.
+def _norm_nfkc(v: str) -> str:
+    return unicodedata.normalize("NFKC", v)
+
+def _norm_collapse(v: str) -> str:
+    return " ".join(unicodedata.normalize("NFKC", v).split())
+
 def _find_context(lines: list[str], context: list[str], start: int, eof: bool) -> Match:
     if not context:
         return Match(start, 0)
@@ -271,6 +287,14 @@ def _find_context(lines: list[str], context: list[str], start: int, eof: bool) -
         for i in range(idx, len(lines) - len(context) + 1):
             if _equals_slice(lines, context, i, lambda v: v.strip()):
                 return Match(i, 2)
+        # Tier 4: Unicode-normalise (NFKC) both sides.
+        for i in range(idx, len(lines) - len(context) + 1):
+            if _equals_slice(lines, context, i, _norm_nfkc):
+                return Match(i, 3)
+        # Tier 5: NFKC + collapse internal whitespace runs.
+        for i in range(idx, len(lines) - len(context) + 1):
+            if _equals_slice(lines, context, i, _norm_collapse):
+                return Match(i, 4)
         return Match(-1, 0)
 
     # If EOF is indicated, search from the end of the file first.
@@ -282,6 +306,50 @@ def _find_context(lines: list[str], context: list[str], start: int, eof: bool) -
         # If not found at EOF, continue with forward search.
     return _search_from(start)
 
+def _context_diagnostic(lines: list[str], context: list[str], start: int) -> str:
+    """Return a self-correcting hint for a failed context match.
+
+    Finds the file window that best aligns with the provided context (under the
+    lenient NFKC/whitespace-collapsed normalisation) and reports the *actual*
+    file lines plus which offsets differ, so the caller can re-issue a correct
+    diff in a single step instead of doing a separate read/grep round-trip.
+    """
+    if not context or not lines:
+        return ""
+    m = len(context)
+    if m > len(lines):
+        return ""
+    ctx = [_norm_collapse(c) for c in context]
+    # Search a neighbourhood around the expected cursor first, then the file.
+    lo = max(0, start - 4)
+    hi = min(len(lines) - m, start + 400)
+    if hi < lo:
+        lo, hi = 0, max(0, len(lines) - m)
+    best = None
+    for i in range(lo, hi + 1):
+        win = [_norm_collapse(x) for x in lines[i:i + m]]
+        score = sum(1 for a, b in zip(ctx, win) if a == b)
+        if best is None or score > best[0]:
+            best = (score, i)
+        if score == m:
+            break
+    if best is None:
+        return ""
+    score, i = best
+    offsets = [j for j, (a, b) in enumerate(
+        zip(ctx, [_norm_collapse(x) for x in lines[i:i + m]])) if a != b]
+    actual = "\n".join(f"{i + j + 1:4d} | {lines[i + j]}" for j in range(m))
+    if score == m:
+        return (
+            f"\n[note: the context actually matches at line {i + 1}; the change "
+            f"may have already been applied. Re-check the file before re-issuing.]\n{actual}"
+        )
+    return (
+        f"\n[closest file content near line {i + 1}, {score}/{m} lines aligned; "
+        f"differs at provided-context offset(s) {offsets}. "
+        "Re-issue the diff using the exact lines shown below.]\n"
+        f"{actual}"
+    )
 def _apply_chunks(input_str: str, chunks: list[Chunk], newline: str) -> str:
     orig_lines = input_str.split("\n")
     dest_lines, cursor = [], 0
