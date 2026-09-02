@@ -1216,3 +1216,115 @@ def test_auto_reply_strips_voice_blocks_from_content():
         assert "All done, sir." not in kwargs["body"]
         assert "Here is the summary." in kwargs["body"]
         assert kwargs["in_reply_to"] == "<m@x>"
+
+
+# ── double-send guard: tool reply + bridge auto-reply ────────────────────────
+
+
+def _auto_reply_bridge_and_msg(message_id="<dup1@x>", subject="nbchat"):
+    """A bridge in auto-reply mode plus one inbound message."""
+    from nbchat.tui.email_bridge import EmailBridge
+    agent = TerminalAgent(color=False)
+    bridge = EmailBridge(agent, auto_reply=True, poll_interval=1)
+    msg = email_inbox.EmailMessage(
+        message_id=message_id, from_addr=email_smtp.LOGIN,
+        subject=subject, body="do x", date=None, uid="60",
+    )
+    return agent, bridge, msg
+
+
+def test_send_registers_reply_target_in_outbound_registry():
+    """A reply-path send (in_reply_to set) registers its target Message-ID."""
+    email_smtp.clear_outbound_registry()
+    assert not email_smtp.was_replied_via_tool("<reg1@x>")
+    with patch("smtplib.SMTP") as mock_smtp, \
+         patch.dict(os.environ, {"GHG_APP_PASSWORD": "x"}):
+        email_smtp.send(to="a@b.com", subject="Re: nbchat", body="done",
+                        in_reply_to="<reg1@x>", references="<reg1@x>")
+    assert email_smtp.was_replied_via_tool("<reg1@x>")
+    # A standalone send (no in_reply_to) registers nothing.
+    assert not email_smtp.was_replied_via_tool("")
+    email_smtp.clear_outbound_registry()
+
+
+def test_auto_reply_suppressed_when_tool_already_replied():
+    """If the agentic turn answered the email via the send_email tool, the
+    bridge must NOT send a second email (the 2-emails-per-request bug)."""
+    email_smtp.clear_outbound_registry()
+    agent, bridge, msg = _auto_reply_bridge_and_msg("<dup1@x>")
+    # Simulate the tool having replied during the turn.
+    email_smtp._OUTBOUND_REPLIES.add("<dup1@x>")
+    with patch.object(agent, "send_from_email", return_value="the answer"), \
+         patch("nbchat.core.email_inbox.mark_read"), \
+         patch("nbchat.tui.email_bridge.email_smtp.send") as mock_send:
+        bridge._process_email(msg)
+        mock_send.assert_not_called()
+    email_smtp.clear_outbound_registry()
+
+
+def test_auto_reply_sent_when_tool_did_not_reply():
+    """No tool reply -> the bridge's single auto-reply goes out, and it
+    carries correct threading headers."""
+    email_smtp.clear_outbound_registry()
+    agent, bridge, msg = _auto_reply_bridge_and_msg("<dup2@x>")
+    with patch.object(agent, "send_from_email", return_value="the answer"), \
+         patch("nbchat.core.email_inbox.mark_read"), \
+         patch("nbchat.tui.email_bridge.email_smtp.send") as mock_send:
+        bridge._process_email(msg)
+        mock_send.assert_called_once()
+        kwargs = mock_send.call_args[1]
+        assert kwargs["in_reply_to"] == "<dup2@x>"
+        assert "<dup2@x>" in kwargs["references"]
+    email_smtp.clear_outbound_registry()
+
+
+def test_send_normalizes_reply_subject_when_in_reply_to_set():
+    """A send with In-Reply-To but no 'Re:' subject prefix gets 'Re:' added
+    so Gmail never treats it as a new top-level conversation (thread split
+    with a byte-identical subject)."""
+    email_smtp.clear_outbound_registry()
+    captured = {}
+
+    class FakeSMTP:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def ehlo(self):
+            return (250, b"ok")
+
+        def starttls(self):
+            return (220, b"ok")
+
+        def login(self, user, pw):
+            return (235, b"ok")
+
+        def send_message(self, msg):
+            captured["msg"] = msg
+
+    with patch("smtplib.SMTP", FakeSMTP), \
+         patch.dict(os.environ, {"GHG_APP_PASSWORD": "x"}):
+        # The failure case: bare subject (no 'Re:') + In-Reply-To set.
+        email_smtp.send(to="a@b.com", subject="nbchat", body="answer",
+                        in_reply_to="<sub1@x>", references="<sub1@x>")
+    assert captured["msg"]["Subject"] == "Re: nbchat"
+    assert captured["msg"]["In-Reply-To"] == "<sub1@x>"
+
+    # Already 'Re:' -> untouched.
+    with patch("smtplib.SMTP", FakeSMTP), \
+         patch.dict(os.environ, {"GHG_APP_PASSWORD": "x"}):
+        email_smtp.send(to="a@b.com", subject="Re: nbchat", body="answer",
+                        in_reply_to="<sub2@x>", references="<sub2@x>")
+    assert captured["msg"]["Subject"] == "Re: nbchat"
+
+    # Standalone (no In-Reply-To) -> subject never touched.
+    with patch("smtplib.SMTP", FakeSMTP), \
+         patch.dict(os.environ, {"GHG_APP_PASSWORD": "x"}):
+        email_smtp.send(to="a@b.com", subject="hello", body="body")
+    assert captured["msg"]["Subject"] == "hello"
+    email_smtp.clear_outbound_registry()

@@ -322,6 +322,17 @@ class EmailBridge:
         # target is the high-priority email; the low-priority turn that was
         # interrupted simply loses its reply.
 
+        # Double-send guard: if the agentic turn already answered this
+        # exact email through the send_email tool (every reply-path send
+        # is tracked by its In-Reply-To target in email_smtp's process
+        # registry), the auto-reply would be a second email for the same
+        # question.  One reply is the contract; skip it.
+        if (self._auto_reply and reply and msg.message_id
+                and email_smtp.was_replied_via_tool(msg.message_id)):
+            _log.info("skipping auto-reply to %s: already answered via "
+                      "send_email tool during the turn", msg.from_addr)
+            return
+
         # Optionally reply to the sender by email (in the same thread).
         if self._auto_reply and reply:
             try:

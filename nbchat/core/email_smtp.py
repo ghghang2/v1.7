@@ -14,6 +14,13 @@ SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
 LOGIN = "ghghang2@gmail.com"
 
+# Process-local registry of Message-IDs of emails that were answered via
+# the send_email tool (i.e. any outgoing mail whose in_reply_to was set
+# here).  The TUI email bridge consults this after the agentic turn
+# completes: if the tool already replied to the inbound message, the
+# auto-reply is skipped so the user receives exactly one reply.
+_OUTBOUND_REPLIES: set = set()
+
 
 def _password() -> str:
     pw = os.getenv("GHG_APP_PASSWORD")
@@ -49,6 +56,20 @@ def send(to: str, subject: str, body: str, *, in_reply_to: str = "", references:
     Exception
         On any SMTP / authentication failure.
     """
+    # Track tool-mediated replies so the email bridge can suppress its
+    # own auto-reply for the same inbound message (one reply, not two).
+    if in_reply_to:
+        _OUTBOUND_REPLIES.add(in_reply_to)
+        _OUTBOUND_REPLIES.discard("")
+
+    # A reply must read as a reply.  If In-Reply-To is set but the
+    # subject carries no "Re:" prefix, Gmail's conversation UI can treat
+    # the message as a new top-level conversation (subject identical to
+    # the thread opener), splitting the thread even though the headers
+    # are correct.  Normalize once here so every reply path (tool,
+    # bridge, supervisor) is covered regardless of what the caller passes.
+    if in_reply_to and not subject.lower().startswith("re:"):
+        subject = f"Re: {subject}"
     # Voice blocks are spoken on the voice channel only — strip them so a
     # reply that also contains <voice>...</voice> lines never ships them
     # as email text.
@@ -111,3 +132,24 @@ def _strip_voice_blocks(text: str) -> str:
 def _collapse_blank_lines(text: str) -> str:
     import re
     return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def was_replied_via_tool(message_id: str) -> bool:
+    """True if an outbound mail with in_reply_to==message_id was already
+    sent this process (by the send_email tool or any reply path)."""
+    return bool(message_id) and message_id in _OUTBOUND_REPLIES
+
+
+def clear_outbound_registry() -> None:
+    """Reset the registry (used by tests and process restarts)."""
+    _OUTBOUND_REPLIES.clear()
+
+
+__all__ = [
+    "send",
+    "was_replied_via_tool",
+    "clear_outbound_registry",
+    "SMTP_SERVER",
+    "SMTP_PORT",
+    "LOGIN",
+]
