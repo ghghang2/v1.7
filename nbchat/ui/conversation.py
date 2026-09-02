@@ -43,6 +43,8 @@ _PARAM_RE = re.compile(
     r"<parameter=([A-Za-z_]\w*)>\s*(.*?)\s*</parameter>", re.DOTALL
 )
 
+_TOOL_OPEN_RE = re.compile(r"<tool_call>")
+
 
 def _recover_text_tool_calls(content: str) -> list[dict] | None:
     """Parse legacy XML <tool_call> blocks out of assistant *text*.
@@ -183,7 +185,10 @@ class ConversationMixin:
             # parseable blocks and route them through the normal
             # tool-execution path below; if the markup is malformed or
             # truncated, nudge the model to re-emit via the proper channel.
-            if not tool_calls and content and "<tool_call" in content:
+            # Gate on the drift signature: an OPENING <tool_call> tag.
+            # A bare mention in prose (e.g. a backticked word) must not
+            # trigger recovery or the re-emit nudge.
+            if not tool_calls and content and _TOOL_OPEN_RE.search(content):
                 recovered = _recover_text_tool_calls(content)
                 if recovered:
                     _log.warning(

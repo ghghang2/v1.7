@@ -197,3 +197,42 @@ def test_build_assistant_full_pure_markup_content_becomes_none():
     assistant = _last_assistant(_build(hist))
     assert assistant["tool_calls"][0]["id"] == "call_2"
     assert not assistant.get("content")
+
+
+# ── gate: prose mentions must not trigger recovery or nudge ─────────────────
+# The gate must require an OPENING tag, not a bare mention of the word in
+# prose (regression: a summary message describing query results contained the
+# backticked word and wrongly triggered the re-emit nudge, 2026-09-02).
+
+_OPEN = "<" + "tool_call" + ">"
+_BLOCK = (
+    _OPEN
+    + "<function=read_file>"
+    + "<parameter=path>"
+    + "x"
+    + "</parameter></function>"
+    + "</" + "tool_call" + ">"
+)
+
+
+def test_gate_ignores_backticked_prose_mention():
+    from nbchat.ui.conversation import _TOOL_OPEN_RE
+    prose = "rows matching `<" + "tool_call` - mostly analysis rows"
+    assert _TOOL_OPEN_RE.search(prose) is None
+
+
+def test_gate_ignores_word_without_opening_tag():
+    from nbchat.ui.conversation import _TOOL_OPEN_RE
+    assert _TOOL_OPEN_RE.search("the <" + "tool_call parsing issue") is None
+
+
+def test_gate_fires_on_opening_tag():
+    from nbchat.ui.conversation import _TOOL_OPEN_RE
+    assert _TOOL_OPEN_RE.search(_OPEN)
+    assert _TOOL_OPEN_RE.search("check\n" + _BLOCK)
+
+
+def test_block_fixture_still_recovers():
+    calls = _recover_text_tool_calls("check\n" + _BLOCK)
+    assert calls is not None and len(calls) == 1
+    assert calls[0]["function"]["name"] == "read_file"
