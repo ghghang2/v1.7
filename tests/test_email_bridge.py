@@ -507,6 +507,52 @@ def test_truncation_guard_finish_reason_length():
     assert _truncated
 
 
+# ── conversation loop: malformed <voice> tail triggers the nudge ──────────────
+
+
+def _loop_agent(scripted_results):
+    """TerminalAgent whose _stream_response returns scripted outcomes.
+
+    Each outcome is (reasoning, content, tool_calls, finish_reason).
+    Patching _stream_response keeps the loop fully hermetic (no LLM,
+    no streaming).
+    """
+    from nbchat.tui.agent import TerminalAgent
+    agent = TerminalAgent(color=False)
+    it = iter(scripted_results)
+    agent._stream_response = lambda client, messages: next(it)
+    return agent
+
+
+def test_loop_nudges_on_unclosed_voice_tag():
+    """A reply that stops normally but leaves an unclosed <voice> tail is
+    malformed, not a final answer: the loop must nudge and continue rather
+    than ship a reply that ends on broken markup."""
+    bad = "Working on it. <voice>Almost there, sir.</voice"
+    agent = _loop_agent([
+        ("", bad, None, "stop"),      # turn 1: unclosed tail -> nudge
+        ("", "Done.", None, "stop"),  # turn 2: clean final
+    ])
+    agent._run_conversation_loop(object())
+    calls = [r for r in agent.history if r[0] == "assistant"]
+    nudges = [r for r in agent.history if r[0] == "user"
+              and "cut off" in r[1]]
+    assert len(calls) == 2, [c[1] for c in calls]
+    assert calls[-1][1] == "Done."
+    assert len(nudges) == 1, nudges
+
+
+def test_loop_final_reply_unchanged():
+    """A clean final reply must still terminate the loop on the first turn
+    (the guard must not over-trigger on complete answers)."""
+    agent = _loop_agent([("", "All done.", None, "stop")])
+    agent._run_conversation_loop(object())
+    calls = [r for r in agent.history if r[0] == "assistant"]
+    assert calls and calls[-1][1] == "All done."
+    nudges = [r for r in agent.history if r[0] == "user" and "cut off" in r[1]]
+    assert not nudges
+
+
 # ── session-start gating (the stale-unread-mail fix) ─────────────────────────
 
 def _bridge(session_start=None):
@@ -1040,6 +1086,17 @@ def test_strip_voice_blocks_voice_only_text():
     assert email_smtp._strip_voice_blocks(
         "\n<voice>All done, sir.</voice>\n"
     ) == ""
+
+
+def test_strip_voice_blocks_unclosed_tag_keeps_payload():
+    """A reply ending in a mistyped ``</voice`` (no closing ``>``) must NOT
+    be reduced to the text before the voice tag — the payload is kept so a
+    malformed tag can never turn a whole reply into an empty email."""
+    from nbchat.core import email_smtp
+    text = "All done, sir. Here is the summary.\n<voice>Apologies, sir. I am here.</voice"
+    out = email_smtp._strip_voice_blocks(text)
+    assert "All done, sir. Here is the summary." in out
+    assert "Apologies, sir. I am here." in out
 
 
 def test_strip_voice_blocks_leaves_plain_text_alone():

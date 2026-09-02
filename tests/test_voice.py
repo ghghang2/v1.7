@@ -89,6 +89,36 @@ class TestVoiceTagParser:
         assert display == "end "
         assert blocks == []
 
+    # -- unclosed / mistyped close-tag recovery (the "no response" bug) --
+
+    def test_unclosed_close_holds_not_swallows(self):
+        """A mistyped ``</voice`` (missing >) can never match the close
+        pattern.  The payload must be held in the buffer, not silently
+        dropped, so flush_unclosed() can release it at stream end."""
+        p = VoiceTagParser()
+        display, blocks = p.process("I am here, sir. <voice>The call failed.</voice")
+        assert display == "I am here, sir. "
+        assert blocks == []
+        held = p.flush_unclosed()
+        assert held.startswith("<voice>The call failed.</voice")
+
+    def test_flush_unclosed_empty_when_nothing_held(self):
+        p = VoiceTagParser()
+        assert p.flush_unclosed() == ""
+
+    def test_strip_static_recovers_unclosed_payload(self):
+        """strip() must keep the payload after a mistyped close tag instead
+        of dropping everything from the open tag onward."""
+        out = VoiceTagParser.strip(
+            "First line.\n<voice>Apologies, sir. I am here.</voice The rest survived."
+        )
+        assert "First line." in out
+        assert "Apologies, sir. I am here." in out
+        assert "The rest survived." in out
+
+    def test_strip_static_complete_blocks_unchanged(self):
+        assert VoiceTagParser.strip("A <voice>hidden</voice> B") == "A  B"
+
     def test_realistic_stream(self):
         p = VoiceTagParser()
         full = "Very well, sir. <voice>I shall begin now.</voice> Working..."

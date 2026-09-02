@@ -92,8 +92,15 @@ def _strip_voice_blocks(text: str) -> str:
             break
         j = rest.find("</voice>", i + len("<voice>"))
         if j < 0:
-            # Unterminated tag: drop it and everything after.
+            # Unterminated tag — a mistyped close such as ``</voice`` can
+            # never match.  Keep the payload; never drop the text that
+            # follows a malformed tag (that is how a malformed tag turned a
+            # whole reply into an empty email / blank terminal output).
+            payload = rest[i + len("<voice>"):]
+            if payload.rstrip().endswith("</voice"):
+                payload = payload[: -len("</voice")]
             out += rest[:i]
+            out += payload
             break
         out += rest[:i]
         rest = rest[j + len("</voice>"):]

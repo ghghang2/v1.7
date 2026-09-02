@@ -350,6 +350,16 @@ class TerminalAgent(ContextMixin, ConversationMixin):
         if self._content_started or self._reasoning_printed:
             sys.stdout.write("\n")
             sys.stdout.flush()
+        # Recover a held-but-unclosed <voice> payload (e.g. the model
+        # emitted a mistyped </voice close tag).  Without this, everything
+        # after the stray open tag is held in the parser buffer and
+        # silently dropped from the rendered reply.  The payload is part of
+        # ``content`` (already captured in _last_response), so we only
+        # need to make it visible here.
+        held = self._voice_parser.flush_unclosed()
+        if held:
+            sys.stdout.write(held)
+            sys.stdout.flush()
         if content:
             self._last_response = content
         # Reset streaming state for the next LLM call in the loop.

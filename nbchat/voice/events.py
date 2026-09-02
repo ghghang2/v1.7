@@ -125,11 +125,46 @@ class VoiceTagParser:
             self._buf = self._buf[j + len(self._CLOSE):]
         return "".join(display_parts), blocks
 
+    def flush_unclosed(self) -> str:
+        """Release any held-but-unclosed voice payload as display text.
+
+        Call exactly once when the stream is known to be finished (the
+        model emitted an open tag whose close tag never arrived, e.g. a
+        mistyped ``</voice``).  The held payload — beginning with the
+        original ``<voice>`` marker — is returned verbatim so downstream
+        consumers can recover their text instead of dropping it.
+        Returns ``""`` when nothing is held.
+        """
+        held = self._buf
+        self._buf = ""
+        return held
+
     @staticmethod
     def strip(text: str) -> str:
-        """Remove all complete ``<voice>`` blocks from a full string."""
-        out, _ = VoiceTagParser().process(text)
-        return out
+        """Remove ``<voice>`` blocks from a full string.
+
+        Complete blocks are removed.  An *unclosed* open tag — a model typo
+        such as ``</voice`` that can never match ``</voice>`` — is treated
+        as a marker whose payload must survive: the payload is kept and the
+        stray tags are removed, so a reply ending in a mistyped close tag
+        is never silently discarded.
+        """
+        p = VoiceTagParser()
+        display, _ = p.process(text)
+        display += p.flush_unclosed()
+        out: list[str] = []
+        rest = display
+        while "<voice>" in rest:
+            i = rest.find("<voice>")
+            j = rest.find("</voice>", i + len(VoiceTagParser._OPEN))
+            out.append(rest[:i])
+            if j < 0:
+                out.append(rest[i + len(VoiceTagParser._OPEN):])
+                rest = ""
+            else:
+                rest = rest[j + len(VoiceTagParser._CLOSE):]
+        out.append(rest)
+        return "".join(out)
 
 
 # ---------------------------------------------------------------------------

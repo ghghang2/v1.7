@@ -139,12 +139,24 @@ class ConversationMixin:
                     ", and", ", the", ", that", ", it",
                     " then", " now", " let", " i will",
                 ))
-                _truncated = (finish_reason == "length") or _ends_unfinished
+                # An unclosed <voice> open tag (a mistyped close such as
+                # ``</voice`` can never match the parser's close pattern and
+                # holds the tail in the parser buffer) means the stream is
+                # malformed — treat it as a truncation and nudge instead of
+                # finalising a reply that ends on broken markup.
+                _voice_unclosed = bool(_tail) and (
+                    _tail.count("<voice>") > _tail.count("</voice>")
+                )
+                _truncated = (
+                    (finish_reason == "length") or _ends_unfinished
+                    or _voice_unclosed
+                )
                 if _truncated and turn < self.MAX_TOOL_TURNS:
                     _log.warning(
-                        "Possible truncation detected (finish_reason=%s, content_tail=%r). "
+                        "Possible truncation detected (finish_reason=%s, "
+                        "voice_unclosed=%s, content_tail=%r). "
                         "Injecting continue nudge instead of stopping.",
-                        finish_reason, (content or "")[-80:],
+                        finish_reason, _voice_unclosed, (content or "")[-80:],
                     )
                     nudge = (
                         "Your previous reply appears to have been cut off mid-sentence "
