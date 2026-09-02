@@ -7,6 +7,7 @@ streaming output hooks (which write to stdout / capture state).
 from __future__ import annotations
 
 import pytest
+import httpx
 
 from nbchat.tui import TerminalAgent, Palette, run  # noqa: F401  (run importable)
 from nbchat.tui.agent import short_arg, _arg_hint
@@ -288,6 +289,33 @@ class _Choice:
         self.delta = _Delta(content)
 
 
+class _TCFunc:
+    def __init__(self, name, arguments):
+        self.name = name
+        self.arguments = arguments
+
+
+class _TCCall:
+    def __init__(self, name, arguments):
+        self.index = 0
+        self.id = f"call_{name}"
+        self.type = "function"
+        self.function = _TCFunc(name, arguments)
+
+
+class _ChoiceTC:
+    """A choice whose delta carries one tool-call (SDK shape)."""
+    def __init__(self, name, arguments, finish_reason=None):
+        self.finish_reason = finish_reason
+        self.delta = _Delta(content=None, tool_calls=[
+            _TCCall(name, arguments)])
+
+
+class _ChunkTC:
+    """A stream chunk carrying one tool-call delta."""
+    def __init__(self, name, arguments, finish_reason=None):
+        self.choices = [_ChoiceTC(name, arguments, finish_reason)]
+
 class _Chunk:
     """Mimics an OpenAI stream chunk (empty choices == final usage chunk)."""
     def __init__(self, content=None, finish_reason=None):
@@ -376,6 +404,127 @@ def test_stream_response_omits_effort_when_default():
                            [{"role": "user", "content": "hi"}])
     assert "reasoning_effort" not in captured
 
+
+# ─── mid-stream transport errors: retry + continue nudge ───
+# Regression (2026-09-02): the inference backend dropped the HTTP connection
+# mid-stream ("peer closed connection without sending complete message
+# body"); the exception escaped the turn and the user saw a reply cut off
+# mid-sentence with no recovery.  The loop must instead route the partial
+# content through the continuation path and retry the LLM call.
+
+
+class _StreamingClient:
+    """Client whose ``chat.completions.create`` yields scripted streams.
+
+    Each scenario is a list of events: content strings (the final one
+    carries ``finish_reason="stop"``), ``TC:<text>`` (a tool-call delta),
+    or Exception instances (the stream dies there, mimicking an httpx
+    transport error mid-body).
+    """
+
+    def __init__(self, scenarios):
+        self.scenarios = list(scenarios)
+        self.captured_calls = 0
+
+    @property
+    def chat(self):
+        return self
+
+    def __getattr__(self, name):
+        if name == "completions":
+            return self
+        raise AttributeError(name)
+
+    def create(self, **kwargs):
+        self.captured_calls += 1
+        if not self.scenarios:
+            raise AssertionError("stream requested more times than scripted")
+        return iter(_scripted_chunks(self.scenarios.pop(0)))
+
+
+def _scripted_chunks(scenario):
+    for i, ev in enumerate(scenario):
+        if isinstance(ev, BaseException):
+            raise ev
+        if ev.startswith("TC:"):
+            # "TC:<name>:<arguments>" -> a tool-call delta chunk.
+            _name, _args = ev[3:].split(":", 1)
+            yield _ChunkTC(_name, _args)
+        else:
+            yield _Chunk(content=ev,
+                         finish_reason=("stop"
+                                         if i == len(scenario) - 1
+                                         else None))
+
+
+def _stream_agent(client):
+    from nbchat.tui.agent import TerminalAgent
+    agent = TerminalAgent(color=False)
+    # Capture agent notices without rendering them.
+    agent._agent_notices = []
+    agent._on_agent_message = lambda t: agent._agent_notices.append(t)
+    return agent
+
+
+def test_stream_drop_with_partial_content_is_retried():
+    """A mid-stream transport error after content was rendered must not
+    kill the turn: the partial reply is logged, a continue nudge is
+    injected, and the LLM call is retried."""
+    client = _StreamingClient([
+        ["Partial reply ", "sent but the ", "connection died"],
+        ["Recovered and finished."],
+    ])
+    client.scenarios[0].append(httpx.RemoteProtocolError("peer closed"))
+    agent = _stream_agent(client)
+    agent._run_conversation_loop(client)
+    assert client.captured_calls == 2
+    asst = [r for r in agent.history if r[0] == "assistant"]
+    assert asst[0][1] == "Partial reply sent but the connection died"
+    nudges = [r for r in agent.history if r[0] == "user"
+              and "cut off mid-sentence" in r[1]]
+    assert len(nudges) == 1
+    assert any("stream interrupted" in n for n in agent._agent_notices)
+
+
+def test_stream_drop_retries_bounded():
+    """A stream that dies mid-content every time must not loop forever:
+    after MAX_STREAM_RETRIES continue attempts the error propagates."""
+    from nbchat.ui.conversation import MAX_STREAM_RETRIES
+    client = _StreamingClient([
+        ["partial one"],
+        ["partial two"],
+        ["partial three"],
+    ])
+    for s in client.scenarios:
+        s.append(httpx.RemoteProtocolError("peer closed"))
+    agent = _stream_agent(client)
+    with pytest.raises(Exception):
+        agent._run_conversation_loop(client)
+    assert client.captured_calls == MAX_STREAM_RETRIES + 1
+
+
+def test_stream_drop_with_no_content_propagates():
+    """No content rendered yet (the drop happened before any token):
+    nothing to continue, so the error must propagate as before."""
+    client = _StreamingClient([
+        [httpx.RemoteProtocolError("peer closed")],
+    ])
+    agent = _stream_agent(client)
+    with pytest.raises(Exception):
+        agent._run_conversation_loop(client)
+    assert client.captured_calls == 1
+
+
+def test_stream_drop_after_tool_call_propagates():
+    """A partial tool call cannot be trusted (it may be half-written):
+    the error must propagate rather than be 'continued'."""
+    client = _StreamingClient([
+        ["TC:run_command:partial-args", httpx.RemoteProtocolError("peer closed")],
+    ])
+    agent = _stream_agent(client)
+    with pytest.raises(Exception):
+        agent._run_conversation_loop(client)
+    assert client.captured_calls == 1
 
 # ── /model speed stats (last 50 turns) ─────────────────────────────────────
 

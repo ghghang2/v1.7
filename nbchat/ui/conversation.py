@@ -45,6 +45,30 @@ _PARAM_RE = re.compile(
 
 _TOOL_OPEN_RE = re.compile(r"<tool_call>")
 
+# How many times a single turn will retry an LLM call that died mid-stream
+# on a transport error (the peer closed the connection before the message
+# body was complete).  The retry is only attempted when partial content was
+# already rendered: that text stays in the transcript, so the model is
+# nudged to continue from the break point rather than restarting.
+MAX_STREAM_RETRIES = 2
+
+class MidStreamError(Exception):
+    """An LLM stream died mid-call before the message body was complete.
+
+    Carries whatever the interrupted call had already produced (partial
+    content, reasoning, and any partial tool calls) so the conversation
+    loop can continue from the break point — or ask the model to re-issue
+    a half-streamed tool call — instead of losing the partial reply and
+    killing the whole turn.
+    """
+
+    def __init__(self, cause, content: str, reasoning: str,
+                 tool_calls: list | None):
+        super().__init__(str(cause))
+        self.cause = cause
+        self.content = content or ""
+        self.reasoning = reasoning or ""
+        self.tool_calls = tool_calls or None
 
 def _recover_text_tool_calls(content: str) -> list[dict] | None:
     """Parse legacy XML <tool_call> blocks out of assistant *text*.
@@ -164,7 +188,60 @@ class ConversationMixin:
                 len(messages[1]["content"])
                 if len(messages) > 2 and messages[1].get("role") == "user" else 0
             )
-            reasoning, content, tool_calls, finish_reason = self._stream_response(client, messages)
+            reasoning, content, tool_calls, finish_reason = (None, "", None, None)
+            _stream_exc = None
+            for _attempt in range(MAX_STREAM_RETRIES + 1):
+                try:
+                    reasoning, content, tool_calls, finish_reason = self._stream_response(
+                        client, messages
+                    )
+                    _stream_exc = None
+                    break
+                except MidStreamError as exc:
+                    # A mid-stream transport error leaves the partial reply
+                    # already rendered on screen and about to be lost: the
+                    # exception used to escape the whole turn.  Route it
+                    # through the same continuation path as the truncation
+                    # guard below — the model continues exactly where it
+                    # stopped — instead of killing the turn.  A partial
+                    # tool call cannot be trusted (it may be half-written)
+                    # so it is discarded; the nudge tells the model to
+                    # re-issue it.  If nothing was rendered yet there is
+                    # nothing to continue, so the error propagates as before.
+                    _stream_exc = exc
+                    if not exc.content or exc.tool_calls:
+                        raise exc
+                    if exc.reasoning:
+                        with self._history_lock:
+                            self.history.append(
+                                ("analysis", exc.reasoning, "", "", "", 0))
+                        db.log_message(self.session_id, "analysis", exc.reasoning)
+                    # Finalise the interrupted portion on screen: the hook
+                    # writes the closing newline, recovers a held unclosed
+                    # <voice> payload, and resets per-call render state so
+                    # the continuation streams cleanly from an empty buffer.
+                    self._on_stream_complete(exc.content, None)
+                    self._on_agent_message(
+                        f"Reply stream interrupted ({type(exc.cause).__name__}); "
+                        "asking the model to continue."
+                    )
+                    _nudge = (
+                        "Your previous reply was cut off mid-sentence because "
+                        "the connection to the model dropped. Please continue "
+                        "from exactly where you left off. Do NOT repeat the "
+                        "content you already output. If you were about to "
+                        "call a tool, call it now."
+                    )
+                    with self._history_lock:
+                        self.history.append(("assistant", exc.content, "", "", "", 0))
+                    db.log_message(self.session_id, "assistant", exc.content)
+                    with self._history_lock:
+                        self.history.append(("user", _nudge, "", "", "", 0))
+                    db.log_message(self.session_id, "user", _nudge)
+                    messages.append({"role": "assistant", "content": exc.content})
+                    messages.append({"role": "user", "content": _nudge})
+            if _stream_exc is not None:
+                raise _stream_exc
 
             try:
                 monitor.record_llm_call(volatile_len)
@@ -441,7 +518,15 @@ class ConversationMixin:
         except Exception as exc:
             if "now finding less tool calls" in str(exc):
                 _log.warning("SDK diff error: tool_buffer=%s finish=%s", json.dumps(tool_buffer), finish_reason)
-            raise
+            # A transport error mid-stream leaves partial output already
+            # rendered on screen.  Surface it on the exception so the
+            # conversation loop can decide whether to continue from the
+            # break point (partial content) or re-run the call (nothing
+            # rendered yet / partial tool call that cannot be trusted).
+            raise MidStreamError(
+                exc, content_accum, reasoning_accum,
+                [tool_buffer[i] for i in sorted(tool_buffer)] or None,
+            ) from exc
 
         tool_calls = [tool_buffer[i] for i in sorted(tool_buffer)] if tool_buffer else None
         self._on_stream_complete(content_accum, tool_calls)
