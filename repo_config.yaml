@@ -29,7 +29,14 @@ max_history_turns: 10
 # Max completion tokens per LLM call.  Must be a real token count (not a
 # char count) or llama.cpp silently truncates the output mid-tool-call,
 # causing the agent to stop prematurely.
-max_llm_output_tokens: 8192
+# NOTE: with --reasoning on, reasoning tokens are counted INSIDE this
+# budget (the server carves out up to --reasoning-budget 4096 of it).
+# A cap that only covers content truncates reasoning-heavy turns
+# mid-reply (finish_reason="length"), tripping the truncation-guard
+# nudge and making the agent "stop midway".  Keep it comfortably above
+# reasoning_budget + expected content (32768 = 4096 reasoning + ~28k
+# content; ctx_size 131072 leaves ample headroom).
+max_llm_output_tokens: 32768
 
 port: 8080
 n_parallel: 1
