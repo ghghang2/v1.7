@@ -162,7 +162,12 @@ TEAM_MAX_DELEGATION_DEPTH: int = int(
 # Planning retries on unparseable/truncated plan output before the
 # coordinator falls back to running the goal as a single task.
 TEAM_PLAN_ATTEMPTS: int = int(_cfg.get("team_plan_attempts", 2))
-
+# Character budgets for the synthesis report (team.py:run).  A worker
+# summary longer than TEAM_SUMMARY_MAX_CHARS is clipped keeping BOTH
+# ends (final answers sit at the tail) with a marker; if the whole
+# report exceeds TEAM_REPORT_MAX_CHARS the per-summary budget shrinks.
+TEAM_SUMMARY_MAX_CHARS: int = int(_cfg.get("team_summary_max_chars", 4096))
+TEAM_REPORT_MAX_CHARS: int = int(_cfg.get("team_report_max_chars", 32768))
 # Voice channel (Alfred) — laptop bridge over an SSH tunnel.
 VOICE_ENABLED: bool = bool(_cfg.get("voice_enabled", False))
 VOICE_PORT: int = int(_cfg.get("voice_port", 8765))
@@ -257,6 +262,8 @@ __all__ = [
     "TEAM_MAX_SUBTASKS",
     "TEAM_MAX_DELEGATION_DEPTH",
     "TEAM_PLAN_ATTEMPTS",
+    "TEAM_SUMMARY_MAX_CHARS",
+    "TEAM_REPORT_MAX_CHARS",
     # Voice channel (Alfred)
     "VOICE_ENABLED",
     "VOICE_PORT",

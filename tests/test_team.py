@@ -29,6 +29,7 @@ from nbchat.core.team import (
     _default_worker_prompt,
     _extract_json,
     _parse_tasks,
+    _clip_summary,
     _sanitize_plan,
 )
 
@@ -425,3 +426,90 @@ def test_run_worker_exception_is_not_fatal(monkeypatch):
     assert res == "done"   # overall success as long as at least one succeeded
 
 
+
+
+# ---------------------------------------------------------------------------
+# Synthesis-report clipping (the 2026-09-04 /team incident: a head-only
+# 500-char slice lopped the final answer off a worker's summary)
+# ---------------------------------------------------------------------------
+
+def test_clip_summary_short_passes_through():
+    s = "Answer: 13 days"
+    assert _clip_summary(s, 1000) == s
+    assert _clip_summary("", 1000) == ""
+
+
+def test_clip_summary_keeps_head_and_tail():
+    # Final answer sits at the END — must survive clipping.
+    body = "Investigation notes. " * 300
+    summary = body + "Coordinates: lat 38.0693586, lon -78.9099644"
+    out = _clip_summary(summary, 1000)
+    assert len(out) <= 1000
+    assert "Coordinates: lat 38.0693586, lon -78.9099644" in out
+    assert out.startswith(body[:100])
+    assert "[summary clipped: middle omitted]" in out
+
+
+def test_clip_summary_tiny_budget_still_bounded():
+    s = "x" * 5000
+    out = _clip_summary(s, 50)
+    assert len(out) <= 50
+
+
+def _make_coordinator_plain(monkeypatch, plan, synth="Report ok."):
+    from nbchat.core.client import _FakeLLM  # noqa: F401  (if present)
+    import nbchat.core.client as client_mod
+
+    client = type(
+        "_Client",
+        (),
+        {
+            "calls": [],
+            "responses": [plan, synth],
+            "model_name": "fake",
+        },
+    )
+
+    def _fake_call(**kw):
+        client.calls.append(kw)
+        return client.responses.pop(0)
+
+    client.call = _fake_call
+    monkeypatch.setattr(client_mod, "get_client", lambda: client)
+    agent = TeamAgent()
+    agent.session_id = f"team:test-{uuid.uuid4().hex[:8]}"
+    coord = TeamCoordinator(agent, worker_factory=_FakeWorker)
+    return coord
+
+
+def test_build_report_clips_long_summary(monkeypatch):
+    import nbchat.core.config as config
+
+    agent = TeamAgent()
+    agent.session_id = f"team:test-{uuid.uuid4().hex[:8]}"
+    coord = TeamCoordinator(agent)
+    long_summary = ("notes. " * 2000) + "Answer: 13 days"
+    tasks = [Task("t1", "obj", title="UFC days",
+                  status="done", summary=long_summary)]
+    report = coord._build_report(tasks)
+    assert "Answer: 13 days" in report           # tail preserved
+    assert "[summary clipped: middle omitted]" in report
+
+
+def test_build_report_total_budget_shrinks_per_summary(monkeypatch):
+    import nbchat.core.config as config
+
+    agent = TeamAgent()
+    agent.session_id = f"team:test-{uuid.uuid4().hex[:8]}"
+    coord = TeamCoordinator(agent)
+    monkeypatch.setattr(config, "TEAM_REPORT_MAX_CHARS", 6000)
+    monkeypatch.setattr(config, "TEAM_SUMMARY_MAX_CHARS", 4096)
+    tasks = [
+        Task(f"t{i}", "obj", title=f"task {i}", status="done",
+             summary=f"body {i}. " * 400 + f"Answer: {i}")
+        for i in range(8)
+    ]
+    report = coord._build_report(tasks)
+    assert len(report) <= 6000
+    for i in range(8):
+        assert f"Answer: {i}" in report          # every answer survives

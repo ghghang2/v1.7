@@ -205,8 +205,6 @@ def _parse_tasks(plan_text: str, max_tasks: int = 8) -> list:
     if not tasks:
         raise PlanParseError(PLAN_PARSE_FAILED, "plan contains no usable tasks")
     return tasks
-
-
 # ---------------------------------------------------------------------------
 # ToolArbiter
 # ---------------------------------------------------------------------------
@@ -700,6 +698,11 @@ user-facing final report in plain text: what was accomplished, key
 findings, which tasks failed or were interrupted and why, and recommended
 next steps.  Be concise.  Do NOT invent results that are not present in
 the report.
+If a summary carries a "[summary clipped: middle omitted]" marker,
+the middle of that worker's summary was dropped for length.  Use
+whatever remains (the final answer, if any, sits in the clipped
+tail) and state plainly in the report that the middle was omitted
+-- never fill the gap with guessed content.
 """
 
 
@@ -724,10 +727,16 @@ def _default_worker_prompt() -> str:
         "parallel — NEVER report that you are the only worker available "
         "when slots are free.  You MUST NOT delegate work that depends "
         "on your own task's outcome, and delegated subtasks must be "
-        "fully self-contained.  When finished, reply with a concise "
-        "summary of exactly what you did and the key results.  Do NOT "
-        "run the full test suite and do NOT push to git; the coordinator "
-        "handles verification and publishing after the team run."
+        "fully self-contained.  When finished, reply with a TIGHT final "
+        "summary (target <= 400 words): put the concrete result(s) "
+        "the task asked for at the VERY END of the summary (the "
+        "coordinator reports your final answer), preceded by at most a "
+        "one-line source/caveat.  Do NOT paste raw tool output, page "
+        "text, or step-by-step narration into the summary \u2014 the "
+        "coordinator only needs the answer, the value(s), and any "
+        "confidence caveat.  Do NOT run the full test suite and do NOT "
+        "push to git; the coordinator handles verification and "
+        "publishing after the team run."
     )
 
 
@@ -820,6 +829,28 @@ def _worker_run(worker, objective: str) -> str:
     if not callable(fn):
         fn = worker.send
     return fn(objective)
+
+
+def _clip_summary(summary: str, budget: int) -> str:
+    """Clip a task summary to *budget* chars, keeping BOTH ends.
+
+    Final answers (coordinates, totals, verdicts) usually sit at the
+    END of a worker summary, so a head-only slice can drop exactly the
+    result the user asked for (2026-09-04 /team incident: a 500-char
+    head slice lopped the latitude/longitude off an 832-char summary
+    and the synthesis model — told not to invent results — reported
+    the task incomplete).  When clipping is unavoidable the omission
+    is marked so the synthesis model knows data is missing.
+    """
+    s = (summary or "").strip()
+    if len(s) <= budget:
+        return s
+    marker = " ... [summary clipped: middle omitted] ... "
+    room = budget - len(marker)
+    if room < 4:  # budget can't hold marker + both ends: plain head clip
+        return s[:budget]
+    per_end = room // 2
+    return s[:per_end] + marker + s[-per_end:]
 
 
 # ---------------------------------------------------------------------------
@@ -1400,11 +1431,7 @@ class TeamCoordinator:
         top = [t for t in queue._tasks.values() if t.parent_id is None]
         subs = [t for t in queue._tasks.values() if t.parent_id is not None]
         all_tasks = top + subs
-        report = "Team task report:\n" + "\n".join(
-            f"- [{t.status}] {t.title or t.task_id}"
-            + (f" (subtask of {t.parent_id})" if t.parent_id else "")
-            + f": {t.summary[:500]}"
-            for t in all_tasks)
+        report = self._build_report(all_tasks)
         if result == "interrupted":
             summary = f"Team run interrupted. {report}"
         else:
@@ -1424,6 +1451,40 @@ class TeamCoordinator:
             print("  " + line)
         print()
         return self._finish(result, summary, all_tasks)
+
+    def _build_report(self, tasks: list) -> str:
+        """Compose the synthesis report with a per-summary and a total
+        character budget.
+
+        Each summary is clipped with :func:`_clip_summary` (both ends
+        kept, omission marked) at ``TEAM_SUMMARY_MAX_CHARS``; if the
+        combined report still exceeds ``TEAM_REPORT_MAX_CHARS`` the
+        per-summary budget shrinks proportionally (never below 200
+        chars) and the report is rebuilt once, so the whole report
+        stays inside a comfortable share of the synthesis context
+        window even on a 16-task run.
+        """
+        def _line(t, budget: int) -> str:
+            head = (f"- [{t.status}] {t.title or t.task_id}"
+                    + (f" (subtask of {t.parent_id})" if t.parent_id else "")
+                    + ": ")
+            return head + _clip_summary(t.summary, budget)
+
+        budget = max(200, config.TEAM_SUMMARY_MAX_CHARS)
+        report = "Team task report:\n" + "\n".join(_line(t, budget)
+                                                   for t in tasks)
+        total_budget = config.TEAM_REPORT_MAX_CHARS
+        if len(report) > total_budget and len(tasks):
+            overhead = (len("Team task report:\n") + len(tasks)  # newlines
+                        + sum(len(f"- [{t.status}] {t.title or t.task_id}"
+                                  + (f" (subtask of {t.parent_id})"
+                                     if t.parent_id else "") + ": ")
+                              for t in tasks))
+            per_summary = (total_budget - overhead) // max(1, len(tasks))
+            budget = max(200, min(budget, per_summary))
+            report = "Team task report:\n" + "\n".join(_line(t, budget)
+                                                       for t in tasks)
+        return report
 
     def _plan_tasks(self, goal: str) -> list:
         """Call the planner LLM, retrying up to TEAM_PLAN_ATTEMPTS times."""
