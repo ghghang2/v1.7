@@ -32,3 +32,7 @@ repo_overview.md
 
 # --- Stale runtime state ---
 *.pid
+
+# SQLite WAL runtime artifacts
+*.db-shm
+*.db-wal

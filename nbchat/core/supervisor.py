@@ -145,7 +145,10 @@ def _server_info() -> dict:
 def _task_stats() -> dict:
     """Return task completion statistics from the chat_log table."""
     try:
-        with sqlite3.connect(db.DB_PATH) as conn:
+        # Route through db._connect() so this read carries the shared
+        # busy_timeout (a contended DB then raises a catchable
+        # OperationalError instead of blocking the supervisor thread).
+        with db._connect() as conn:
             # Count user turns (proxy for "tasks")
             rows = conn.execute(
                 "SELECT session_id, COUNT(*) as n, "

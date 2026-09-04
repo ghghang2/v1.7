@@ -608,3 +608,63 @@ def test_model_command_speed_placeholder_when_no_data(capsys, tmp_path,
     assert handle_command(agent, "/model") is False
     out = capsys.readouterr().out
     assert "speed   - (no inference data yet)" in out
+
+
+# ── Session-id resolution (bare vs prefixed) ─────────────────────────────
+# Regression: the TUI shows and accepts bare session ids (e.g.
+# "8ac30abd8aec") but rows are stored under the namespaced id
+# ("tui:8ac30abd8aec"), so /load <bare-id> silently loaded zero rows.
+
+
+@pytest.fixture()
+def db_env(tmp_path, monkeypatch):
+    """Point nbchat.core.db at a throwaway database."""
+    from nbchat.core import db
+    db_path = tmp_path / "test_chat_history.db"
+    monkeypatch.setattr(db, "DB_PATH", db_path)
+    db.init_db()
+    return db
+
+
+def test_normalize_prefers_prefixed_twin(db_env):
+    for _ in range(3):
+        db_env.log_message("tui:abc123def456", "user", "hi")
+    db_env.log_message("abc123def456", "user", "stray")
+    assert db_env.normalize_session_id("abc123def456") == "tui:abc123def456"
+
+
+def test_normalize_keeps_bare_when_no_twin(db_env):
+    db_env.log_message("solo12345678", "user", "hi")
+    assert db_env.normalize_session_id("solo12345678") == "solo12345678"
+
+
+def test_normalize_passes_through_unknown(db_env):
+    assert db_env.normalize_session_id("doesnotexist") == "doesnotexist"
+
+
+def test_switch_session_accepts_bare_id(db_env):
+    for i in range(3):
+        db_env.log_message("tui:abc123def456", "user", f"msg {i}")
+    agent = TerminalAgent(color=False)
+    agent._switch_session("abc123def456")
+    assert agent.session_id == "tui:abc123def456"
+    assert len(agent.history) == 3
+
+
+def test_load_command_bare_id_loads_history(db_env, capsys):
+    for i in range(2):
+        db_env.log_message("tui:abc123def456", "user", f"msg {i}")
+    agent = TerminalAgent(color=False)
+    assert handle_command(agent, "/load abc123def456") is False
+    out = capsys.readouterr().out
+    assert "Loaded session tui:abc123def456 (2 rows)" in out
+    handle_command(agent, "/history")
+    hist = capsys.readouterr().out
+    assert "msg 0" in hist and "msg 1" in hist
+
+
+def test_load_command_unknown_id_reports(db_env, capsys):
+    agent = TerminalAgent(color=False)
+    assert handle_command(agent, "/load no-such-id") is False
+    out = capsys.readouterr().out
+    assert "No such session: no-such-id" in out

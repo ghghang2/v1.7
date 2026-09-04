@@ -106,6 +106,18 @@ class ImportanceTracker:
 def _est_tokens(row: _Row) -> int:
     role, content, _, _, tool_args, _ = row
     chars = len(content or "") + len(tool_args or "")
+    # assistant_full rows store the full JSON message in tool_args, which
+    # duplicates the assistant content already counted above - estimate
+    # from the parsed message instead (content + tool-call arguments once).
+    if role == "assistant_full":
+        try:
+            msg = json.loads(tool_args or "{}")
+            chars = len(msg.get("content") or "") + sum(
+                len(tc.get("function", {}).get("arguments", ""))
+                for tc in (msg.get("tool_calls") or [])
+            )
+        except Exception:
+            pass
     return max(1, int(chars / (2.5 if role == "tool" else 4.0)))
 
 
@@ -162,6 +174,28 @@ def _group_by_user_turn(rows: List[_Row]) -> List[List[_Row]]:
 # ---------------------------------------------------------------------------
 # ContextMixin
 # ---------------------------------------------------------------------------
+
+def _drop_orphan_tool_messages(messages: List[dict]) -> None:
+    """Remove tool messages whose tool_call id has no matching assistant
+    tool_calls entry earlier in *messages* (mutates in place).
+
+    A ``role: "tool"`` message without a matching ``tool_call_id`` makes the
+    whole request API-invalid, so such rows are dropped instead of sent.
+    """
+    seen: set = set()
+    out: List[dict] = []
+    for m in messages:
+        role = m.get("role")
+        if role == "assistant":
+            seen.update(
+                tc.get("id", "") for tc in (m.get("tool_calls") or [])
+            )
+        elif role == "tool":
+            if m.get("tool_call_id") not in seen:
+                continue
+        out.append(m)
+    messages[:] = out
+
 
 class ContextMixin:
     """Mixed into ChatUI. Requires: history, task_log, system_prompt, model_name,
@@ -486,6 +520,8 @@ class ContextMixin:
         def total() -> int:
             return sum(est(m) for m in messages)
 
+        _total = total()
+
         def get_exchanges() -> list:
             result, i = [], 2
             while i < len(messages):
@@ -500,7 +536,19 @@ class ContextMixin:
             return result
 
         def drop_least_important(exchanges: list) -> None:
-            scored = [(self._importance_score(messages[s:e]), s, e) for s, e in exchanges]
+            def _score(s: int, e: int) -> float:
+                # Keep parity with the per-tool scoring path: include the
+                # first tool result, not just the compressed messages.
+                tool_content = ""
+                for j in range(s + 1, e):
+                    if messages[j].get("role") == "tool":
+                        tool_content = messages[j].get("content", "")
+                        break
+                return self._importance_score(
+                    messages[s:e], raw_result=tool_content
+                )
+
+            scored = [(_score(s, e), s, e) for s, e in exchanges]
             scored.sort(key=lambda x: x[0])
             score, s, e = scored[0]
             self._importance_tracker.record(score)
@@ -534,15 +582,21 @@ class ContextMixin:
             del messages[s:e]
 
         # Pass 1: drop least-important, protect KEEP_RECENT most recent exchanges
-        while total() > limit:
+        while _total > limit:
             exchanges = get_exchanges()
             droppable = exchanges[:-KEEP_RECENT] if len(exchanges) > KEEP_RECENT else []
             if not droppable:
                 break
+            ds, de = droppable[0]
+            _dropped_tokens = sum(est(m) for m in messages[ds:de])
+            _pre_note = len(messages[0].get("content", "")) if messages else 0
             drop_least_important(droppable)
+            if messages:
+                _total += max(0, int((len(messages[0].get("content", "")) - _pre_note) / 2.5))
+            _total -= _dropped_tokens
 
         # Pass 2: last resort — truncate the largest tool result
-        while total() > limit:
+        while _total > limit:
             tool_indices = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
             if not tool_indices:
                 break
@@ -550,7 +604,9 @@ class ContextMixin:
             original = messages[largest].get("content", "")
             if len(original) <= 200:
                 break
+            _before = est(messages[largest])
             messages[largest]["content"] = original[:200] + f"\n[...truncated {len(original) - 200} chars...]"
+            _total += est(messages[largest]) - _before
 
     # ── Task log ─────────────────────────────────────────────────────────────
 

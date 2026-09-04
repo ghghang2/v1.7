@@ -68,9 +68,9 @@ SUMMARY_PROMPT: |
   Do not include any preamble or closing remarks.
 
 # Context management constants
-window_turns: 8
-max_window_rows: 30
-max_exchanges: 50
+# window_turns / max_window_rows / max_exchanges were removed when windowing
+# moved to a token budget; the window is now token-budget based. Do not re-add.
+# keep_recent_exchanges overrides the code default of 5 in _hard_trim.
 keep_recent_exchanges: 30
 
 # Conversation loop constants

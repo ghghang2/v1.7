@@ -20,6 +20,8 @@ which is derived from the location of this file.
 from __future__ import annotations
 
 import json
+import os
+import signal
 import subprocess
 from pathlib import Path
 from typing import Dict, Optional
@@ -51,16 +53,39 @@ def _run_command(command: str, cwd: Optional[str] = None) -> str:
         repo_root = Path(__file__).resolve().parents[2]
         target_dir = repo_root
 
-        proc = subprocess.run(
+        # Hard wall-clock ceiling (see issues.md): a hung child used to
+        # block the tool-execution thread forever, wedging the agent.
+        # start_new_session puts the shell in its own process group so
+        # the timeout path can kill the shell AND everything it spawned.
+        timeout = int(os.environ.get("NBCAT_TOOL_TIMEOUT", 60))
+        proc = subprocess.Popen(
             command,
             shell=True,
             cwd=str(target_dir),
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
+            start_new_session=True,
         )
+        try:
+            out, err = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                proc.kill()
+            out, err = proc.communicate()
+            return json.dumps({
+                "error": (
+                    f"command timed out after {timeout}s and was killed; "
+                    f"the command is probably waiting on input or a lock"
+                ),
+                "stdout": (out or "")[-4000:],
+                "stderr": (err or "")[-2000:],
+            })
         result: Dict[str, str | int] = {
-            "stdout": proc.stdout,
-            "stderr": proc.stderr,
+            "stdout": out,
+            "stderr": err,
             "exit_code": proc.returncode,
         }
         return json.dumps(result)

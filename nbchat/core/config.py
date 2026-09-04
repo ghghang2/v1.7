@@ -84,6 +84,11 @@ LOSSLESS_WINDOW: int = int(_cfg["lossless_window"])
 
 # Context management parameters
 CONTEXT_BUDGET: int = CTX_SIZE//N_PARALLEL
+# Max chat_log rows loaded into memory when a session is opened/switched.
+# Older rows stay in the database (queryable) but are not rendered or
+# estimated: rendering thousands of rows costs tokens and screen time for
+# no benefit once a summary covers them.
+HISTORY_ROW_LIMIT: int = 2000
 CONTEXT_HEADROOM: float = float(_cfg["context_headroom_ratio"]) 
 PREFIX_TOKEN_RESERVE: int = int(_cfg["prefix_token_reserve"])
 PERSIST_FRACTION: float = float(_cfg["persist_fraction"]) 

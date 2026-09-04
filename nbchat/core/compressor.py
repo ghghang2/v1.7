@@ -13,14 +13,24 @@ from collections import defaultdict, deque
 from pathlib import Path
 from typing import Optional
 
-from .config import MAX_TOOL_OUTPUT_CHARS
+from .config import LOSSLESS_WINDOW, MAX_TOOL_OUTPUT_CHARS
 
 _log = logging.getLogger("nbchat.compaction")
-if not _log.handlers:
-    _h = logging.FileHandler("compaction.log", mode="a")
-    _h.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
-    _log.addHandler(_h)
-    _log.setLevel(logging.DEBUG)
+
+
+def _ensure_compaction_file_handler() -> None:
+    """Attach a DEBUG file handler to compaction.log, once.
+
+    Deliberately NOT done at import time: a CWD-relative FileHandler created
+    at import would write to an unpredictable location in a server
+    deployment. Callers that want the file log (local debugging) invoke this
+    explicitly; otherwise context events live in the context_events table.
+    """
+    if not _log.handlers:
+        _h = logging.FileHandler("compaction.log", mode="a")
+        _h.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+        _log.addHandler(_h)
+        _log.setLevel(logging.DEBUG)
 
 FILE_READ_TOOLS = frozenset({
     "read_file", "cat", "view_file", "get_file",
@@ -31,7 +41,8 @@ COMMAND_TOOLS = frozenset({
 })
 ALWAYS_KEEP_TOOLS = FILE_READ_TOOLS | COMMAND_TOOLS
 _STRUCTURED_EXTS = frozenset({".py", ".js", ".ts", ".jsx", ".tsx", ".json", ".yaml", ".yml"})
-_LOSSLESS_WINDOW = 10
+# Per-session state: lossless tool set + recent-compressed ring buffer
+# (window from config, see LOSSLESS_WINDOW)
 
 # Per-session state: lossless tool set + recent-compressed ring buffer
 _sessions: dict[str, dict] = {}
@@ -39,12 +50,12 @@ _sessions: dict[str, dict] = {}
 
 def _sess(session_id: str) -> dict:
     if session_id not in _sessions:
-        _sessions[session_id] = {"lossless": set(), "recent": deque(maxlen=_LOSSLESS_WINDOW)}
+        _sessions[session_id] = {"lossless": set(), "recent": deque(maxlen=LOSSLESS_WINDOW)}
     return _sessions[session_id]
 
 
 def init_session(session_id: str) -> None:
-    _sessions[session_id] = {"lossless": set(), "recent": deque(maxlen=_LOSSLESS_WINDOW)}
+    _sessions[session_id] = {"lossless": set(), "recent": deque(maxlen=LOSSLESS_WINDOW)}
 
 
 def clear_session(session_id: str) -> None:

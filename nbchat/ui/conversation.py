@@ -189,6 +189,12 @@ class ConversationMixin:
             )
             reasoning, content, tool_calls, finish_reason = (None, "", None, None)
             _stream_exc = None
+            # Invariant: assistant + nudge rows are appended to self.history
+            # AND the DB *inside* the attempt loop, once per partial stream.
+            # If a later attempt fails before any content, the partial rows
+            # from earlier attempts remain persisted and rendered -
+            # intentional; do not "simplify" the append placement into the
+            # loop's success path.
             for _attempt in range(config.MAX_STREAM_RETRIES + 1):
                 try:
                     reasoning, content, tool_calls, finish_reason = self._stream_response(
@@ -239,6 +245,17 @@ class ConversationMixin:
                     db.log_message(self.session_id, "user", _nudge)
                     messages.append({"role": "assistant", "content": exc.content})
                     messages.append({"role": "user", "content": _nudge})
+                    try:
+                        self._write_exchange_to_episodic(
+                            turn, "", "", exc.content or "",
+                            self._importance_score(
+                                [{"role": "assistant", "content": exc.content}],
+                                raw_result=exc.content or "",
+                            ),
+                        )
+                        self._update_l1_from_exchange("", "", exc.content or "")
+                    except Exception as _e:
+                        _log.debug("L1/L2 mid-stream nudge update failed: %s", _e)
             if _stream_exc is not None:
                 raise _stream_exc
 
@@ -305,6 +322,17 @@ class ConversationMixin:
                     db.log_message(self.session_id, "user", _nudge)
                     messages.append({"role": "assistant", "content": _clean})
                     messages.append({"role": "user", "content": _nudge})
+                    try:
+                        self._write_exchange_to_episodic(
+                            turn, "", "", _nudge,
+                            self._importance_score(
+                                [{"role": "assistant", "content": _clean}],
+                                raw_result=_clean,
+                            ),
+                        )
+                        self._update_l1_from_exchange("", "", _clean)
+                    except Exception as _e:
+                        _log.debug("L1/L2 re-emit nudge update failed: %s", _e)
                     continue
 
             if not tool_calls or finish_reason != "tool_calls":
@@ -356,6 +384,17 @@ class ConversationMixin:
                     db.log_message(self.session_id, "user", nudge)
                     messages.append({"role": "assistant", "content": content or None})
                     messages.append({"role": "user", "content": nudge})
+                    try:
+                        self._write_exchange_to_episodic(
+                            turn, "", "", nudge,
+                            self._importance_score(
+                                [{"role": "assistant", "content": content or ""}],
+                                raw_result=content or "",
+                            ),
+                        )
+                        self._update_l1_from_exchange("", "", content or "")
+                    except Exception as _e:
+                        _log.debug("L1/L2 truncation nudge update failed: %s", _e)
                     continue  # next turn of the loop
 
                 if content:

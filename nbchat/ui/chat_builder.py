@@ -43,6 +43,30 @@ def _scrub_tool_markup(content: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
+
+
+def _drop_orphan_tool_messages(messages: List[dict]) -> None:
+    """Remove tool messages whose tool_call id has no matching assistant
+    tool_calls entry earlier in *messages* (mutates in place).
+
+    A ``role: "tool"`` message without a matching ``tool_call_id`` makes the
+    whole request API-invalid, so such rows are dropped instead of sent.
+    """
+    seen: set = set()
+    out: List[dict] = []
+    for m in messages:
+        role = m.get("role")
+        if role == "assistant":
+            seen.update(
+                tc.get("id", "") for tc in (m.get("tool_calls") or [])
+            )
+        elif role == "tool":
+            if m.get("tool_call_id") not in seen:
+                continue
+        out.append(m)
+    messages[:] = out
+
+
 def build_messages(
     history: List[Tuple[str, str, str, str, str, int]],
     system_prompt: str,
@@ -124,6 +148,7 @@ def build_messages(
         elif role == "tool":
             messages.append({"role": "tool", "tool_call_id": tool_id, "content": content})
 
+    _drop_orphan_tool_messages(messages)
     return messages
 
 

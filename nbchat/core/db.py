@@ -71,6 +71,16 @@ def is_tool_error(tool_name: str, content: str) -> bool:
     heuristic so genuinely unstructured errors are still flagged.
     """
     if not tool_name or tool_name not in _STRUCTURED_TOOLS:
+        # Non-structured tools: if the payload is a JSON object with a
+        # machine-readable outcome, trust it (a successful call that merely
+        # prints the word "error" in its text was previously mislabelled as
+        # a failure). Keyword match stays as the non-JSON fallback.
+        try:
+            parsed = json.loads(content)
+            if isinstance(parsed, dict):
+                return _structured_error(parsed, tool_name)
+        except Exception:
+            pass
         return is_error_content(content)
     try:
         parsed = json.loads(content)
@@ -84,10 +94,11 @@ def is_tool_error(tool_name: str, content: str) -> bool:
                 return int(parsed["exit_code"]) != 0
             except (TypeError, ValueError):
                 return True
-    if tool_name == "run_tests":
-        if isinstance(parsed, dict):
-            return int(parsed.get("failed", 0) or 0) != 0 or \
-                int(parsed.get("errors", 0) or 0) != 0
+    if tool_name == "run_tests" and isinstance(parsed, dict) and (
+        "failed" in parsed or "errors" in parsed
+    ):
+        return int(parsed.get("failed", 0) or 0) != 0 or \
+            int(parsed.get("errors", 0) or 0) != 0
     if tool_name == "browser":
         if isinstance(parsed, dict):
             status = str(parsed.get("status", "")).lower()
@@ -96,17 +107,36 @@ def is_tool_error(tool_name: str, content: str) -> bool:
             if "error" in parsed and parsed["error"]:
                 return True
             return False
-    if isinstance(parsed, dict) and "result" in parsed:
+    # Parsed JSON payload: judge by the structured outcome keys only,
+    # never by keyword-scan of the text.  Non-dict JSON (list/scalar)
+    # carries no error marker.
+    if isinstance(parsed, dict):
         return _structured_error(parsed, tool_name)
-    return _structured_error(parsed, tool_name)
+    return False
 
 
 # ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------
 
+def _connect() -> sqlite3.Connection:
+    """Open a DB connection with a busy_timeout.
+
+    A contended database then raises a catchable ``OperationalError``
+    after ~2 s instead of blocking the calling thread indefinitely
+    (a wedge that froze the agent — see issues.md).
+    """
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA busy_timeout=2000")
+    return conn
+
+
 def init_db() -> None:
-    with sqlite3.connect(DB_PATH) as conn:
+    with _connect() as conn:
+        # Persistent across restarts; also converts a legacy
+        # rollback-journal database on first use.  Readers never block
+        # the writer, so a slow read cannot wedge the conversation loop.
+        conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS chat_log (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -168,7 +198,7 @@ def init_db() -> None:
 # ---------------------------------------------------------------------------
 
 def _meta_set(session_id: str, key: str, value: str) -> None:
-    with sqlite3.connect(DB_PATH) as conn:
+    with _connect() as conn:
         conn.execute(
             "INSERT INTO session_meta (session_id, key, value, ts) VALUES (?,?,?,CURRENT_TIMESTAMP) "
             "ON CONFLICT(session_id, key) DO UPDATE SET value=excluded.value, ts=excluded.ts",
@@ -178,11 +208,34 @@ def _meta_set(session_id: str, key: str, value: str) -> None:
 
 
 def _meta_get(session_id: str, key: str) -> str:
-    with sqlite3.connect(DB_PATH) as conn:
+    with _connect() as conn:
         row = conn.execute(
             "SELECT value FROM session_meta WHERE session_id=? AND key=?", (session_id, key)
         ).fetchone()
     return row[0] if row and row[0] else ""
+
+
+def normalize_session_id(session_id: str) -> str:
+    """Return the canonical ``chat_log`` id for a user-supplied session id.
+
+    The TUI shows and accepts the *bare* id (e.g. ``8ac30abd8aec``)
+    while the stored rows carry the namespace prefix (``tui:``,
+    ``wa:``).  A bare id resolves to its prefixed twin when one
+    exists; when both a bare and a prefixed row set exist, the one
+    with more history wins (that is the real session).  Unresolvable
+    ids pass through unchanged so callers can report them as unknown.
+    """
+    if not session_id:
+        return session_id
+    with _connect() as conn:
+        counts = {sid: n for sid, n in conn.execute(
+            "SELECT session_id, COUNT(*) FROM chat_log GROUP BY session_id")}
+    # Prefixed candidates first so a tie prefers the full history.
+    cands = [f"{p}{session_id}" for p in ("tui:", "wa:")] + [session_id]
+    known = [c for c in cands if c in counts]
+    if not known:
+        return session_id
+    return max(known, key=lambda s: counts[s])
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +243,7 @@ def _meta_get(session_id: str, key: str) -> str:
 # ---------------------------------------------------------------------------
 
 def log_message(session_id: str, role: str, content: str) -> None:
-    with sqlite3.connect(DB_PATH) as conn:
+    with _connect() as conn:
         conn.execute(
             "INSERT INTO chat_log (session_id, role, content, error_flag) VALUES (?,?,?,?)",
             (session_id, role, content, int(is_error_content(content))),
@@ -200,7 +253,7 @@ def log_message(session_id: str, role: str, content: str) -> None:
 
 def log_row(session_id: str, role: str, content: str,
             tool_id: str = "", tool_name: str = "", tool_args: str = "") -> None:
-    with sqlite3.connect(DB_PATH) as conn:
+    with _connect() as conn:
         conn.execute(
             "INSERT INTO chat_log (session_id, role, content, tool_id, tool_name, tool_args, error_flag) "
             "VALUES (?,?,?,?,?,?,?)",
@@ -212,7 +265,7 @@ def log_row(session_id: str, role: str, content: str,
 
 def log_tool_msg(session_id: str, tool_id: str, tool_name: str,
                  tool_args: str, content: str) -> None:
-    with sqlite3.connect(DB_PATH) as conn:
+    with _connect() as conn:
         conn.execute(
             "INSERT INTO chat_log (session_id, role, content, tool_id, tool_name, tool_args, error_flag) "
             "VALUES (?,'tool',?,?,?,?,?)",
@@ -229,7 +282,7 @@ def backfill_tool_rows() -> int:
     the stored one.  Returns the number of rows whose flag was corrected.
     """
     fixed = 0
-    with sqlite3.connect(DB_PATH) as conn:
+    with _connect() as conn:
         rows = conn.execute(
             "SELECT id, tool_name, COALESCE(content,'') FROM chat_log WHERE role='tool'"
         ).fetchall()
@@ -255,7 +308,7 @@ def backfill_assistant_full() -> int:
     have non-empty content are skipped.  Returns the number of rows updated.
     """
     fixed = 0
-    with sqlite3.connect(DB_PATH) as conn:
+    with _connect() as conn:
         rows = conn.execute(
             "SELECT id, tool_args FROM chat_log "
             "WHERE role='assistant_full' AND (content IS NULL OR content='')"
@@ -277,7 +330,7 @@ def backfill_assistant_full() -> int:
     return fixed
 
 def load_history(session_id: str, limit: int | None = None) -> list[tuple]:
-    with sqlite3.connect(DB_PATH) as conn:
+    with _connect() as conn:
         q = ("SELECT role, content, COALESCE(tool_id,''), COALESCE(tool_name,''), "
              "COALESCE(tool_args,''), error_flag FROM chat_log WHERE session_id=? ORDER BY id ASC")
         params: list = [session_id]
@@ -288,14 +341,14 @@ def load_history(session_id: str, limit: int | None = None) -> list[tuple]:
 
 
 def get_session_ids() -> list[str]:
-    with sqlite3.connect(DB_PATH) as conn:
+    with _connect() as conn:
         return [r[0] for r in conn.execute(
             "SELECT DISTINCT session_id FROM chat_log ORDER BY ts DESC"
         ).fetchall()]
 
 
 def replace_session_history(session_id: str, history: list[tuple]) -> None:
-    with sqlite3.connect(DB_PATH) as conn:
+    with _connect() as conn:
         conn.execute("DELETE FROM chat_log WHERE session_id=?", (session_id,))
         conn.executemany(
             "INSERT INTO chat_log (session_id, role, content, tool_id, tool_name, tool_args, error_flag) "
@@ -342,7 +395,7 @@ def load_task_log(session_id: str) -> list:
 
 def append_episodic(session_id: str, turn_id: int, action_type: str,
                     entity_refs: str, outcome_summary: str, importance_score: float) -> None:
-    with sqlite3.connect(DB_PATH) as conn:
+    with _connect() as conn:
         conn.execute(
             "INSERT INTO episodic_store (session_id, turn_id, action_type, entity_refs, "
             "outcome_summary, importance_score) VALUES (?,?,?,?,?,?)",
@@ -356,7 +409,7 @@ def query_episodic_by_entities(session_id: str, entity_refs: list[str], limit: i
         return []
     clauses = " OR ".join("entity_refs LIKE ?" for _ in entity_refs)
     params: list[Any] = [f"%{e}%" for e in entity_refs] + [session_id, limit]
-    with sqlite3.connect(DB_PATH) as conn:
+    with _connect() as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             f"SELECT id, turn_id, action_type, entity_refs, outcome_summary, importance_score "
@@ -368,7 +421,7 @@ def query_episodic_by_entities(session_id: str, entity_refs: list[str], limit: i
 
 
 def query_episodic_top_importance(session_id: str, min_score: float = 3.0, limit: int = 5) -> list[dict]:
-    with sqlite3.connect(DB_PATH) as conn:
+    with _connect() as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             "SELECT id, turn_id, action_type, entity_refs, outcome_summary, importance_score "
@@ -380,7 +433,7 @@ def query_episodic_top_importance(session_id: str, min_score: float = 3.0, limit
 
 
 def delete_episodic_for_session(session_id: str) -> None:
-    with sqlite3.connect(DB_PATH) as conn:
+    with _connect() as conn:
         conn.execute("DELETE FROM episodic_store WHERE session_id=?", (session_id,))
         conn.commit()
 
@@ -390,7 +443,7 @@ def delete_episodic_for_session(session_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 def get_core_memory(session_id: str) -> dict:
-    with sqlite3.connect(DB_PATH) as conn:
+    with _connect() as conn:
         rows = conn.execute(
             "SELECT key, value FROM core_memory WHERE session_id=?", (session_id,)
         ).fetchall()
@@ -400,7 +453,7 @@ def get_core_memory(session_id: str) -> dict:
 def update_core_memory(session_id: str, updates: dict) -> None:
     if not updates:
         return
-    with sqlite3.connect(DB_PATH) as conn:
+    with _connect() as conn:
         conn.executemany(
             "INSERT INTO core_memory (session_id, key, value, ts) VALUES (?,?,?,CURRENT_TIMESTAMP) "
             "ON CONFLICT(session_id, key) DO UPDATE SET value=excluded.value, ts=excluded.ts",
@@ -410,7 +463,7 @@ def update_core_memory(session_id: str, updates: dict) -> None:
 
 
 def clear_core_memory(session_id: str) -> None:
-    with sqlite3.connect(DB_PATH) as conn:
+    with _connect() as conn:
         conn.execute("DELETE FROM core_memory WHERE session_id=?", (session_id,))
         conn.commit()
 
@@ -434,16 +487,23 @@ def load_global_monitoring_stats() -> dict | None:
 
 
 def log_context_event(session_id: str, event_type: str, payload: dict) -> None:
-    with sqlite3.connect(DB_PATH) as conn:
+    with _connect() as conn:
         conn.execute(
             "INSERT INTO context_events (session_id, event_type, payload) VALUES (?,?,?)",
             (session_id, event_type, json.dumps(payload)),
+        )
+        # Retention cap: keep the last 5000 events per session (debugging
+        # telemetry only - bounded growth, no consumer reads further back).
+        conn.execute(
+            "DELETE FROM context_events WHERE session_id=? AND id NOT IN "
+            "(SELECT id FROM context_events WHERE session_id=? ORDER BY id DESC LIMIT 5000)",
+            (session_id, session_id),
         )
         conn.commit()
 
 
 def query_context_events(session_id: str, event_type: str | None = None, limit: int = 100) -> list[dict]:
-    with sqlite3.connect(DB_PATH) as conn:
+    with _connect() as conn:
         conn.row_factory = sqlite3.Row
         if event_type:
             rows = conn.execute(

@@ -258,7 +258,12 @@ class ChatUI(ContextMixin, ConversationMixin):
 
     def _load_history(self):
         with self._history_lock:
-            self.history = list(db.load_history(self.session_id))
+            self.history = list(
+                db.load_history(
+                    self.session_id,
+                    limit=int(getattr(config, "HISTORY_ROW_LIMIT", 2000)),
+                )
+            )
         self.task_log = db.load_task_log(self.session_id)
         self._turn_summary_cache = db.load_turn_summaries(self.session_id)
         self._render_history()

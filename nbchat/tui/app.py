@@ -26,6 +26,7 @@ import threading
 import urllib.request
 
 from nbchat.core import config
+from nbchat.core import db
 from nbchat.tui.agent import TerminalAgent
 
 _BANNER = """
@@ -112,9 +113,17 @@ def handle_command(agent: TerminalAgent, line: str, supervisor=None) -> bool:
         if not arg:
             print("usage: /load <session-id>")
         else:
-            agent._switch_session(arg)
-            agent.remember_session(arg)
-            print(f"Loaded session {arg} ({len(agent.history)} rows).")
+            canonical = db.normalize_session_id(arg)
+            if canonical not in set(db.get_session_ids()):
+                print(f"No such session: {arg}  (see /sessions)")
+            else:
+                agent._switch_session(canonical)
+                agent.remember_session(agent.session_id)
+                if not agent.history:
+                    print(f"Loaded session {agent.session_id} (no history rows).")
+                else:
+                    print(f"Loaded session {agent.session_id} "
+                          f"({len(agent.history)} rows).")
     elif cmd == "/history":
         rows = agent.history
         if not rows:
@@ -340,7 +349,12 @@ def run(argv: list[str] | None = None) -> int:
     agent = TerminalAgent(color=not args.no_color)
 
     if args.session:
-        agent._switch_session(args.session)
+        sid = db.normalize_session_id(args.session)
+        if sid not in set(db.get_session_ids()):
+            print(f"No such session: {args.session}  (see /sessions)",
+                  file=sys.stderr)
+            return 1
+        agent._switch_session(sid)
     elif not args.new:
         last = TerminalAgent.last_session()
         if last:

@@ -23,6 +23,7 @@ def _run_tests() -> str:
             ["pytest", "-q"],
             capture_output=True,
             text=True,
+            timeout=120,
             cwd=Path(__file__).resolve().parents[2],  # repo root
         )
 

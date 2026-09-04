@@ -107,10 +107,23 @@ class TerminalAgent(ContextMixin, ConversationMixin):
 
     def _switch_session(self, session_id: str) -> None:
         """Load history for *session_id* into this agent instance."""
+        # Accept bare ids (as shown by /sessions and stored in the
+        # last_session meta) and resolve them to the canonical
+        # prefixed id, since history/meta rows are stored under the
+        # prefixed form.
+        session_id = db.normalize_session_id(session_id)
         if session_id == self.session_id:
             return
         self.session_id = session_id
-        self.history = list(db.load_history(session_id))
+        # History is capped at load (see HISTORY_ROW_LIMIT): older rows
+        # exist in the DB and are summarized by prior-context; rendering
+        # them all costs tokens and screen time for nothing.
+        self.history = list(
+            db.load_history(
+                session_id,
+                limit=int(getattr(config, "HISTORY_ROW_LIMIT", 2000)),
+            )
+        )
         self.task_log = db.load_task_log(session_id)
         self._turn_summary_cache = db.load_turn_summaries(session_id)
         comp.init_session(session_id)
@@ -140,7 +153,11 @@ class TerminalAgent(ContextMixin, ConversationMixin):
             self.history = []
         self.task_log = []
         self._turn_summary_cache = {}
-        self._summary_futures = {}
+        # Clear the summary-future bookkeeping: pending summarizer calls
+        # keep running (CPython cannot cancel running futures) but their
+        # results are discarded against the replaced cache, so they must
+        # not be tracked as belonging to this session.
+        self._summary_futures.clear()
         try:
             db.clear_core_memory(self.session_id)
             db.delete_episodic_for_session(self.session_id)

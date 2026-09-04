@@ -76,6 +76,13 @@ class WhatsAppAgent(ContextMixin, ConversationMixin):
 
         self._stop_streaming = False
         self._tool_running = False
+        # The /message endpoint is a synchronous FastAPI route, so uvicorn
+        # executes each request on a threadpool worker: two WhatsApp messages
+        # in flight call handle() concurrently on this one shared instance.
+        # This lock serializes _switch_session + the conversation loop, so
+        # history / session state are never mutated by two loops at once
+        # (mirrors TerminalAgent._send_lock).
+        self._send_lock = threading.Lock()
 
         # Capture final response text from the streaming hook.
         self._last_response: str = ""
@@ -98,18 +105,20 @@ class WhatsAppAgent(ContextMixin, ConversationMixin):
             The agent's reply.  Empty string if the agent produced no output
             (should not happen in normal operation).
         """
-        self._switch_session(sender_jid)
-        self._last_response = ""
-        self._stop_streaming = False
+        with self._send_lock:
+            self._switch_session(sender_jid)
+            self._last_response = ""
+            self._stop_streaming = False
 
-        db = lazy_import("nbchat.core.db")
-        self.history.append(("user", text, "", "", "", 0))
-        db.log_message(self.session_id, "user", text)
+            db = lazy_import("nbchat.core.db")
+            with self._history_lock:
+                self.history.append(("user", text, "", "", "", 0))
+            db.log_message(self.session_id, "user", text)
 
-        # _process_conversation_turn runs synchronously here.  The HTTP
-        # handler thread plays the role that ChatUI's background thread plays
-        # in the Jupyter UI.
-        self._process_conversation_turn()
+            # _process_conversation_turn runs synchronously here.  The HTTP
+            # handler thread plays the role that ChatUI's background thread
+            # plays in the Jupyter UI.
+            self._process_conversation_turn()
 
         return self._last_response
 
@@ -121,11 +130,19 @@ class WhatsAppAgent(ContextMixin, ConversationMixin):
         if new_id == self.session_id:
             return  # same sender, history already loaded
 
+        config = lazy_import("nbchat.core.config")
         comp = lazy_import("nbchat.core.compressor")
         db = lazy_import("nbchat.core.db")
 
         self.session_id = new_id
-        self.history = list(db.load_history(self.session_id))
+        # History is capped at load (see HISTORY_ROW_LIMIT): older rows
+        # exist in the DB and are summarized by prior-context.
+        self.history = list(
+            db.load_history(
+                self.session_id,
+                limit=int(getattr(config, "HISTORY_ROW_LIMIT", 2000)),
+            )
+        )
         self.task_log = db.load_task_log(self.session_id)
         self._turn_summary_cache = db.load_turn_summaries(self.session_id)
         comp.init_session(self.session_id)
