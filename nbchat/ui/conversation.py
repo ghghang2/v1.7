@@ -107,6 +107,25 @@ def _strip_tool_blocks(content: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
+def _strip_tool_blocks_reasoning(reasoning: str) -> str:
+    """Remove legacy <tool_call> markup from a reasoning/thinking trace.
+
+    Mirror of :func:`_strip_tool_blocks` for the thinking channel: a model that
+    drifts into emitting tool calls as text markup sometimes does so inside
+    ``reasoning_content`` rather than the assistant content.  Reasoning is
+    display-only (``build_messages`` drops ``analysis`` rows), so there is
+    nothing to recover or re-issue here — the goal is simply to keep the
+    half-emitted markup out of the stored/rendered thinking trace.  A
+    truncated trailing block (an unclosed <tool_call> at the end) is removed
+    too, for the same reason as the content guard.
+    """
+    if not reasoning:
+        return ""
+    text = _TOOL_BLOCK_RE.sub(" ", reasoning)
+    text = re.sub(r"<tool_call>.*$", " ", text, flags=re.DOTALL)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
 class ConversationMixin:
     """Mixed into ChatUI and headless channel agents.
 
@@ -266,6 +285,12 @@ class ConversationMixin:
             except Exception:
                 pass
 
+            # Guard: a drifted model can emit tool calls as <tool_call> text
+            # inside the reasoning trace rather than the content channel.
+            # Reasoning is display-only (build_messages drops "analysis"
+            # rows), so there is nothing to recover or re-issue — just keep
+            # the markup out of the stored/rendered thinking trace.
+            reasoning = _strip_tool_blocks_reasoning(reasoning)
             if reasoning:
                 with self._history_lock:
                     self.history.append(("analysis", reasoning, "", "", "", 0))
