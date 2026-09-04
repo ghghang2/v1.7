@@ -3,6 +3,19 @@
 Status: implemented (Phase 1–3). This document is the authoritative design
 reference for `nbchat/core/team.py`.
 
+## Phases
+
+| Phase | Scope | Status |
+|-------|-------|--------|
+| 1 — Core infrastructure | `TaskQueue` (FIFO claim, atomicity), `ToolArbiter` (per-resource serialisation), plan/JSON parsing, `TeamAgent` output hooks (per-message `[wn]` prefix), `run_plan` parallel dispatch with per-run deadline and post-deadline settle. No LLM required. | **Done** (20 tests) |
+| 2 — Coordinator cycle | `TeamCoordinator.run()`: plan → dispatch → collect → verify (run_tests) → integrate (commit+push) → synthesize (final LLM report). Mocks `_coordinator_call` so tests run without a live server. | **Done** (5 tests, mock client) |
+| 3 — TUI + config wiring | `/team <goal>`, `/team` (status), `/team stop` in the TUI REPL loop; `TEAM_*` knobs in `repo_config.yaml` + `nbchat/core/config.py`; `db.get_history()` for transcript retrieval. | **Done** (smoke-tested) |
+| 4 — Live-server e2e | Two real `TerminalAgent` workers on disjoint file-creation tasks, hitting a live inference server, skipped automatically when the server is down. | **Not yet implemented** (the shipped e2e tests use a mock client; a live-server variant is future work) |
+
+Phase 1–3 are the "implemented" scope referenced in the status line above.
+Phase 4 is a live-integration test that is skipped in CI / when the server
+is unavailable.
+
 ## Goal
 
 Maximize task-completion throughput by letting a team of 4+ parallel agents
@@ -151,8 +164,10 @@ Phase 2 (mock LLM, injected `plan_fn` / `turn_fn`):
 5. Full coordinator cycle: plan → dispatch → collect → verify → integrate →
    synthesize; failures retry once; verify-red blocks the push;
    `stop()` terminates promptly; arbiter always uninstalled.
-Phase 4 (live server, skipped when llama-server is down):
+Phase 4 (live server, skipped when the inference server is down):
 6. Two real workers, two disjoint file-creation tasks, end-to-end.
+   *Not yet exercised* — the shipped e2e tests (item 5) use a
+   mock client; a live-server variant is future work.
 
 ## Non-goals (phase 1)
 
