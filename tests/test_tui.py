@@ -75,7 +75,77 @@ def test_list_sessions_only_tui():
     agent = TerminalAgent(color=False)
     sessions = agent.list_sessions()
     assert isinstance(sessions, list)
-    assert all(s.startswith("tui:") for s in sessions)
+    assert all(isinstance(s, tuple) and len(s) == 2 for s in sessions)
+    assert all(sid.startswith("tui:") for sid, _title in sessions)
+
+
+def test_title_derived_from_first_user_message():
+    agent = TerminalAgent(color=False)
+    assert agent.session_title == ""
+    agent._process_conversation_turn = lambda: None
+    agent._run_turn("Refactor the session naming code", lambda t: None)
+    assert agent.session_title == "Refactor the session naming code"
+    # A second message must not overwrite the title.
+    agent._run_turn("And then some other task entirely", lambda t: None)
+    assert agent.session_title == "Refactor the session naming code"
+
+
+def test_title_capped_at_sixty_chars():
+    from nbchat.tui import agent as agent_mod
+    long = "x" * 100
+    assert len(agent_mod._derive_title(long)) == 60
+    agent = TerminalAgent(color=False)
+    agent._process_conversation_turn = lambda: None
+    agent._run_turn(long, lambda t: None)
+    assert len(agent.session_title) == 60
+
+def test_set_title_overrides_derived_title():
+    agent = TerminalAgent(color=False)
+    agent.set_title("My short session name")
+    assert agent.session_title == "My short session name"
+
+
+def test_sessions_command_shows_titles(db_env, capsys):
+    db_env.log_message("tui:aaaa1111bbbb", "user", "first message A")
+    db_env.log_message("tui:cccc2222dddd", "user", "first message B")
+    db_env.save_session_title("tui:aaaa1111bbbb", "Tune the port settings")
+    agent = TerminalAgent(color=False)
+    assert handle_command(agent, "/sessions") is False
+    out = capsys.readouterr().out
+    assert "Tune the port settings" in out
+    assert "tui:aaaa1111bbbb" in out
+
+
+def test_load_by_session_name(db_env, capsys):
+    for i in range(2):
+        db_env.log_message("tui:abc123def456", "user", f"msg {i}")
+    db_env.save_session_title("tui:abc123def456", "Investigate the crash")
+    agent = TerminalAgent(color=False)
+    assert agent.resolve_session("Investigate the crash") == "tui:abc123def456"
+    # Case-insensitive; unique substring also resolves.
+    assert agent.resolve_session("crash") == "tui:abc123def456"
+    assert handle_command(agent, "/load Investigate the crash") is False
+    assert agent.session_id == "tui:abc123def456"
+
+
+def test_resolve_session_ambiguous_substring(db_env):
+    db_env.log_message("tui:aaaa1111bbbb", "user", "x")
+    db_env.log_message("tui:cccc2222dddd", "user", "x")
+    db_env.save_session_title("tui:aaaa1111bbbb", "Fix the build")
+    db_env.save_session_title("tui:cccc2222dddd", "Fix the tests")
+    agent = TerminalAgent(color=False)
+    assert agent.resolve_session("Fix the") is None
+    # Exact title match still wins over ambiguity.
+    assert agent.resolve_session("Fix the build") == "tui:aaaa1111bbbb"
+
+
+def test_title_command_roundtrip(db_env, capsys):
+    agent = TerminalAgent(color=False)
+    assert handle_command(agent, "/title Debug the voice channel") is False
+    assert agent.session_title == "Debug the voice channel"
+    handle_command(agent, "/title")
+    out = capsys.readouterr().out
+    assert "Debug the voice channel" in out
 
 
 def test_remember_and_last_session_roundtrip():

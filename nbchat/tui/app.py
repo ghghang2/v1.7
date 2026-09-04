@@ -38,8 +38,9 @@ _BANNER = """
 _HELP = """Commands
   /help              Show this help.
   /new               Start a new session.
-  /sessions          List terminal sessions (id prefix 'tui:').
-  /load <id>         Load one of the sessions from /sessions.
+  /sessions          List terminal sessions (name + id).
+  /load <id|name>    Load one of the sessions from /sessions (id or name).
+  /title [name]      Show or set a short name for the current session.
   /history           Print the current session's message history.
   /model             Show the active model, server, reasoning effort and
                      average tokens/sec for the last 50 turns.
@@ -90,7 +91,11 @@ def print_banner(agent: TerminalAgent, server_up: bool) -> None:
     print(f"  {p.gray('model   ')} {agent.model_name}")
     print(f"  {p.gray('server  ')} {config.SERVER_URL} "
           f"{p.green('[up]') if server_up else p.red('[down]')}")
-    print(f"  {p.gray('session ')} {agent.session_id}")
+    if agent.session_title:
+        print(f"  {p.gray('session ')} {agent.session_title} "
+              f"{p.gray(agent.session_id)}")
+    else:
+        print(f"  {p.gray('session ')} {agent.session_id}")
     print(f"  {p.gray('help    ')} type /help for commands")
     if not server_up:
         print(p.yellow("  ! llama-server is not reachable — LLM calls will fail "
@@ -119,16 +124,31 @@ def handle_command(agent: TerminalAgent, line: str, supervisor=None) -> bool:
         if not sessions:
             print("No terminal sessions yet.")
         else:
-            for s in sessions:
-                marker = " (current)" if s == agent.session_id else ""
-                print(f"  {s}{marker}")
+            for sid, title in sessions:
+                marker = "  (current)" if sid == agent.session_id else ""
+                label = title or sid
+                print(f"  {label}  {agent.palette.gray(sid)}{marker}")
+    elif cmd == "/title":
+        if not arg:
+            current = agent.session_title or "(unnamed)"
+            print(f"current: {current}  usage: /title <name>")
+        else:
+            agent.set_title(arg)
+            print(f"Session named: {agent.session_title}")
     elif cmd == "/load":
         if not arg:
-            print("usage: /load <session-id>")
+            print("usage: /load <session-id or name>")
         else:
-            canonical = db.normalize_session_id(arg)
-            if canonical not in set(db.get_session_ids()):
-                print(f"No such session: {arg}  (see /sessions)")
+            canonical = agent.resolve_session(arg)
+            if canonical is None:
+                # Substring hits but not unique?  Point the user at the list.
+                hits = [sid for sid, title in agent.list_sessions()
+                        if arg.lower() in (title or "").lower()]
+                if len(hits) > 1:
+                    print(f"{arg} matches {len(hits)} sessions "
+                          f"(see /sessions)")
+                else:
+                    print(f"No such session: {arg}  (see /sessions)")
             else:
                 agent._switch_session(canonical)
                 agent.remember_session(agent.session_id)
@@ -460,8 +480,8 @@ def run(argv: list[str] | None = None) -> int:
     agent = TerminalAgent(color=not args.no_color)
 
     if args.session:
-        sid = db.normalize_session_id(args.session)
-        if sid not in set(db.get_session_ids()):
+        sid = agent.resolve_session(args.session)
+        if sid is None:
             print(f"No such session: {args.session}  (see /sessions)",
                   file=sys.stderr)
             return 1

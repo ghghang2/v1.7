@@ -43,6 +43,13 @@ def short_arg(value) -> str:
         text = str(value)
     return text if len(text) <= 60 else text[:57] + "..."
 
+def _derive_title(text: str) -> str:
+    """A short human-readable name for a session, from its first message."""
+    text = " ".join((text or "").split())  # collapse whitespace/newlines
+    if not text:
+        return ""
+    return text if len(text) <= 60 else text[:57] + "..."
+
 
 class TerminalAgent(ContextMixin, ConversationMixin):
     """Interactive agent whose conversation loop renders to the terminal."""
@@ -140,7 +147,53 @@ class TerminalAgent(ContextMixin, ConversationMixin):
         return sid
 
     def list_sessions(self) -> List[str]:
-        return [s for s in db.get_session_ids() if s.startswith(_SESSION_PREFIX)]
+        """All terminal sessions (id, title), newest first."""
+        return [
+            (r["session_id"], r["title"])
+            for r in db.list_sessions_with_title(_SESSION_PREFIX)
+        ]
+
+    def resolve_session(self, query: str) -> str | None:
+        """Resolve a user-supplied id *or* session name to a canonical id.
+
+        Accepts the full id (``tui:abc123def456``), the bare id, or the
+        human-readable title (exact match first, then substring).  Returns
+        None when nothing matches.
+        """
+        query = query.strip()
+        if not query:
+            return None
+        sessions = self.list_sessions()
+        by_id = {sid for sid, _ in sessions}
+        if query in by_id:
+            return query
+        canonical = db.normalize_session_id(query)
+        if canonical in by_id:
+            return canonical
+        titled = [(sid, title) for sid, title in sessions if title]
+        for sid, title in titled:
+            if title.lower() == query.lower():
+                return sid
+        subs = [sid for sid, title in titled
+                if query.lower() in title.lower()]
+        if len(subs) == 1:
+            return subs[0]
+        # Ambiguous (or no) substring match: let the caller report it.
+        return None
+
+    @property
+    def session_title(self) -> str:
+        """Human-readable name of the current session ('' if unnamed)."""
+        return db.load_session_title(self.session_id)
+
+    def set_title(self, title: str) -> None:
+        """Name the current session; a short sentence describing it."""
+        title = " ".join((title or "").split())
+        if not title:
+            return
+        if len(title) > 80:
+            title = title[:77] + "..."
+        db.save_session_title(self.session_id, title)
 
     @staticmethod
     def last_session() -> str:
@@ -277,6 +330,13 @@ class TerminalAgent(ContextMixin, ConversationMixin):
 
         self.history.append(("user", text, "", "", "", 0))
         db.log_message(self.session_id, "user", text)
+        # Give the session a short human-readable name from its first
+        # user message so /sessions is readable; the raw id is still the
+        # one used to load it.  Never overwrite an explicit /title.
+        if not db.load_session_title(self.session_id):
+            title = _derive_title(text)
+            if title:
+                db.save_session_title(self.session_id, title)
         printer(text)
 
         self._turn_active = True

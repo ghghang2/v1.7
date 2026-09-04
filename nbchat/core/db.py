@@ -440,6 +440,37 @@ def save_context_summary(session_id: str, summary: str) -> None:
 def load_context_summary(session_id: str) -> str:
     return _meta_get(session_id, "context_summary")
 
+# Human-readable session name (a short sentence describing the session),
+# shown alongside the raw id so users can pick a session to load.
+
+def save_session_title(session_id: str, title: str) -> None:
+    _meta_set(session_id, "title", title)
+
+def load_session_title(session_id: str) -> str:
+    return _meta_get(session_id, "title")
+
+def list_sessions_with_title(prefix: str) -> list[dict]:
+    """Sessions stored under *prefix*, newest first, each with its title.
+
+    Returns a list of ``{"session_id", "title", "last_ts"}`` dicts; title
+    is "" when the session has never been named.  Matches the rows of
+    :func:`get_session_ids` (i.e. only sessions with at least one message).
+    """
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT c.session_id, "
+            "(SELECT value FROM session_meta m "
+            " WHERE m.session_id = c.session_id AND m.key = 'title') AS title, "
+            "MAX(c.ts) AS last_ts "
+            "FROM chat_log c "
+            "WHERE c.session_id LIKE ? "
+            "GROUP BY c.session_id "
+            "ORDER BY last_ts DESC",
+            (prefix + "%",),
+        ).fetchall()
+    return [{"session_id": r[0], "title": r[1] or "", "last_ts": r[2]}
+            for r in rows]
+
 def save_turn_summaries(session_id: str, cache: dict) -> None:
     _meta_set(session_id, "turn_summaries", json.dumps(cache))
 
