@@ -1,6 +1,7 @@
 """Single executor for all tool calls."""
 from __future__ import annotations
 
+import contextvars
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from typing import Any, Dict
 import json
@@ -51,7 +52,13 @@ def run_tool(tool_name: str, args_json: str, timeout: int | None = None) -> str:
         """Execute one attempt with a hard wall-clock timeout."""
         # Submit a fresh task on every attempt so a task left over from a
         # timed-out attempt cannot leak into the next attempt's future.
-        future = _executor.submit(func, **args)
+        # Context is propagated to the worker thread (it was NOT doing
+        # this before): tools that read team-mode ContextVars -- notably
+        # delegate_task reading nbchat.core.team._current_delegation,
+        # set on the worker pool's claimer thread -- saw the default
+        # (None) here and reported "delegation unavailable" during a
+        # perfectly live team run, collapsing it to a single worker.
+        future = _executor.submit(contextvars.copy_context().run, func, **args)
         try:
             return str(future.result(timeout=timeout))
         except TimeoutError:

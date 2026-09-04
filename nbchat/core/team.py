@@ -196,7 +196,16 @@ def _parse_tasks(plan_text: str, max_tasks: int = 8) -> list:
     try:
         raw = json.loads(_extract_json(text))
     except Exception as exc:
-        raise PlanParseError(PLAN_PARSE_FAILED, f"invalid JSON: {exc}") from exc
+        # Truncated-by-max_tokens arrays are the common failure case:
+        # the planner usually emits complete task objects followed by
+        # prose cut off mid-way.  Salvage the complete objects instead
+        # of discarding a mostly-good plan -- each planner task is
+        # independent by construction, so a partial plan is still a
+        # valid parallel plan (and far better than the single-task
+        # fallback).
+        raw = _salvage_objects(text)
+        if raw is None:
+            raise PlanParseError(PLAN_PARSE_FAILED, f"invalid JSON: {exc}") from exc
     if isinstance(raw, dict):  # tolerate {"tasks": [...]}
         raw = raw.get("tasks")
     if not isinstance(raw, list):
@@ -205,6 +214,70 @@ def _parse_tasks(plan_text: str, max_tasks: int = 8) -> list:
     if not tasks:
         raise PlanParseError(PLAN_PARSE_FAILED, "plan contains no usable tasks")
     return tasks
+
+
+def _salvage_objects(text: str) -> list | None:
+    """Recover the complete top-level objects of a truncated JSON array.
+
+    ``_extract_json`` raises when the outer array never closes (truncated
+    by ``max_tokens``).  Scan the array body for balanced ``{...}``
+    objects (string/escape aware, same discipline as ``_extract_json``)
+    and return the ones that parse; ``None`` when not a single complete
+    object can be recovered.
+    """
+    start = text.find("[")
+    if start < 0:
+        return None
+    i, depth, in_str, esc = start + 1, 0, False, False
+    objs: list = []
+    while i < len(text):
+        c = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+            i += 1
+            continue
+        if c == '"':
+            in_str = True
+        elif c == "[":
+            depth += 1  # nested array: its items are not top-level objects
+        elif c == "]":
+            depth -= 1
+        elif c == "{":
+            if depth == 0:  # top-level object: capture it
+                j, obj_depth, o_str, o_esc = i + 1, 1, False, False
+                while j < len(text) and obj_depth > 0:
+                    oc = text[j]
+                    if o_str:
+                        if o_esc:
+                            o_esc = False
+                        elif oc == "\\":
+                            o_esc = True
+                        elif oc == '"':
+                            o_str = False
+                    elif oc == '"':
+                        o_str = True
+                    elif oc == "{":
+                        obj_depth += 1
+                    elif oc == "}":
+                        obj_depth -= 1
+                    j += 1
+                if obj_depth == 0:
+                    try:
+                        objs.append(json.loads(text[i:j]))
+                    except Exception:
+                        pass  # keep scanning; a later object may be intact
+                    i = j
+                    continue
+                break  # object never closes: truncated here
+            else:
+                depth += 1
+        i += 1
+    return objs or None
 # ---------------------------------------------------------------------------
 # ToolArbiter
 # ---------------------------------------------------------------------------
@@ -677,6 +750,10 @@ goal yourself.
   X" + "verify/investigate Y").
 - The JSON array MUST be complete and well-formed — a truncated plan
   degrades the whole run to a single worker.
+- Keep each "objective" under ~40 words: the exact instruction, the
+  specific URLs/paths/questions and the concrete deliverable — no
+  background, no step-by-step narration.  Verbose objectives waste
+  the output budget and risk the plan being truncated.
 
 Respond with ONLY a JSON array (no prose, no markdown fences) of objects:
 [{"title": "<short name>", "objective": "<complete self-contained instruction for one worker>"}, ...]

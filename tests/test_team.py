@@ -68,10 +68,20 @@ def test_parse_tasks_bad_json_raises():
         _parse_tasks("no json here at all")
 
 
-def test_parse_tasks_truncated_json_raises():
+def test_parse_tasks_truncated_json_salvages_complete_objects():
     # Simulates a max_tokens truncation: an array cut mid-object.
+    # The salvage path (team.py:_salvage_objects) recovers the complete
+    # leading objects instead of discarding a mostly-good plan.
+    tasks = _parse_tasks('[{"title": "a", "objective": "A"}, {"title": "b"')
+    assert len(tasks) == 1
+    assert tasks[0].title == "a"
+
+
+def test_parse_tasks_truncated_json_no_complete_object_raises():
+    # Cut before any object is complete: nothing to salvage, so it must
+    # still raise PlanParseError.
     with pytest.raises(PlanParseError):
-        _parse_tasks('[{"title": "a", "objective": "A"}, {"title": "b"')
+        _parse_tasks('[{"title": "a"')
 
 
 def test_parse_tasks_empty_list_raises():
