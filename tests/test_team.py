@@ -31,6 +31,9 @@ from nbchat.core.team import (
     _parse_tasks,
     _clip_summary,
     _sanitize_plan,
+    _break_dependency_cycles,
+    _resolve_dependencies,
+    _worker_run,
 )
 
 TIMEOUT = 5.0  # generous for CI; the logic under test is near-instant
@@ -523,3 +526,173 @@ def test_build_report_total_budget_shrinks_per_summary(monkeypatch):
     assert len(report) <= 6000
     for i in range(8):
         assert f"Answer: {i}" in report          # every answer survives
+
+
+# ---------------------------------------------------------------------------
+# Planner-level dependencies (DAG)
+# ---------------------------------------------------------------------------
+
+
+class _DepsWorker:
+    """Worker stand-in that records every objective it is given.
+
+    *run* accepts the (objective, task, deps) shape the real
+    ``_worker_run`` dispatch uses; ``results`` maps the *base* objective
+    (any objective starting with it) to the summary to return.
+    """
+
+    model_name = "test-model"
+
+    @property
+    def agent(self):
+        return self
+
+    def __init__(self, results=None, sleep: float = 0.0):
+        self.results = results or {}
+        self.sleep = sleep
+        self.objectives = []
+
+    def run(self, objective, task=None, deps=None):
+        self.objectives.append(objective)
+        if self.sleep:
+            time.sleep(self.sleep)
+        for base, value in self.results.items():
+            if objective.startswith(base):
+                return value
+        return "done " + objective
+
+
+def test_break_dependency_cycles_breaks_minimally():
+    tasks = [
+        Task("T1", "a", depends_on=("T2",)),          # cycle
+        Task("T2", "b", depends_on=("T1",)),          # cycle
+        Task("T3", "c", depends_on=("T1", "T3", "T9", "T4")),  # fwd+self+dangling
+    ]
+    out = _break_dependency_cycles(tasks)
+    assert out[0].depends_on == ()
+    assert out[1].depends_on == ("T1",)               # minimal break: T2 keeps its edge
+    assert out[2].depends_on == ("T1",)               # forward-only kept
+
+
+
+
+def test_resolve_dependencies():
+    t = Task("T3", "c", depends_on=("T1", "T2"))
+    assert _resolve_dependencies(t, {"T1": "done", "T2": "done"})
+    assert _resolve_dependencies(t, {"T1": "failed", "T2": "done"})
+    assert not _resolve_dependencies(t, {"T1": "done", "T2": "claimed"})
+    assert not _resolve_dependencies(t, {"T1": "pending", "T2": "pending"})
+    assert _resolve_dependencies(Task("T9", "x"), {"T1": "pending"})
+
+
+def test_parse_tasks_keeps_depends_on():
+    plan = ('[{"title": "a", "objective": "A"}, '
+            '{"title": "b", "objective": "B", "depends_on": [1]}, '
+            '{"title": "s", "objective": "S", "depends_on": [1, 2]}]')
+    tasks = _parse_tasks(plan)
+    assert [t.task_id for t in tasks] == ["T1", "T2", "T3"]
+    assert tasks[1].depends_on == ("T1",)
+    assert tasks[2].depends_on == ("T1", "T2")
+
+
+def test_queue_blocks_dependent_task_until_prereq_resolves():
+    q = TaskQueue([Task("a", "A"),
+                   Task("s", "S", depends_on=("a",))])
+    first = q.claim()
+    assert first == "a"
+    assert q.claim() is None          # s blocked on a (still claimed)
+    q._tasks["a"].status = "done"
+    assert q.claim() == "s"
+
+
+def test_queue_dependent_unblocks_when_prereq_fails():
+    q = TaskQueue([Task("a", "A"),
+                   Task("s", "S", depends_on=("a",))])
+    q._tasks["a"].status = "failed"   # terminal (any) unblocks dependents
+    assert q.claim() == "s"
+
+
+def test_queue_wait_claim_timeout_and_exhaustion():
+    q = TaskQueue([Task("s", "S", depends_on=("a",))])  # a never appears
+    # A truncated prerequisite is failed at claim time rather
+    # than blocking forever (and rather than running blind).
+    assert q.wait_claim(timeout=0.05) is None
+    assert q._tasks["s"].status == "failed"
+    assert "missing prerequisite" in q._tasks["s"].summary
+
+
+def test_wait_claim_stop_wakes_parked_worker():
+    q = TaskQueue([Task("a", "A"),
+                   Task("s", "S", depends_on=("a",))])
+    got = {}
+
+    def parked():
+        got["tid"] = q.wait_claim(timeout=5.0)
+
+    q.claim()                    # claim a; s is now blocked on it
+    th = threading.Thread(target=parked, daemon=True)
+    th.start()
+    time.sleep(0.1)          # parked: s blocked on claimed a
+    assert "tid" not in got  # still blocked
+    q.stop()
+    th.join(2.0)
+    assert got.get("tid") is None  # woke on stop(), did not sleep 5s
+
+
+def test_run_plan_dependent_task_waits_and_sees_prereq_results():
+    tasks = [Task("a", "A"), Task("b", "B"),
+             Task("s", "SYNTH", depends_on=("a", "b"))]
+    w = _DepsWorker(results={"A": "alpha", "B": "beta"}, sleep=0.1)
+    t0 = time.monotonic()
+    res = TeamCoordinator.run_plan(tasks, w, max_workers=3, timeout=TIMEOUT)
+    elapsed = time.monotonic() - t0
+    assert res == "done"
+    assert all(t.status == "done" for t in tasks)
+    # The synthesis waited for BOTH prereqs: total >= 2 * 0.1s.
+    assert elapsed >= 0.2
+    synth = [o for o in w.objectives if o.startswith("SYNTH")]
+    assert len(synth) == 1
+    assert "[a] status=done" in synth[0]
+    assert "alpha" in synth[0]
+    assert "[b] status=done" in synth[0]
+    assert "beta" in synth[0]
+
+
+def test_run_plan_missing_prereq_fails_fast():
+    tasks = [Task("s", "S", depends_on=("ghost",))]
+    w = _DepsWorker()
+    t0 = time.monotonic()
+    res = TeamCoordinator.run_plan(tasks, w, max_workers=1,
+                                   timeout=TIMEOUT)
+    elapsed = time.monotonic() - t0
+    assert res == "failed"
+    assert tasks[0].status == "failed"
+    assert "missing prerequisite" in tasks[0].summary
+    assert w.objectives == []       # never executed blind
+    assert elapsed < 2.5            # no deadline wait
+
+
+def test_worker_run_injects_prereq_block():
+    t = Task("T3", "S", depends_on=("T1", "T2"))
+    got = {}
+
+    def _run(objective, task=None, deps=None):
+        got["objective"] = objective
+        return "ok"
+
+    class _W:
+        model_name = "test-model"
+        run = staticmethod(_run)
+
+    out = _worker_run(_W(), "S", task=t,
+                      deps={"T1": ("done", "one"),
+                            "T2": ("failed", "boom")})
+    assert out == "ok"
+    assert "T1" in got["objective"]
+    assert "one" in got["objective"]
+    assert "status=failed" in got["objective"]
+    assert "boom" in got["objective"]
+    # No deps mapping -> the block is absent, objective unchanged.
+    got.clear()
+    _worker_run(_W(), "S", task=t)
+    assert got["objective"] == "S"

@@ -4,11 +4,13 @@ Architecture
 ============
 ``/team <goal>`` hands a goal to a **coordinator** (one plain LLM instance,
 no tools, no conversation state) that decomposes the goal into 2-8
-**independent** tasks.  Each task is then executed by its own **worker**
-agent — a fresh :class:`nbchat.tui.agent.TerminalAgent` with the full tool
-set — running on its own claimer thread.  Workers are mutually
-independent (the planner is prompted to make them so); the coordination
-points are:
+**independent** tasks that may form a dependency DAG.  Each task is then
+executed by its own **worker** agent — a fresh
+:class:`nbchat.tui.agent.TerminalAgent` with the full tool set — running
+on its own claimer thread.  Most tasks are mutually independent (the
+planner is prompted to make them so), but a task may depend on earlier
+tasks: a synthesis/review step runs only after the tasks it builds on
+finish, and is handed their results; the coordination points are:
 
 * the shared LLM slots of the inference server, which naturally throttle
   concurrency to what it can actually serve;
@@ -17,7 +19,14 @@ points are:
 * per-agent locks and state — each worker owns its own ``TerminalAgent``,
   so there is no shared mutable conversation state;
 * a shared work queue (:class:`TaskQueue`) behind a bounded pool of
-  claimer threads (:class:`_WorkerPool`).
+  claimer threads (:class:`_WorkerPool`);
+* an optional **dependency DAG** over the planner's tasks: a task may
+  carry ``depends_on`` (a final synthesis task is the canonical case —
+  it runs only after the N parallel tasks it combines have all
+  resolved, and receives their per-task status + summary in its
+  objective).  Any prerequisite state (done *or* failed) unblocks a
+  dependent task; cycles and dangling references are stripped at plan
+  time so a run can never deadlock on the graph.
 
 **Worker delegation.**  A worker may split its own task further: the
 ``delegate_task`` tool (``nbchat/tools/delegate_task.py``) pushes
@@ -117,6 +126,11 @@ class Task:
     status: str = "pending"
     summary: str = ""
     parent_id: Optional[str] = None
+    # Planner-level DAG edge: task ids that must reach a terminal state
+    # (done / failed / interrupted) before this task may be claimed.
+    # Forward-only and acyclic (cycles stripped at parse), so a
+    # dependency can never deadlock the run.
+    depends_on: tuple = field(default_factory=tuple)
 
 
 def _extract_json(text: str) -> str:
@@ -177,10 +191,68 @@ def _sanitize_plan(raw: list, max_tasks: int = 8) -> list:
         if not objective:
             continue
         title = str(entry.get("title") or "").strip() or objective[:60]
+        depends = entry.get("depends_on") or ()
+        if isinstance(depends, (str, int)):
+            depends = (depends,)
         # Positional id (T1, T2, ...) — stable, unique, terminal-friendly.
-        out.append(Task(f"T{len(out) + 1}", objective, title=title))
-    return out[:max_tasks]
+        tid = f"T{len(out) + 1}"
+        # Normalize dependency ids: a bare 1-based position refers to
+        # that task's id (planner convention); keep ids that were seen
+        # earlier in the plan, drop everything else (self, future or
+        # dangling) so no dangling reference can ever be admitted.
+        known = {f"T{i}" for i in range(1, len(out) + 1)}
+        norm = []
+        for d in depends:
+            d = str(d).strip()
+            if d.isdigit():
+                d = f"T{int(d)}"
+            if d in known and d != tid:
+                norm.append(d)
+        out.append(Task(tid, objective, title=title,
+                        depends_on=tuple(norm)))
+    return _break_dependency_cycles(out[:max_tasks])
 
+
+def _break_dependency_cycles(tasks: list) -> list:
+    """Enforce a forward-only acyclic dependency graph on *tasks*.
+
+    The planner is told a task may only depend on earlier tasks, but a
+    model can still emit a cycle (T1 -> T2 -> T1) or a dangling reference
+    (a task that was truncated away).  Left alone a cycle deadlocks the
+    run (neither task can ever become claimable).  Keeping only
+    dependencies on strictly-earlier tasks removes self-loops, forward
+    references and dangling ids in one pass.  Cycles are broken
+    minimally: in each cycle only the edges that point backwards are
+    dropped (a two-task cycle T1->T2->T1 loses T1's edge and T2 keeps
+    its dependency on T1), so the planner's intent — and the tasks'
+    original order — is preserved as much as possible.
+    """
+    index = {t.task_id: i for i, t in enumerate(tasks)}
+    for i, t in enumerate(tasks):
+        t.depends_on = tuple(
+            d for d in t.depends_on
+            if d in index and d != t.task_id and index[d] < i)
+    return tasks
+
+
+def _resolve_dependencies(task, status: dict) -> bool:
+    """``True`` when *task*'s prerequisites no longer block it.
+
+    *status* maps task id -> status string.  A task is unblocked when
+    every id in ``depends_on`` is in a terminal state (done / failed /
+    interrupted); a prerequisite still ``pending`` or ``claimed`` keeps
+    it blocked, and a prerequisite id missing from *status* (truncated
+    from the plan) blocks it too — such a task is failed at claim time
+    rather than run blind.  An empty ``depends_on`` is trivially
+    unblocked.
+    """
+    for d in task.depends_on:
+        st = status.get(d)
+        if st is None:      # prereq never entered the queue (truncated)
+            return False
+        if st in ("pending", "claimed"):  # still running: blocked
+            return False
+    return True  # every prereq is in a terminal state
 
 def _parse_tasks(plan_text: str, max_tasks: int = 8) -> list:
     """Parse the planner's raw output into a (non-empty) list of tasks.
@@ -424,20 +496,104 @@ class TaskQueue:
         self._cv = threading.Condition(self._lock)
         self._stopped = False
 
-    def claim(self):
-        """Claim and return the next pending task id, or ``None``.
+    def _claimable_id(self):
+        """First pending, dependency-ready task id in insertion order.
 
-        Returns ``None`` when nothing is pending or the queue has been
-        stopped — worker threads treat both as "exit".
+        A task is claimable only when it is ``pending`` AND no id in
+        ``depends_on`` is still ``pending``/``claimed``.  A prerequisite
+        id that is absent from the queue is NOT blocking — the task is
+        claimable so the dispatcher can fail it (its dependency was
+        truncated from the plan) instead of deadlocking the run.
+        Caller must hold ``self._lock``.
+        """
+        status = {tid: t.status for tid, t in self._tasks.items()}
+        for tid, t in self._tasks.items():
+            if t.status == "pending" and _resolve_dependencies(t, status):
+                return tid
+        return None
+
+    def claim(self):
+        """Claim and return the next pending, dependency-ready task id.
+
+        Returns ``None`` when nothing is claimable (pool exhausted,
+        :meth:`stop` called, or every pending task is still blocked on a
+        prerequisite that has not yet resolved) — worker threads treat
+        ``None`` as "exit".
         """
         with self._lock:
             if self._stopped:
                 return None
-            for t in self._tasks.values():
-                if t.status == "pending":
+            tid = self._claimable_id()
+            if tid is None:
+                return None
+            self._tasks[tid].status = "claimed"
+            return tid
+
+    def wait_claim(self, timeout: float | None = None):
+        """Blocking :meth:`claim` for fixed worker threads.
+
+        Waits on the condition until a task becomes claimable (its
+        prerequisites have resolved) or the queue is exhausted / stopped.
+        Used by :meth:`TeamCoordinator.run_plan` so a dependency graph
+        cannot stall a run: a worker parked here is woken the moment a
+        prerequisite reaches a terminal state (via :meth:`notify`).
+        *timeout* bounds the TOTAL wait, not each condition wait.
+        Returns a task id, or ``None`` to exit (exhausted, stopped, or
+        the bounded wait expired).
+        """
+        deadline = None
+        if timeout is not None:
+            deadline = time.monotonic() + timeout
+        with self._cv:
+            while True:
+                if self._stopped:
+                    return None
+                tid = self._claimable_id()
+                if tid is not None:
+                    t = self._tasks[tid]
+                    if any(d not in self._tasks for d in t.depends_on):
+                        # A prerequisite id was never admitted to the
+                        # queue (planner truncation): the task can
+                        # never run.  Fail it at claim time — running
+                        # it blind would invent results, and leaving it
+                        # pending would deadlock the run.
+                        t.status = "failed"
+                        t.summary = ("missing prerequisite(s): " +
+                                     ", ".join(sorted(
+                                         d for d in t.depends_on
+                                         if d not in self._tasks)))
+                        self._cv.notify_all()
+                        continue
                     t.status = "claimed"
-                    return t.task_id
-            return None
+                    return tid
+                if not any(t.status == "pending"
+                           for t in self._tasks.values()):
+                    return None  # genuinely exhausted (no more work)
+                doomed = [t for t in self._tasks.values()
+                          if t.status == "pending"
+                          and any(d not in self._tasks
+                                  for d in t.depends_on)]
+                if doomed:
+                    # A prerequisite that never entered the queue can
+                    # never resolve: fail the dependent now instead of
+                    # parking here until the run deadline (a per-iteration
+                    # wait timeout is not a total bound, so without this
+                    # the wait would loop forever on a truncated plan).
+                    for t in doomed:
+                        t.status = "failed"
+                        t.summary = ("missing prerequisite(s): " +
+                                     ", ".join(sorted(
+                                         d for d in t.depends_on
+                                         if d not in self._tasks)))
+                    self._cv.notify_all()
+                    continue
+                if deadline is None:
+                    self._cv.wait()
+                else:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return None  # bounded wait expired
+                    self._cv.wait(remaining)
 
     def add(self, task: Task) -> None:
         """Register a newly delegated task and wake the pool."""
@@ -478,12 +634,13 @@ class TaskQueue:
 
     def stop(self) -> None:
         """Halts further claiming (coordinator timeout / interrupt)."""
-        with self._lock:
+        with self._cv:
             self._stopped = True
+            self._cv.notify_all()
 
     def join(self) -> bool:
         """Non-blocking: ``True`` once the run must end (stop() called)."""
-        with self._lock:
+        with self._cv:
             return self._stopped
 
     def is_done(self) -> bool:
@@ -733,14 +890,17 @@ You are the coordinator for a team of parallel software-engineering agents.
 Your job is PLANNING ONLY — you MUST NOT attempt to execute any part of the
 goal yourself.
 
-- Analyze the user's goal and decompose it into 2-4 concrete, independent
-  tasks (up to 8 only for a very large goal) that can be executed in
-  parallel by separate workers.  Do not emit more tasks than the work
-  justifies: each task runs on its own worker agent.
-- Tasks MUST be independent: each one must be completable without the
-  output of any other task.  Never create sequencing tasks ("then fix the
-  tests", "after that summarize") — workers run concurrently and cannot
-  depend on each other.
+- Analyze the user's goal and decompose it into 2-4 concrete tasks (up to
+  8 only for a very large goal) that can be executed in parallel by
+  separate workers.  Do not emit more tasks than the work justifies: each
+  task runs on its own worker agent.
+- Most tasks run in parallel and are independent.  A task MAY instead
+  build on earlier tasks — e.g. a final synthesis, review, or report that
+  must combine the results of N earlier tasks.  Give such a task a
+  "depends_on" array listing the 1-based ids of the tasks it builds on;
+  it runs only after they all finish and is handed their results.  Keep
+  the graph acyclic and forward-only (a task depends only on earlier
+  tasks) and never make two tasks depend on each other.
 - Each task must be fully self-contained: a worker with no other context
   must be able to complete it from its objective alone.  State the exact
   files, commands, or questions involved.
@@ -756,7 +916,8 @@ goal yourself.
   the output budget and risk the plan being truncated.
 
 Respond with ONLY a JSON array (no prose, no markdown fences) of objects:
-[{"title": "<short name>", "objective": "<complete self-contained instruction for one worker>"}, ...]
+[{"title": "<short name>", "objective": "<complete self-contained instruction for one worker>", "depends_on": [3, 4]}, ...]
+("depends_on" is optional — omit it for tasks that run independently.)
 """
 
 _RETRY_PLANNER_USER = (
@@ -896,12 +1057,30 @@ def _try_interrupt(worker) -> None:
             pass
 
 
-def _worker_run(worker, objective: str) -> str:
+def _worker_run(worker, objective: str, task: Optional[Task] = None,
+                deps: Optional[dict] = None) -> str:
     """Invoke a worker's turn.
 
     Real workers are ``TerminalAgent`` instances (``send``); the stub
-    workers used by ``run_plan`` tests expose ``run`` directly.
+    workers used by ``run_plan`` tests expose ``run`` directly.  When
+    *task* has prerequisites (``depends_on``) AND the caller supplied
+    the *deps* mapping (task id -> (status, summary)), it is appended
+    to the objective so a synthesis / dependent task can build on what
+    the earlier tasks produced; without *deps* the objective is passed
+    through untouched.
     """
+    if task is not None and task.depends_on and deps is not None:
+        parts = []
+        for d in task.depends_on:
+            st, sm = deps.get(d, (None, None))
+            parts.append(
+                "[{0}] status={1}\n{2}".format(
+                    d, st or "unknown", sm or "no summary"))
+        if parts:
+            objective = (
+                objective.rstrip()
+                + "\n\n--- Prerequisite task results ---\n"
+                + "\n\n".join(parts))
     fn = getattr(worker, "run", None)
     if not callable(fn):
         fn = worker.send
@@ -1018,6 +1197,18 @@ class _WorkerPool:
             task.status = "failed"
             task.summary = "not started (started after the run deadline)"
             return
+        missing = [d for d in task.depends_on if d not in queue._tasks]
+        if missing:
+            # Prerequisite truncated from the plan: fail at admission
+            # (the pool's claim() is non-blocking, so without this the
+            # reaper would keep respawning claimers for it until the
+            # deadline).  Same failure as the run_plan/wait_claim path.
+            task.status = "failed"
+            task.summary = ("missing prerequisite(s): "
+                            + ", ".join(sorted(missing)))
+            with self._cv:
+                self._cv.notify_all()
+            return
         ctx = c._make_delegation(
             task, self.factory, self.max_workers, self.deadline,
             self.max_subtasks, self.max_total, self.max_depth)
@@ -1035,7 +1226,10 @@ class _WorkerPool:
             float(config.TEAM_LLM_TIMEOUT))
         token = _current_delegation.set(ctx)
         try:
-            TeamCoordinator._execute_task(ctx.agent, task, self.deadline)
+            TeamCoordinator._execute_task(
+                ctx.agent, task, self.deadline,
+                {d: (queue._tasks[d].status, queue._tasks[d].summary)
+                 for d in task.depends_on if d in queue._tasks})
         finally:
             _client_mod.team_llm_timeout.reset(llm_token)
             _team_deadline.reset(deadline_token)
@@ -1303,7 +1497,8 @@ class TeamCoordinator:
     # -- Task execution ----------------------------------------------------
 
     @staticmethod
-    def _execute_task(worker, task: Task, deadline: float | None) -> None:
+    def _execute_task(worker, task: Task, deadline: float | None,
+                      deps: Optional[dict] = None) -> None:
         """Run one task through *worker* with the run deadline applied.
 
         When the task's worker delegated subtasks, the task stays
@@ -1318,7 +1513,8 @@ class TeamCoordinator:
             return
         try:
             summary = _FutureStub(
-                lambda obj: _worker_run(worker, obj), task.objective
+                lambda obj: _worker_run(worker, obj, task, deps),
+                task.objective
             ).result(remaining)
         except KeyboardInterrupt:
             # Propagate: the claim loop marks the run interrupted and lets
@@ -1379,19 +1575,26 @@ class TeamCoordinator:
 
         def _worker_main(idx: int) -> None:
             while True:
-                tid = q.claim()
+                tid = q.wait_claim()
                 if tid is None:
                     break
+                task = q._tasks[tid]
+                # Prerequisite results so a dependent / synthesis task
+                # can build on what the earlier tasks produced.
+                deps = {d: (q._tasks[d].status, q._tasks[d].summary)
+                        for d in task.depends_on if d in q._tasks}
                 try:
-                    TeamCoordinator._execute_task(worker.agent, q._tasks[tid],
-                                                  deadline)
+                    TeamCoordinator._execute_task(
+                        worker.agent, task, deadline, deps)
                 except KeyboardInterrupt:
                     state[idx]["exc"] = KeyboardInterrupt()
                     q.stop()
                     break
                 except Exception as exc:  # defensive: harness must not die
-                    q._tasks[tid].status = "failed"
-                    q._tasks[tid].summary = f"worker harness error: {exc}"
+                    task.status = "failed"
+                    task.summary = f"worker harness error: {exc}"
+                # Wake any worker parked on a prerequisite that just resolved.
+                q.notify()
 
         threads = [
             threading.Thread(target=_worker_main, args=(i,), daemon=True,
