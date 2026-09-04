@@ -1,20 +1,20 @@
 # Multi-agent coordinated task execution — design
 
-Status: implemented (Phase 1–3). This document is the authoritative design
+Status: Phases 1–2 implemented; Phase 3 partially done; Phase 4 not started. This document is the authoritative design
 reference for `nbchat/core/team.py`.
 
 ## Phases
 
 | Phase | Scope | Status |
 |-------|-------|--------|
-| 1 — Core infrastructure | `TaskQueue` (FIFO claim, atomicity), `ToolArbiter` (per-resource serialisation), plan/JSON parsing, `TeamAgent` output hooks (per-message `[wn]` prefix), `run_plan` parallel dispatch with per-run deadline and post-deadline settle. No LLM required. | **Done** (20 tests) |
+| 1 — Core infrastructure | `TaskQueue` (FIFO claim, atomicity), plan/JSON parsing, `TeamAgent` output hooks (per-message `[wn]` prefix), `run_plan` parallel dispatch with per-run deadline and post-deadline settle. No LLM required. | **Done** (20 tests) |
 | 2 — Coordinator cycle | `TeamCoordinator.run()`: plan → dispatch → collect → verify (run_tests) → integrate (commit+push) → synthesize (final LLM report). Mocks `_coordinator_call` so tests run without a live server. | **Done** (5 tests, mock client) |
-| 3 — TUI + config wiring | `/team <goal>`, `/team` (status), `/team stop` in the TUI REPL loop; `TEAM_*` knobs in `repo_config.yaml` + `nbchat/core/config.py`; `db.get_history()` for transcript retrieval. | **Done** (smoke-tested) |
+| 3 — TUI + config wiring | `/team <goal>`, `/team` (status), `/team stop` in the TUI REPL loop; `TEAM_*` knobs in `repo_config.yaml` + `nbchat/core/config.py`; `db.get_history()` for transcript retrieval. | **Partially done** — config knobs and `get_history()` are in; `/team` command not yet wired into `nbchat/tui/app.py` REPL loop |
 | 4 — Live-server e2e | Two real `TerminalAgent` workers on disjoint file-creation tasks, hitting a live inference server, skipped automatically when the server is down. | **Not yet implemented** (the shipped e2e tests use a mock client; a live-server variant is future work) |
 
-Phase 1–3 are the "implemented" scope referenced in the status line above.
-Phase 4 is a live-integration test that is skipped in CI / when the server
-is unavailable.
+Phase 1 and 2 are fully implemented and tested. Phase 3 is partially
+done (config and DB plumbing in place; `/team` TUI command not yet
+wired). Phase 4 (live-server e2e) is not yet implemented.
 
 ## Goal
 
