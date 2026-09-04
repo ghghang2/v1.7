@@ -77,6 +77,8 @@ You:
 /model           show the active model and server
 /clear           clear the screen
 /sup <question>  ask the supervisor about system state (needs --supervisor)
+/team <goal>   run a goal as a team of parallel agents
+/team             show team run status / stop
 /quit            exit (Ctrl+C / Ctrl+D also work)
 ```
 
@@ -222,7 +224,65 @@ interrupted and re-queued.
 
 ---
 
-## 5. WhatsApp channel
+## 5. Multi-agent team — parallel task execution
+
+For large or decomposable goals, `/team` spawns a team of parallel worker
+agents coordinated by a planner LLM. Each worker is a full `TerminalAgent`
+with its own session, history, and tool access — they run concurrently and
+their output is prefixed `[Wn]` so interleaved streams stay readable.
+
+```
+⺷ /team refactor all db.py calls to use the new get_history helper
+  [team] planning run a3f2b1c9 ...
+  [team] task 1 (t1): Update db.py to add the get_history function
+  [team] task 2 (t2): Replace all direct sqlite cursor calls in agent.py with get_history
+  [W1] [thinking] Let me look at db.py first...
+  [W2] [tool] run_command(command="grep -n cursor nbchat/tui/agent.py")
+  ...
+  [team] report (done):
+  Both tasks completed successfully. get_history was added to db.py and
+  14 call-sites in agent.py were migrated. No failures.
+```
+
+### How it works
+
+1. **Plan** — the coordinator makes one non-streaming LLM call to decompose
+   the goal into 2-8 independent tasks.
+2. **Dispatch** — up to `team_max_workers` (default 4) threads pull tasks
+   from a shared `TaskQueue` and execute them in parallel.
+3. **Arbitrate** — a `ToolArbiter` wraps the tool executor at module level
+   to serialize repo-mutating tools (`run_command`, `make_change_to_file`,
+   `create_file`, `push_to_github`) and test runs (`run_tests`) with
+   per-resource locks, so concurrent writes never interleave.
+4. **Synthesize** — after all tasks finish (or the timeout expires), the
+   coordinator makes a final LLM call to produce a user-facing report.
+
+### Commands
+
+```
+/team <goal>       start a coordinated run (background; live [Wn] output)
+/team              status of the last run
+/team stop         stop the current run (tasks wind down gracefully)
+```
+
+### Configuration (`repo_config.yaml`)
+
+| Key | Default | Effect |
+|-----|---------|--------|
+| `team_enabled` | `true` | master switch; if `false`, `/team` prints a notice and exits. |
+| `team_max_workers` | `4` | max parallel workers per run. |
+| `team_max_tasks` | `8` | max tasks the planner may emit per run. |
+| `team_task_timeout` | `900` | seconds before a single task is interrupted. |
+| `team_plan_max_tokens` | `2048` | max tokens for the planner LLM call. |
+| `team_synthesis_max_tokens` | `1536` | max tokens for the synthesis LLM call. |
+
+> **Note** — the team shares the same `n_parallel` LLM slots as the main
+> assistant. With `n_parallel: 2`, at most 2 workers generate at once; the
+> rest queue inside llama.cpp. Raise `n_parallel` for higher throughput.
+
+---
+
+## 6. WhatsApp channel
 
 A headless agent + FastAPI bridge serves WhatsApp messages over HTTP. Each
 sender JID gets its own isolated session (prefixed `wa:`) in the shared
@@ -252,7 +312,7 @@ Response:
 
 ---
 
-## 6. Jupyter notebook UI
+## 7. Jupyter notebook UI
 
 The full widget-based chat interface. In a notebook cell:
 
@@ -267,7 +327,7 @@ using `ipywidgets`. It reuses the exact same `ContextMixin` +
 
 ---
 
-## 7. Tools
+## 8. Tools
 
 Tools are auto-discovered from `nbchat/tools/` (any module exposing a `func`
 callable plus `name`/`description`). They are shared by **all** front-ends.
@@ -303,7 +363,7 @@ You:
 
 ---
 
-## 8. Memory (L1 core + L2 episodic)
+## 9. Memory (L1 core + L2 episodic)
 
 The agent keeps long conversations coherent with two memory layers, shared by
 every front-end:
@@ -325,7 +385,7 @@ Tuning lives in `repo_config.yaml`:
 
 ---
 
-## 9. Context windowing & output compression
+## 10. Context windowing & output compression
 
 - **Token-budget windowing** — history is walked back to fit the model
   context (`context_headroom_ratio`, `prefix_token_reserve`). Evicted turns
@@ -337,7 +397,7 @@ Tuning lives in `repo_config.yaml`:
 
 ---
 
-## 10. Configuration
+## 11. Configuration
 
 All runtime values live in **`repo_config.yaml`** at the repo root. The most
 commonly edited keys:

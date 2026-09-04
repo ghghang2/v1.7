@@ -1,7 +1,7 @@
 # Multi-agent coordinated task execution — design
 
-Status: Phases 1–2 implemented; Phase 3 partially done; Phase 4 not started. This document is the authoritative design
-reference for `nbchat/core/team.py`.
+Status: Phases 1–3 implemented; Phase 4 (live-server e2e) not yet implemented.
+This document is the authoritative design reference for `nbchat/core/team.py`.
 
 ## Phases
 
@@ -9,12 +9,13 @@ reference for `nbchat/core/team.py`.
 |-------|-------|--------|
 | 1 — Core infrastructure | `TaskQueue` (FIFO claim, atomicity), plan/JSON parsing, `TeamAgent` output hooks (per-message `[wn]` prefix), `run_plan` parallel dispatch with per-run deadline and post-deadline settle. No LLM required. | **Done** (20 tests) |
 | 2 — Coordinator cycle | `TeamCoordinator.run()`: plan → dispatch → collect → verify (run_tests) → integrate (commit+push) → synthesize (final LLM report). Mocks `_coordinator_call` so tests run without a live server. | **Done** (5 tests, mock client) |
-| 3 — TUI + config wiring | `/team <goal>`, `/team` (status), `/team stop` in the TUI REPL loop; `TEAM_*` knobs in `repo_config.yaml` + `nbchat/core/config.py`; `db.get_history()` for transcript retrieval. | **Partially done** — config knobs and `get_history()` are in; `/team` command not yet wired into `nbchat/tui/app.py` REPL loop |
+| 3 — TUI + config wiring | `/team <goal>`, `/team` (status), `/team stop` in the TUI REPL loop; `TEAM_*` knobs in `repo_config.yaml` + `nbchat/core/config.py`; `db.get_history()` for transcript retrieval. | **Done** |
+| 3.5 — ToolArbiter | `ToolArbiter` wraps `nbchat.ui.tool_executor.run_tool` at module level to serialize repo-mutating tools (`run_command`, `make_change_to_file`, `create_file`, `push_to_github`) and `run_tests` with per-resource re-entrant locks. `install()`/`remove()` idempotent. | **Done** (4 tests) |
 | 4 — Live-server e2e | Two real `TerminalAgent` workers on disjoint file-creation tasks, hitting a live inference server, skipped automatically when the server is down. | **Not yet implemented** (the shipped e2e tests use a mock client; a live-server variant is future work) |
 
-Phase 1 and 2 are fully implemented and tested. Phase 3 is partially
-done (config and DB plumbing in place; `/team` TUI command not yet
-wired). Phase 4 (live-server e2e) is not yet implemented.
+Phases 1–3 are fully implemented and tested, including the `ToolArbiter`
+safety net and the `/team` TUI command. Phase 4 (live-server e2e) is not
+yet implemented.
 
 ## Goal
 
