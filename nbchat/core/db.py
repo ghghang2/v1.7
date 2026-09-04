@@ -1,6 +1,7 @@
 """SQLite persistence layer for chat history, memory, and episodic store.
 
-Tables: chat_log, session_meta, episodic_store, core_memory, context_events.
+Tables: chat_log, session_meta, episodic_store, core_memory,
+context_events, task_log.
 """
 from __future__ import annotations
 
@@ -190,7 +191,62 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_ce_session
                 ON context_events(session_id, event_type);
         """)
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS task_log (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id    TEXT NOT NULL,
+                request_text  TEXT DEFAULT '',
+                request_chars INTEGER DEFAULT 0,
+                status        TEXT DEFAULT 'in_progress',
+                completion    TEXT DEFAULT 'unknown',
+                nature        TEXT DEFAULT 'unknown',
+                difficulty    TEXT DEFAULT 'unknown',
+                started_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                ended_at      TIMESTAMP,
+                duration_s    REAL,
+                num_llm_calls INTEGER DEFAULT 0,
+                num_tool_turns INTEGER DEFAULT 0,
+                tool_calls_total INTEGER DEFAULT 0,
+                tool_calls_by_name TEXT DEFAULT '{}',
+                tool_calls_failed INTEGER DEFAULT 0,
+                redundant_tool_calls INTEGER DEFAULT 0,
+                redundant_reads INTEGER DEFAULT 0,
+                redundant_writes INTEGER DEFAULT 0,
+                stall_events INTEGER DEFAULT 0,
+                truncation_events INTEGER DEFAULT 0,
+                stream_retries INTEGER DEFAULT 0,
+                text_toolcall_recovery INTEGER DEFAULT 0,
+                user_interventions INTEGER DEFAULT 0,
+                llm_latency_s REAL DEFAULT 0,
+                prompt_chars INTEGER DEFAULT 0,
+                completion_chars INTEGER DEFAULT 0,
+                max_context_chars INTEGER DEFAULT 0,
+                error_count INTEGER DEFAULT 0,
+                final_response_chars INTEGER DEFAULT 0,
+                turn_ids      TEXT DEFAULT '[]',
+                annotations   TEXT DEFAULT '{}'
+            );
+            CREATE INDEX IF NOT EXISTS idx_task_session ON task_log(session_id);
+            CREATE INDEX IF NOT EXISTS idx_task_status ON task_log(status);
+        """)
+        _sweep_orphan_tasks(conn)
         conn.commit()
+
+
+# Tasks older than this that never reached a terminal state (the process
+# died mid-turn) are swept to 'in_progress' at startup.  Generous enough
+# that a long background turn in progress when the app restarts is not
+# mislabelled; the next finish_task() overrides it via turn id anyway.
+_ORPHAN_TASK_MAX_AGE_MINUTES = 15
+
+
+def _sweep_orphan_tasks(conn) -> None:
+    conn.execute(
+        "UPDATE task_log SET status='in_progress', completion='unknown' "
+        "WHERE status NOT IN ('complete','interrupted','failed') "
+        "AND started_at < datetime('now', ?)",
+        (f"-{_ORPHAN_TASK_MAX_AGE_MINUTES} minutes",),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -550,3 +606,92 @@ def store_paste_content(content: str) -> str:
 def retrieve_paste_content(content_hash: str) -> str | None:
     raw = _meta_get(_PASTE_SESSION, content_hash)
     return raw if raw else None
+
+
+# ---------------------------------------------------------------------------
+# Task completion statistics (task_log)
+# ---------------------------------------------------------------------------
+
+_TASK_FIELDS = (
+    "session_id", "request_text", "request_chars", "status", "completion",
+    "nature", "difficulty", "started_at", "ended_at", "duration_s",
+    "num_llm_calls", "num_tool_turns", "tool_calls_total",
+    "tool_calls_by_name", "tool_calls_failed", "redundant_tool_calls",
+    "redundant_reads", "redundant_writes", "stall_events",
+    "truncation_events", "stream_retries", "text_toolcall_recovery",
+    "user_interventions", "llm_latency_s", "prompt_chars",
+    "completion_chars", "max_context_chars", "error_count",
+    "final_response_chars", "turn_ids", "annotations",
+)
+
+
+def record_task(task_id: int | None, **fields: Any) -> int:
+    """Insert (task_id=None) or update (by id) one task_log row.
+
+    Only the fields supplied are written (others keep their defaults /
+    previous values), so the two-phase lifecycle — insert at loop start,
+    finalise at loop end — can each pass a partial field set.  Returns the
+    row id.
+    """
+    keys = [k for k in fields if k in _TASK_FIELDS]
+    if not keys:
+        raise ValueError("record_task: no known fields supplied")
+    if task_id is None:
+        ph = ", ".join("?" for _ in keys)
+        with _connect() as conn:
+            cur = conn.execute(
+                f"INSERT INTO task_log ({', '.join(keys)}) VALUES ({ph})",
+                [fields[k] for k in keys],
+            )
+        return int(cur.lastrowid)
+    sets = ", ".join(f"{k}=?" for k in keys)
+    with _connect() as conn:
+        conn.execute(f"UPDATE task_log SET {sets} WHERE id=?",
+                     [fields[k] for k in keys] + [task_id])
+    return int(task_id)
+
+
+def query_tasks(session_id: str | None = None, status: str | None = None,
+                limit: int = 100) -> list[dict]:
+    """Return task_log rows (newest first) as dicts, optionally filtered."""
+    sql = "SELECT * FROM task_log"
+    where, params = [], []
+    if session_id:
+        where.append("session_id=?")
+        params.append(session_id)
+    if status:
+        where.append("status=?")
+        params.append(status)
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY id DESC LIMIT ?"
+    params.append(int(limit))
+    conn = _connect()
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(sql, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def task_summary_rows(session_id: str | None = None,
+                      limit: int = 500) -> list[dict]:
+    """The subset of columns needed to build a stats summary view."""
+    sql = (
+        "SELECT session_id, status, completion, nature, difficulty, "
+        "started_at, ended_at, duration_s, num_llm_calls, num_tool_turns, "
+        "tool_calls_total, tool_calls_failed, redundant_tool_calls, "
+        "redundant_reads, redundant_writes, stall_events, "
+        "truncation_events, stream_retries, user_interventions, "
+        "final_response_chars FROM task_log"
+    )
+    params: list = []
+    if session_id:
+        sql += " WHERE session_id=?"
+        params.append(session_id)
+    sql += " ORDER BY id DESC LIMIT ?"
+    params.append(int(limit))
+    conn = _connect()
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(sql, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]

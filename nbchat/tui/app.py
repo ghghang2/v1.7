@@ -45,6 +45,9 @@ _HELP = """Commands
                      average tokens/sec for the last 50 turns.
   /effort [E]        Show/set session reasoning effort (none, low, medium,
                      xhigh); no argument resets to the model default.
+  /stats [N] [sess]  Task-completion statistics (default: all tasks,
+                     last N, or a specific session id): completion rate,
+                     durations, tool/redundancy counts.
   /clear             Clear the screen.
   /quit              Exit (Ctrl+C / Ctrl+D also work).
   /sup <question>    Ask the supervisor about system state (requires --supervisor).
@@ -159,6 +162,41 @@ def handle_command(agent: TerminalAgent, line: str, supervisor=None) -> bool:
         else:
             current = agent.reasoning_effort or "(model default)"
             print(f"current: {current}  " + agent.palette.gray("usage: /effort none|low|medium|xhigh"))
+    elif cmd == "/stats":
+        # Usage: /stats [N] — all tasks, or the last N.  An explicit
+        # session id (e.g. /stats tui:s1) restricts to that session.
+        from nbchat.core.task_tracker import summarize_tasks
+        parts = arg.split() if arg else []
+        n = None
+        session = None
+        for tok in parts:
+            if tok.isdigit():
+                n = int(tok)
+            elif ":" in tok:  # a session id (e.g. tui:s1, whatsapp:...)
+                session = tok
+        if n is None:
+            n = 500
+        rows = db.task_summary_rows(session, limit=n)
+        if not rows:
+            print("No task records yet (tasks are logged as they complete).")
+        else:
+            summary = summarize_tasks(rows)
+            p = agent.palette
+            dur = summary["duration_s"]
+            scope = f"  (session {session})" if session else "  (all sessions)"
+            print(f"{p.bold('tasks   ')} {summary['tasks']}{scope}   status: {summary['by_status']}")
+            print(f"{p.bold('completion')} {summary['by_completion']}"
+                  f"   failure rate {summary['failure_rate']:.1%}")
+            print(f"{p.bold('duration')}  mean {dur['mean']}s  median {dur['median']}s  "
+                  f"max {dur['max']}s")
+            t = summary["totals"]
+            print(f"{p.bold('totals  ')} llm {t['llm_calls']}  tool turns {t['tool_turns']}  "
+                  f"tools {t['tool_calls']}  failed {t['tool_failed']}")
+            print(f"{p.bold('waste   ')} redundant {t['redundant']} "
+                  f"({t['redundant_reads']} reads / {t['redundant_writes']} writes)  "
+                  f"stalls {t['stalls']}  truncations {t['truncations']}  "
+                  f"stream retries {t['stream_retries']}  "
+                  f"interventions {t['interventions']}")
     elif cmd in ("/model", "/about"):
         print(f"model   {agent.model_name}")
         print(f"server  {config.SERVER_URL}")

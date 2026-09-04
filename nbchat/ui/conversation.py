@@ -14,12 +14,14 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 import uuid
 
 import nbchat.core.db as db
 import nbchat.core.config as config
 import nbchat.core.compressor as comp
 import nbchat.core.monitoring as mon
+import nbchat.core.task_tracker as task_tracker
 from nbchat.core.db import is_error_content, is_tool_error
 from nbchat.ui import chat_builder, tool_executor as executor
 import nbchat.tools as tools_mod
@@ -126,6 +128,97 @@ def _strip_tool_blocks_reasoning(reasoning: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
+# ── Task telemetry helpers — thin, never-raising wrappers around
+# nbchat.core.task_tracker so a bookkeeping failure can never disturb
+# the conversation loop.  See docs/task_tracking.md for the schema.
+
+def _tt_start(agent, user_text: str):
+    try:
+        return task_tracker.start_task(agent, user_text)
+    except Exception:
+        _log.debug("task telemetry start failed", exc_info=True)
+        return None
+
+
+def _tt_event(rec, event: str) -> None:
+    if rec is None:
+        return
+    try:
+        rec.record_event(event)
+    except Exception:
+        _log.debug("task telemetry event %s failed", event, exc_info=True)
+
+
+def _tt_llm(rec, latency: float) -> None:
+    if rec is None:
+        return
+    try:
+        rec.record_llm_call(latency_s=latency)
+    except Exception:
+        _log.debug("task telemetry llm record failed", exc_info=True)
+
+
+def _tt_tool_turn(rec) -> None:
+    if rec is None:
+        return
+    try:
+        rec.note_tool_turn()
+    except Exception:
+        _log.debug("task telemetry tool-turn record failed", exc_info=True)
+
+
+def _tt_retry(rec, exc: MidStreamError) -> None:
+    if rec is None:
+        return
+    try:
+        rec.record_event("stream_retry")
+        rec.record_stream_error()
+    except Exception:
+        _log.debug("task telemetry stream retry failed", exc_info=True)
+
+
+def _tt_tool(rec, tool_name: str, tool_args: str) -> None:
+    if rec is None:
+        return
+    try:
+        rec.record_tool_call(tool_name, tool_args, error=False, is_tool_turn=False)
+    except Exception:
+        _log.debug("task telemetry tool record failed", exc_info=True)
+
+
+def _tt_tool_error(rec, tool_name: str, raw_result: str) -> None:
+    if rec is None:
+        return
+    try:
+        if is_tool_error(tool_name, raw_result):
+            rec.note_tool_error()
+    except Exception:
+        _log.debug("task telemetry tool error failed", exc_info=True)
+
+
+def _tt_user_row(rec) -> None:
+    """Mark an agent-injected role='user' row (nudge/stall) so it is not
+    later counted as a user intervention at task finish."""
+    if rec is None:
+        return
+    try:
+        rec.note_agent_user_row()
+    except Exception:
+        _log.debug("task telemetry user-row record failed", exc_info=True)
+
+
+def _tt_finish(rec, content: str | None = None,
+               status: str | None = None) -> None:
+    if rec is None:
+        return
+    try:
+        task_tracker.finish_task(rec, final_response=content,
+                                 status=status or "complete")
+    except Exception:
+        _log.debug("task telemetry finish failed", exc_info=True)
+
+
+
 class ConversationMixin:
     """Mixed into ChatUI and headless channel agents.
 
@@ -162,6 +255,7 @@ class ConversationMixin:
             from nbchat.core.client import get_client
             self._run_conversation_loop(get_client())
         except Exception as exc:
+            _tt_finish(getattr(self, "_active_task", None), status="failed")
             msg = f"Conversation loop stopped unexpectedly: {type(exc).__name__}: {exc}"
             _log.debug(msg, exc_info=True)
             mon.flush_session_monitor(self.session_id, db)
@@ -182,12 +276,24 @@ class ConversationMixin:
             msg.pop("reasoning_content", None)
 
         monitor = mon.get_session_monitor(self.session_id)
+        # ── Task telemetry: open one task record per turn ──────────
+        try:
+            _last_user = next((r[1] for r in reversed(self.history)
+                               if r[0] == "user"), None)
+            _task_rec = task_tracker.start_task(self, _last_user or "")
+        except Exception:
+            _task_rec = None
+        # Crash path (_process_conversation_turn) finishes the record via
+        # this attribute; finish_task is idempotent, so a second finish
+        # from a loop exit is a no-op.
+        self._active_task = _task_rec
         STALL_TURNS = config.STALL_TURNS
         _recent_call_sets: list = []
 
         for turn in range(self.MAX_TOOL_TURNS + 1):
             if self._stop_event.is_set():
                 mon.flush_session_monitor(self.session_id, db)
+                _tt_finish(_task_rec, None, "interrupted")
                 break
 
             # ── Drain supervisor interjections (safe point) ──────────
@@ -218,6 +324,7 @@ class ConversationMixin:
             # loop's success path.
             for _attempt in range(config.MAX_STREAM_RETRIES + 1):
                 try:
+                    _tt_call_start = time.monotonic()
                     reasoning, content, tool_calls, finish_reason = self._stream_response(
                         client, messages
                     )
@@ -234,6 +341,7 @@ class ConversationMixin:
                     # so it is discarded; the nudge tells the model to
                     # re-issue it.  If nothing was rendered yet there is
                     # nothing to continue, so the error propagates as before.
+                    _tt_retry(_task_rec, exc)
                     _stream_exc = exc
                     if not exc.content or exc.tool_calls:
                         raise exc
@@ -264,6 +372,7 @@ class ConversationMixin:
                     with self._history_lock:
                         self.history.append(("user", _nudge, "", "", "", 0))
                     db.log_message(self.session_id, "user", _nudge)
+                    _tt_user_row(_task_rec)
                     messages.append({"role": "assistant", "content": exc.content})
                     messages.append({"role": "user", "content": _nudge})
                     try:
@@ -280,6 +389,9 @@ class ConversationMixin:
             if _stream_exc is not None:
                 raise _stream_exc
 
+            _tt_llm(_task_rec, time.monotonic() - _tt_call_start)
+            if tool_calls:
+                _tt_tool_turn(_task_rec)
             try:
                 monitor.record_llm_call(volatile_len)
             except Exception:
@@ -319,6 +431,7 @@ class ConversationMixin:
                         f"Recovered {len(recovered)} tool call(s) emitted as "
                         "text markup; executing them now."
                     )
+                    _tt_event(_task_rec, "text_toolcall")
                     tool_calls = recovered
                     finish_reason = "tool_calls"
                     content = _strip_tool_blocks(content)
@@ -347,6 +460,7 @@ class ConversationMixin:
                     with self._history_lock:
                         self.history.append(("user", _nudge, "", "", "", 0))
                     db.log_message(self.session_id, "user", _nudge)
+                    _tt_user_row(_task_rec)
                     messages.append({"role": "assistant", "content": _clean})
                     messages.append({"role": "user", "content": _nudge})
                     try:
@@ -390,6 +504,7 @@ class ConversationMixin:
                     or _voice_unclosed
                 )
                 if _truncated and turn < self.MAX_TOOL_TURNS:
+                    _tt_event(_task_rec, "truncation")
                     _log.warning(
                         "Possible truncation detected (finish_reason=%s, "
                         "voice_unclosed=%s, content_tail=%r). "
@@ -409,6 +524,7 @@ class ConversationMixin:
                     with self._history_lock:
                         self.history.append(("user", nudge, "", "", "", 0))
                     db.log_message(self.session_id, "user", nudge)
+                    _tt_user_row(_task_rec)
                     messages.append({"role": "assistant", "content": content or None})
                     messages.append({"role": "user", "content": nudge})
                     try:
@@ -430,15 +546,18 @@ class ConversationMixin:
                     db.log_message(self.session_id, "assistant", content)
                 mon.flush_session_monitor(self.session_id, db)
                 self._refresh_monitoring_panel()
+                _tt_finish(_task_rec, content)
                 break
 
             if turn == self.MAX_TOOL_TURNS:
                 warning = f"Maximum tool turns ({self.MAX_TOOL_TURNS}) reached."
                 self._on_agent_message(warning)
+                _tt_event(_task_rec, "truncation")
                 with self._history_lock:
                     self.history.append(("assistant", warning, "", "", "", 0))
                 db.log_message(self.session_id, "assistant", warning)
                 mon.flush_session_monitor(self.session_id, db)
+                _tt_finish(_task_rec, warning)
                 break
 
             # Stall detection
@@ -450,6 +569,7 @@ class ConversationMixin:
             if len(_recent_call_sets) > STALL_TURNS:
                 _recent_call_sets.pop(0)
             if len(_recent_call_sets) == STALL_TURNS and len(set(_recent_call_sets)) == 1:
+                _tt_event(_task_rec, "stall")
                 stall_msg = (
                     f"You appear to be stuck in a loop — same tool calls {STALL_TURNS} turns in a row. "
                     "Review the task log, identify what has already been done, and take a concrete next step."
@@ -458,12 +578,15 @@ class ConversationMixin:
                 with self._history_lock:
                     self.history.append(("user", stall_msg, "", "", "", 0))
                 db.log_message(self.session_id, "user", stall_msg)
+                _tt_user_row(_task_rec)
                 messages.append({"role": "user", "content": stall_msg})
                 _recent_call_sets.clear()
 
             msg_for_model = {"role": "assistant", "content": content or None, "tool_calls": tool_calls}
             messages.append(msg_for_model)
             full_msg_json = json.dumps(msg_for_model)
+            if _task_rec is not None:
+                _task_rec.record_context(len(full_msg_json) + len(messages[0]["content"]))
             # Keep the full message JSON in tool_args (the history readers —
             # chat_builder and chatui — parse it) AND store the assistant text
             # in the readable content column so monitoring/analysis can inspect
@@ -485,6 +608,7 @@ class ConversationMixin:
                     self._tool_running = False
 
                 self._on_tool_display(raw_result, tool_name, tool_args)
+                _tt_tool(_task_rec, tool_name, tool_args)
 
                 compressed = comp.compress_tool_output(
                     tool_name, tool_args, raw_result,
@@ -496,6 +620,7 @@ class ConversationMixin:
                 )
 
                 self._log_action(tool_name, tool_args, model_result)
+                _tt_tool_error(_task_rec, tool_name, raw_result)
                 # Derived from the structured tool outcome (exit code / status),
                 # not keyword matching — see db.is_tool_error.
                 error_flag = int(is_tool_error(tool_name, raw_result))

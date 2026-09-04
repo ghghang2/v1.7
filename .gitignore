@@ -36,3 +36,5 @@ repo_overview.md
 # SQLite WAL runtime artifacts
 *.db-shm
 *.db-wal
+nbchat/chat_history.db-shm
+nbchat/chat_history.db-wal
