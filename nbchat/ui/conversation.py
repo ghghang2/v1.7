@@ -20,7 +20,6 @@ import nbchat.core.db as db
 import nbchat.core.config as config
 import nbchat.core.compressor as comp
 import nbchat.core.monitoring as mon
-from nbchat.core.client import get_client
 from nbchat.core.db import is_error_content, is_tool_error
 from nbchat.ui import chat_builder, tool_executor as executor
 import nbchat.tools as tools_mod
@@ -139,6 +138,9 @@ class ConversationMixin:
 
     def _process_conversation_turn(self) -> None:
         try:
+            # Resolve at call time (not import time) so tests can
+            # monkeypatch nbchat.core.client.get_client per-session.
+            from nbchat.core.client import get_client
             self._run_conversation_loop(get_client())
         except Exception as exc:
             msg = f"Conversation loop stopped unexpectedly: {type(exc).__name__}: {exc}"

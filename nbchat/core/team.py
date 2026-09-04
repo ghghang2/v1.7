@@ -252,14 +252,31 @@ def _install_prefix_hooks(agent, tag: str) -> None:
     """
     p = agent.palette
     prefix = p.dim(f"[{tag}] ")
+    streamers = {"_on_stream_token", "_on_stream_reasoning"}
     for name in _PREFIX_HOOKS:
         orig = getattr(agent, name)
         if orig is None:
             continue
+        state = {"active": False}
 
-        def _inner(*args, _orig=orig, **kwargs):
-            sys.stdout.write(prefix)
-            sys.stdout.flush()
+        def _inner(*args, _orig=orig, _name=name, **kwargs):
+            # Streaming hooks fire per token: open the stream with the
+            # tag once and close it on the matching stream-complete, so
+            # the tag never fragments mid-sentence.  Discrete hooks
+            # (tool display, agent messages) carry their own marker.
+            if _name in streamers:
+                if not state["active"] and args and args[0]:
+                    sys.stdout.write(prefix)
+                    sys.stdout.flush()
+                    state["active"] = True
+            elif args:
+                sys.stdout.write(prefix)
+                sys.stdout.flush()
+            if _name == "_on_stream_complete":
+                if state["active"] and not (args and args[0]):
+                    sys.stdout.write("\n")
+                    sys.stdout.flush()
+                state["active"] = False
             return _orig(*args, **kwargs)
 
         _inner.__name__ = name
@@ -456,10 +473,13 @@ class TeamCoordinator:
     dicts.  It never raises for expected failure modes.
     """
 
-    def __init__(self, agent: TeamAgent) -> None:
+    def __init__(self, agent: TeamAgent, worker_factory=None) -> None:
         self.agent = agent
         self._workers_by_objective: dict = {}
         self._run_id = ""
+        # Injectable worker factory (tests pass stubs; default builds
+        # full TerminalAgents with the real tool set).
+        self._worker_factory = worker_factory or TerminalAgent
 
     # -- LLM calls (non-streaming) --------------------------------------
 
@@ -520,9 +540,9 @@ class TeamCoordinator:
         task.summary = str(summary) if summary else "(worker returned no summary)"
 
     @staticmethod
-    def _run_plan(tasks: list, worker, *, queue: TaskQueue | None = None,
-                  max_workers: int = 4,
-                  timeout: float | None = None) -> str:
+    def run_plan(tasks: list | None, worker, *, queue: TaskQueue | None = None,
+                 max_workers: int = 4,
+                 timeout: float | None = None) -> str:
         """Execute *tasks* on *worker* with up to *max_workers* parallel
         claimer threads.
 
@@ -535,9 +555,9 @@ class TeamCoordinator:
         for expected failure modes.
         """
         q = queue if queue is not None else TaskQueue(tasks)
-        if not tasks:
+        if not q._tasks:
             return "failed"
-        n_workers = max(1, min(int(max_workers), len(tasks)))
+        n_workers = max(1, min(int(max_workers), len(q._tasks)))
         start = time.monotonic()
         deadline = start + timeout if timeout is not None else None
         state = [{"exc": None} for _ in range(n_workers)]
@@ -578,6 +598,14 @@ class TeamCoordinator:
         for s in state:
             if s["exc"] is not None:
                 interrupted = True
+        # Grace period (timeout case only): the main thread's join deadline
+        # and the workers' internal per-task deadline race by milliseconds.
+        # Without a small settle after the deadline has fired, the sweep
+        # below can observe a task still "claimed" just before its in-flight
+        # handler marks it failed/interrupted.  Never applied when the run
+        # finished before the deadline (keeps the concurrency path tight).
+        if deadline is not None and time.monotonic() >= deadline:
+            time.sleep(0.25)
 
         q.stop()
         if interrupted:
@@ -596,7 +624,14 @@ class TeamCoordinator:
                 elif t.status == "pending":
                     t.status = "failed"
                     t.summary = "not started (team run timed out)"
-            _interrupt_all = [s["exc"] for s in state]  # noqa: F841
+            # In-flight ("claimed") tasks were left mid-run by the deadline
+            # (their worker threads are still winding down): mark them failed
+            # too, so no task is left claimed forever.
+            for t in q._tasks.values():
+                if t.status == "claimed":
+                    t.status = "failed"
+                    t.summary = "timed out (coordinator run deadline)"
+            _try_interrupt(worker)
         return "done" if any(t.status == "done"
                              for t in q._tasks.values()) else "failed"
 
@@ -644,24 +679,15 @@ class TeamCoordinator:
             print(p.cyan(
                 f"  [team] task {i} ({t.task_id}): {t.objective[:120]}"))
 
-        # One real worker agent per task, registered on the team agent.
+        # One worker agent per task, registered on the team agent.
         for i, t in enumerate(tasks, 1):
             tag = f"w{i}"
-            try:
-                worker = TerminalAgent(color=False)
-            except Exception as exc:  # shouldn't happen; degrade per task
-                t.status = "failed"
-                t.summary = f"worker init failed: {exc}"
+            if not self._make_worker(t, tag):
                 continue
-            worker.session_id = f"team:{self._run_id}-{tag}"
-            worker.system_prompt = _default_worker_prompt()
-            _install_prefix_hooks(worker, tag)
-            self.agent.sessions[t.task_id] = worker
-            self._workers_by_objective[t.objective] = worker
 
         proxy = _WorkerProxy(self)
         try:
-            result = self._run_plan(
+            result = self.run_plan(
                 tasks, proxy,
                 max_workers=config.TEAM_MAX_WORKERS,
                 timeout=config.TEAM_TASK_TIMEOUT)
@@ -693,6 +719,24 @@ class TeamCoordinator:
             print("  " + line)
         print()
         return self._finish(result, summary, tasks)
+
+    def _make_worker(self, task: Task, tag: str) -> bool:
+        """Build + register one worker for *task*; False on failure."""
+        try:
+            try:
+                worker = self._worker_factory(color=False)
+            except TypeError:
+                worker = self._worker_factory()
+        except Exception as exc:  # shouldn't happen; degrade per task
+            task.status = "failed"
+            task.summary = f"worker init failed: {exc}"
+            return False
+        worker.session_id = f"team:{self._run_id}-{tag}"
+        worker.system_prompt = _default_worker_prompt()
+        _install_prefix_hooks(worker, tag)
+        self.agent.sessions[task.task_id] = worker
+        self._workers_by_objective[task.objective] = worker
+        return True
 
     def _finish(self, status: str, summary: str, tasks: list) -> dict:
         """Persist the final report row and shape the result dict."""

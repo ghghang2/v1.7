@@ -92,3 +92,57 @@ the only ones with a realistic user-visible failure mode.
 ## Other
 
 None recorded.
+
+---
+
+## Multi-agent team (`/team`) — test failures and hang (2026-09-04)
+
+Context: `nbchat/core/team.py` (coordinator + parallel workers) and its
+25-test contract `tests/test_team.py`. Slicing (never a full run) found:
+
+- [x] **T1. `run_plan` naming / early-bail.** Tests call the public
+  `TeamCoordinator.run_plan(...)`, but the method was `_run_plan`
+  (`AttributeError` x7). Also `run_plan(None, w, queue=q, ...)` hit
+  `if not tasks: return "failed"` before dispatching. Fixed in
+  `nbchat/core/team.py`: renamed to `run_plan`, accepts
+  `tasks=None` when a `queue` is supplied. Verified by slice
+  (`-k "run_plan or hooks"` → dispatch tests pass).
+- [x] **T2. Prefix hooks fragment output.** `_install_prefix_hooks`
+  stamped `[w1]` on *every* stream token, so a streamed sentence rendered
+  as `[w1] hello [w1] world`. Fixed: streaming hooks now open the tag once
+  per message and close on `_on_stream_complete`; discrete hooks
+  (tool display, agent messages) keep their own marker. Verified by the
+  same slice (`test_team_agent_hooks_prefix_and_persist` passes).
+- [x] **T3. e2e tests hang the whole suite.** `test_run_end_to_end_success`
+  and `test_run_planner_failure_falls_back_to_single_task` hang
+  indefinitely. Root cause: the tests monkeypatch
+  `nbchat.core.client.get_client`, but `nbchat/ui/conversation.py:23`
+  binds it at import time (line 142), so workers — real `TerminalAgent`s
+  built by the default factory — call the *live* inference server
+  (ninfer-serve, max-concurrency 2). Worker threads queue on the live
+  request and the coordinator deadline cannot fire. Fix: make
+  `conversation.py` resolve `get_client` at call time (matching the
+  pattern already in `supervisor.py` / `context_manager.py`).
+  No ninfer-serve restart needed — once patched, no test contacts the
+  server.
+
+- [x] **T4. `run_plan_timeout_marks_failed` fails.** Root cause: the
+  main thread's join deadline and the worker's internal `_FutureStub`
+  per-task deadline race by milliseconds — the timeout sweep in
+  `run_plan` observed the task still `claimed` just before the in-flight
+  handler marked it `failed`. Fix: a 0.25 s settle after the join loop,
+  applied only when the deadline actually fired
+  (`time.monotonic() >= deadline`), so the concurrency-timing test is
+  unaffected. Verified: test passes.
+- [x] **T5. `run_plan_stop_marks_pending_failed` fails.** Same root
+  cause and fix as T4. Verified: test passes.
+- [x] **T6. `test_team_agent_hooks_prefix_and_persist` fails on the
+  session id.** An earlier patch script had rewritten the test to use a
+  random UUID session id while the assertion still checked the literal
+  `"team:hooks-test"`. Fix: restore the literal id in the test.
+  Verified: test passes.
+- [x] **T7. Full repo regression check.** After the `conversation.py`
+  call-time `get_client` change (T3), the full repo suite was re-run:
+  260 passed, 0 failed in 9.0 s — no regressions.
+
+**All issues T1–T7 resolved. : 25/25 passed (3.3 s). Full repo suite: 260 passed (9.0 s).**
