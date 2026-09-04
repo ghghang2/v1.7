@@ -2,12 +2,22 @@
 from __future__ import annotations
 
 import logging
+import contextvars
 import time
 
 from openai import OpenAI
 from .config import SERVER_URL
 
 logger = logging.getLogger("Inference_Metrics")
+
+# Team-mode LLM call budget.  Set (per thread/context) by the team
+# coordinator before a worker turn runs; ``MetricsLoggingClient.create``
+# picks it up so no single worker LLM request can outlive the team's
+# task deadline.  A parked worker was the root cause of hung /team
+# runs: the SDK default read timeout is 600s and it retries twice.
+team_llm_timeout: contextvars.ContextVar = contextvars.ContextVar(
+    "nbchat_team_llm_timeout", default=None)
+
 if not logger.handlers:
     _h = logging.FileHandler("inference_metrics.log")
     _h.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
@@ -78,6 +88,12 @@ class MetricsLoggingClient:
     def create(self, *args, **kwargs):
         if kwargs.get("stream"):
             kwargs.setdefault("stream_options", {})["include_usage"] = True
+        team_timeout = team_llm_timeout.get()
+        if team_timeout is not None:
+            # Bound the in-flight HTTP request and cut the SDK's default
+            # 2-retry behaviour to a single retry inside team runs.
+            kwargs.setdefault("timeout", float(team_timeout))
+            kwargs.setdefault("max_retries", 1)
         kwargs.setdefault("extra_body", {})["cache_prompt"] = True
         t0 = time.time()
         try:

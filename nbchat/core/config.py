@@ -147,6 +147,21 @@ TEAM_SYNTHESIS_MAX_TOKENS: int = int(_cfg.get("team_synthesis_max_tokens", 1536)
 TEAM_LLM_TIMEOUT: float = float(_cfg.get("team_llm_timeout", 120.0))
 # Cap on planner-emitted tasks per /team run (larger plans are truncated).
 TEAM_MAX_TASKS: int = int(_cfg.get("team_max_tasks", 8))
+# Total-task ceiling for a whole /team run, counting both the tasks the
+# planner emits and the subtasks workers add via the delegate_task tool.
+# Bounds runaway delegation; subtask push is refused once the cap is hit.
+TEAM_MAX_TOTAL_TASKS: int = int(_cfg.get("team_max_total_tasks", 16))
+# Hard cap on worker-delegated subtasks per run (defense against runaway
+# delegation loops); combined with the delegation depth limit the fan-out
+# is always bounded by team_max_workers in-flight.
+TEAM_MAX_SUBTASKS: int = int(_cfg.get("team_max_subtasks", 8))
+# Maximum delegation depth: 0 = top-level coordinator task, a worker at
+# depth d may only delegate while d < the limit.
+TEAM_MAX_DELEGATION_DEPTH: int = int(
+    _cfg.get("team_max_delegation_depth", 2))
+# Planning retries on unparseable/truncated plan output before the
+# coordinator falls back to running the goal as a single task.
+TEAM_PLAN_ATTEMPTS: int = int(_cfg.get("team_plan_attempts", 2))
 
 # Voice channel (Alfred) — laptop bridge over an SSH tunnel.
 VOICE_ENABLED: bool = bool(_cfg.get("voice_enabled", False))
@@ -238,6 +253,10 @@ __all__ = [
     "TEAM_SYNTHESIS_MAX_TOKENS",
     "TEAM_LLM_TIMEOUT",
     "TEAM_MAX_TASKS",
+    "TEAM_MAX_TOTAL_TASKS",
+    "TEAM_MAX_SUBTASKS",
+    "TEAM_MAX_DELEGATION_DEPTH",
+    "TEAM_PLAN_ATTEMPTS",
     # Voice channel (Alfred)
     "VOICE_ENABLED",
     "VOICE_PORT",
