@@ -162,3 +162,30 @@ Phase 4 (live server, skipped when llama-server is down):
   simpler and sufficient for the current task mix).
 * Voice announcements for team events (hook exists via `on_event`; wiring
   Alfred is future work).
+
+## Status (2026-09-04)
+
+**Implementation complete and shipped** (commits `3a62012` WIP + `2925925`
+fixes, on `main`):
+
+* `nbchat/core/team.py` — plan parsing, `TaskQueue` claim semantics,
+  parallel `run_plan` dispatch with a per-run deadline and a post-deadline
+  settle (claimed tasks are swept to `failed`), `TeamAgent` output hooks
+  (one `[wn]` marker per message, not per token), `TeamCoordinator.run()`
+  end-to-end (plan → dispatch → synthesize → persist).
+* `tests/test_team.py` — 25/25 passing in ~3.3 s with no live server
+  (the e2e tests inject a mock client; `nbchat/ui/conversation.py` now
+  resolves `get_client` at call time so the mock binding reaches workers).
+* Full repo suite: 260 passed, 0 failed.
+
+Defects found during bring-up (T1–T6, all resolved; tracked in
+`issues.md`, section "Multi-agent team") and their fixes:
+
+| # | Defect | Fix |
+|---|--------|-----|
+| T1 | `run_plan` named `_run_plan`; `tasks=None` early-bail | public rename; queue-supplied runs |
+| T2 | Prefix hook stamped `[wn]` per stream token | once-per-message open/close |
+| T3 | e2e tests hung (workers hit the live server via an import-time `get_client` binding) | call-time resolution in `conversation.py` |
+| T4 | Timeout sweep raced the in-flight worker handler (`claimed` stuck) | post-deadline sweep + 0.25 s settle |
+| T5 | Same root cause as T4 (pending-marking test) | same fix |
+| T6 | Hooks test asserted a stale literal session id | restored literal id |
