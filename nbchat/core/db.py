@@ -340,6 +340,22 @@ def load_history(session_id: str, limit: int | None = None) -> list[tuple]:
         return conn.execute(q, params).fetchall()
 
 
+def get_history(session_id: str) -> list[tuple]:
+    """Return ``(session_id, role, content)`` rows for *session_id* in
+    insertion order.
+
+    A slimmer view than :func:`load_history` for callers that only need the
+    transcript (the team coordinator persists its final report here, and the
+    TUI renders it).
+    """
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT session_id, role, content FROM chat_log "
+            "WHERE session_id=? ORDER BY id ASC",
+            (session_id,),
+        ).fetchall()
+
+
 def get_session_ids() -> list[str]:
     with _connect() as conn:
         return [r[0] for r in conn.execute(

@@ -129,6 +129,20 @@ SUPERVISOR_MAX_OUTPUT_TOKENS: int = int(_cfg.get("supervisor_max_output_tokens",
 # could pin the watchdog thread for ~10 minutes behind an in-flight turn.
 SUPERVISOR_LLM_TIMEOUT: float = float(_cfg.get("supervisor_llm_timeout", 60.0))
 
+# Multi-agent team execution (see docs/multi_agent.md).  All keys are
+# optional (.get() defaults) so configs written before team support still load.
+TEAM_ENABLED: bool = bool(_cfg.get("team_enabled", True))
+TEAM_MAX_WORKERS: int = int(_cfg.get("team_max_workers", 4))
+# Seconds the coordinator allows a single claimed task before it interrupts
+# the drifting worker and marks the task failed.
+TEAM_TASK_TIMEOUT: int = int(_cfg.get("team_task_timeout", 900))
+TEAM_PLAN_MAX_TOKENS: int = int(_cfg.get("team_plan_max_tokens", 2048))
+TEAM_SYNTHESIS_MAX_TOKENS: int = int(_cfg.get("team_synthesis_max_tokens", 1536))
+# Per-call timeout (s) for the coordinator's planning / synthesis LLM requests.
+TEAM_LLM_TIMEOUT: float = float(_cfg.get("team_llm_timeout", 120.0))
+# Cap on planner-emitted tasks per /team run (larger plans are truncated).
+TEAM_MAX_TASKS: int = int(_cfg.get("team_max_tasks", 8))
+
 # Voice channel (Alfred) — laptop bridge over an SSH tunnel.
 VOICE_ENABLED: bool = bool(_cfg.get("voice_enabled", False))
 VOICE_PORT: int = int(_cfg.get("voice_port", 8765))
@@ -210,6 +224,14 @@ __all__ = [
     "SUPERVISOR_COOLDOWN",
     "SUPERVISOR_MAX_OUTPUT_TOKENS",
     "SUPERVISOR_LLM_TIMEOUT",
+    # Multi-agent team execution
+    "TEAM_ENABLED",
+    "TEAM_MAX_WORKERS",
+    "TEAM_TASK_TIMEOUT",
+    "TEAM_PLAN_MAX_TOKENS",
+    "TEAM_SYNTHESIS_MAX_TOKENS",
+    "TEAM_LLM_TIMEOUT",
+    "TEAM_MAX_TASKS",
     # Voice channel (Alfred)
     "VOICE_ENABLED",
     "VOICE_PORT",

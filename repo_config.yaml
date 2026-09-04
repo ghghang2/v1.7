@@ -133,6 +133,16 @@ supervisor_llm_timeout: 60   # per-call timeout (s) for the supervisor's LLM req
                              # n_parallel=1 so a queued call can't pin the
                              # watchdog for minutes behind an in-flight turn.
 
+# ------------------------------------------------------------------
+# Multi-agent team execution (see docs/multi_agent.md)
+# ------------------------------------------------------------------
+team_enabled: true
+team_max_workers: 4          # parallel workers per /team run
+team_task_timeout: 900       # seconds before a drifting task is interrupted
+team_plan_max_tokens: 2048   # planner output budget
+team_synthesis_max_tokens: 1536
+team_llm_timeout: 120        # per-call timeout (s) for plan/synthesis requests
+
 # Voice channel (Alfred) — laptop bridge over an SSH tunnel.
 # The TUI runs a localhost FastAPI bridge (voice_port); the laptop reaches
 # it via:  ssh -L 8765:127.0.0.1:8765 user@server
