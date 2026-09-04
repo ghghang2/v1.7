@@ -380,7 +380,7 @@ def test_model_command_shows_current_effort(capsys):
     agent = TerminalAgent(color=False)
     handle_command(agent, "/model")
     out = capsys.readouterr().out
-    assert "effort  (model default)" in out
+    assert "effort  medium" in out  # configured default
     agent.reasoning_effort = "medium"
     handle_command(agent, "/model")
     out = capsys.readouterr().out
@@ -397,12 +397,22 @@ def test_stream_response_sends_effort_when_set():
     assert content == "hello" and tool_calls is None and finish == "stop"
 
 
-def test_stream_response_omits_effort_when_default():
+def test_stream_response_uses_configured_default_effort():
     agent = TerminalAgent(color=False)
     captured = {}
     agent._stream_response(_FakeClient(captured),
                            [{"role": "user", "content": "hi"}])
-    assert "reasoning_effort" not in captured
+    # No session override -> the configured default (medium) is sent.
+    assert captured.get("reasoning_effort") == "medium"
+
+
+def test_effort_none_disables_reasoning():
+    agent = TerminalAgent(color=False)
+    agent.reasoning_effort = "none"
+    captured = {}
+    agent._stream_response(_FakeClient(captured),
+                           [{"role": "user", "content": "hi"}])
+    assert captured.get("reasoning_effort") == "none"
 
 
 # ─── mid-stream transport errors: retry + continue nudge ───

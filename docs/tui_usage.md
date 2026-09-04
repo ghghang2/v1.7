@@ -95,7 +95,7 @@ Type these at the prompt (they are not sent to the model):
 | `/load <id>`     | Load/switch to a specific session from `/sessions`.     |
 | `/history`       | Print the current session's messages.                   |
 | `/model`         | Show the active model, server URL, and session id.      |
-| `/effort [level]`| Show or set the session's reasoning effort: `none`, `low`, `medium`, `xhigh`; bare `/effort` resets to the model's default. |
+| `/effort [level]`| Show or set the session's reasoning effort: `none`, `low`, `medium`, `xhigh`. The default is `medium` (`default_reasoning_effort` in `repo_config.yaml`); bare `/effort` resets to it. |
 | `/clear`         | Clear the screen.                                       |
 | `/quit`          | Exit (as do **Ctrl+D**, and **Ctrl+C** at the prompt).  |
 

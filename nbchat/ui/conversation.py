@@ -667,9 +667,11 @@ class ConversationMixin:
 
         Returns (reasoning_accum, content_accum, tool_calls, finish_reason).
         """
-        # Session reasoning effort ("" = model template default).  Sent on
-        # every call so the loaded model uses it this turn and later ones.
-        _effort = getattr(self, "reasoning_effort", "") or ""
+        # Session reasoning effort.  Sent on every call so the loaded model
+        # uses it this turn and later ones.  Falls back to the configured
+        # default (DEFAULT_REASONING_EFFORT) so no session silently runs at
+        # the model template default (xhigh) unless /effort none is used.
+        _effort = getattr(self, "reasoning_effort", None) or config.DEFAULT_REASONING_EFFORT
         reasoning_accum = ""
         content_accum = ""
         tool_buffer: dict = {}

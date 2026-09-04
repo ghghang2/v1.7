@@ -76,6 +76,10 @@ keep_recent_exchanges: 30
 # Conversation loop constants
 max_tool_turns: 200
 stall_turns: 3
+# Default session reasoning effort (none, low, medium, xhigh).  The Qwen
+# 27B template default is xhigh; medium is the balanced choice used by
+# bench/THROUGHPUT_FINDINGS.md.  /effort <level> overrides per session.
+default_reasoning_effort: medium
 # Max mid-stream continuation retries before a dropped LLM stream is
 # fatal (a dropped stream with rendered partial content nudges the
 # model to continue from the break point, up to this many times).

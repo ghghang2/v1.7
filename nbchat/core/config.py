@@ -57,6 +57,11 @@ MAX_LLM_OUTPUT_TOKENS: int = int(_cfg.get("max_llm_output_tokens", 8192))
 # Conversation loop constants
 MAX_TOOL_TURNS: int = int(_cfg["max_tool_turns"])
 STALL_TURNS: int = int(_cfg["stall_turns"])
+# Default session reasoning effort (none, low, medium, xhigh).  Sent on
+# every completion; the Qwen 27B template default is xhigh, so without this
+# the server would think at xhigh for every turn.  The /effort command
+# overrides it per session; bare /effort resets back to this default.
+DEFAULT_REASONING_EFFORT: str = str(_cfg.get("default_reasoning_effort", "medium"))
 # Mid-stream transport-drop continuations (continue-from-break-point
 # nudges) before a dropped LLM stream is fatal.  .get(): the key is
 # optional so configs written before the setting still load.
@@ -179,6 +184,7 @@ __all__ = [
     # "KEEP_RECENT_EXCHANGES",
     "MAX_TOOL_TURNS",
     "STALL_TURNS",
+    "DEFAULT_REASONING_EFFORT",
     "MAX_STREAM_RETRIES",
     "PORT",
     "N_PARALLEL",

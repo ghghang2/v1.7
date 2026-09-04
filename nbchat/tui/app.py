@@ -44,7 +44,7 @@ _HELP = """Commands
   /model             Show the active model, server, reasoning effort and
                      average tokens/sec for the last 50 turns.
   /effort [E]        Show/set session reasoning effort (none, low, medium,
-                     xhigh); no argument resets to the model default.
+                     xhigh); no argument resets to the default (medium).
   /stats [N] [sess]  Task-completion statistics (default: all tasks,
                      last N, or a specific session id): completion rate,
                      durations, tool/redundancy counts.
@@ -155,12 +155,13 @@ def handle_command(agent: TerminalAgent, line: str, supervisor=None) -> bool:
         effort = arg.lower()
         if not effort:
             agent.reasoning_effort = ""
-            print(f"reasoning effort reset to model default ({config.MODEL_NAME}).")
+            print(f"reasoning effort reset to default "
+                  f"({config.DEFAULT_REASONING_EFFORT}).")
         elif effort in ("none", "low", "medium", "xhigh"):
             agent.reasoning_effort = effort
             print(f"reasoning effort set to {agent.palette.bold(effort)} for this session.")
         else:
-            current = agent.reasoning_effort or "(model default)"
+            current = agent.reasoning_effort or config.DEFAULT_REASONING_EFFORT
             print(f"current: {current}  " + agent.palette.gray("usage: /effort none|low|medium|xhigh"))
     elif cmd == "/stats":
         # Usage: /stats [N] — all tasks, or the last N.  An explicit
@@ -201,7 +202,7 @@ def handle_command(agent: TerminalAgent, line: str, supervisor=None) -> bool:
         print(f"model   {agent.model_name}")
         print(f"server  {config.SERVER_URL}")
         print(f"session {agent.session_id}")
-        print("effort  " + (agent.reasoning_effort or "(model default)"))
+        print("effort  " + (agent.reasoning_effort or config.DEFAULT_REASONING_EFFORT))
         stats = last_turn_stats()
         if stats is None:
             print("speed   - (no inference data yet)")
