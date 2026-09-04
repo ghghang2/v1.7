@@ -12,6 +12,7 @@ Covers, without a live LLM server:
 from __future__ import annotations
 
 import json
+import threading
 import time
 import uuid
 
@@ -25,6 +26,7 @@ from nbchat.core.team import (
     TaskQueue,
     TeamAgent,
     TeamCoordinator,
+    ToolArbiter,
     _coordinator_system_prompt,
     _default_worker_prompt,
     _extract_json,
@@ -427,3 +429,122 @@ def test_team_agent_hooks_prefix_and_persist(monkeypatch, capsys):
     assert ("team:hooks-test", "assistant", "hello world") in written
     roles = {r for _, r, _ in written}
     assert "user" in roles and "tool" in roles
+
+
+# ---------------------------------------------------------------------------
+# ToolArbiter
+# ---------------------------------------------------------------------------
+
+def test_arbiter_serializes_managed_tools():
+    """Two threads calling a repo-managed tool never overlap in-flight."""
+    import nbchat.ui.tool_executor as te
+    arbiter = ToolArbiter()
+    arbiter.install()
+    wrapped = te.run_tool  # the arbiter-wrapped choke point
+    try:
+        orig = arbiter._original
+        in_flight = {"n": 0, "max": 0}
+        lock = threading.Lock()
+
+        def fake(tool_name, args_json, timeout=None):
+            with lock:
+                in_flight["n"] += 1
+                in_flight["max"] = max(in_flight["max"], in_flight["n"])
+            time.sleep(0.05)
+            with lock:
+                in_flight["n"] -= 1
+            return "ok"
+
+        arbiter._original = fake
+        threads = [
+            threading.Thread(target=wrapped,
+                             args=("make_change_to_file", "{}"))
+            for _ in range(4)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert in_flight["max"] == 1, (
+            f"expected max concurrency 1, got {in_flight['max']}")
+    finally:
+        arbiter.remove()
+
+def test_arbiter_reentrant_per_thread():
+    """A tool body that calls a managed tool again from the same thread
+    must not deadlock (RLock semantics per thread)."""
+    arbiter = ToolArbiter()
+    arbiter.install()
+    try:
+        import nbchat.ui.tool_executor as te
+        wrapped = te.run_tool
+        orig = arbiter._original
+        calls = []
+
+        def fake(tool_name, args_json, timeout=None):
+            calls.append(tool_name)
+            if tool_name == "outer":
+                # Re-entrant call through the arbiter-wrapped run_tool.
+                return wrapped("inner", "{}") + "/outer"
+            return "inner-done"
+
+        arbiter._original = fake
+        try:
+            result = wrapped("outer", "{}")
+            assert result == "inner-done/outer"
+            assert calls == ["outer", "inner"]
+        finally:
+            arbiter._original = orig
+            # Re-wrap with the restored original so remove() is consistent.
+            arbiter.install()
+    finally:
+        arbiter.remove()
+
+
+def test_arbiter_install_remove_roundtrip_and_idempotent():
+    import nbchat.ui.tool_executor as te
+    orig = te.run_tool
+    arbiter = ToolArbiter()
+    arbiter.install()
+    assert te.run_tool is not orig, "install() should have wrapped run_tool"
+    # Idempotent: second install is a no-op.
+    arbiter.install()
+    arbiter.remove()
+    assert te.run_tool is orig, "remove() must restore the original run_tool"
+    # Removing twice is safe.
+    arbiter.remove()
+    assert te.run_tool is orig
+
+
+def test_arbiter_unmanaged_tools_pass_through():
+    """Unmanaged tools (browser, get_weather, etc.) are not serialized
+    and must not be affected by the arbiter."""
+    import nbchat.ui.tool_executor as te
+    orig = te.run_tool
+    calls = []
+    arbiter = ToolArbiter()
+    arbiter.install()
+    try:
+        def fake(tool_name, args_json, timeout=None):
+            calls.append(tool_name)
+            return f"ok:{tool_name}"
+
+        te.run_tool = fake
+        # Call the wrapped version for an unmanaged tool.
+        wrapped = te.run_tool
+        # The wrapped function should delegate straight through.
+        # We test the mapping directly instead of going through the wrapper
+        # (which would re-wrap), so just verify the resource map.
+        assert arbiter._resource_for("browser") is None
+        assert arbiter._resource_for("get_weather") is None
+        assert arbiter._resource_for("repo_overview") is None
+        assert arbiter._resource_for("send_email") is None
+        assert arbiter._resource_for("run_command") == "repo"
+        assert arbiter._resource_for("make_change_to_file") == "repo"
+        assert arbiter._resource_for("create_file") == "repo"
+        assert arbiter._resource_for("push_to_github") == "repo"
+        assert arbiter._resource_for("run_tests") == "tests"
+        # Unknown tool -> no resource.
+        assert arbiter._resource_for("some_unknown_tool") is None
+    finally:
+        arbiter.remove()

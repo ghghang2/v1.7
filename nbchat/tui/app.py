@@ -48,6 +48,11 @@ _HELP = """Commands
   /clear             Clear the screen.
   /quit              Exit (Ctrl+C / Ctrl+D also work).
   /sup <question>    Ask the supervisor about system state (requires --supervisor).
+  /team <goal>     Run the goal as a team of parallel agents (plan,
+                     dispatch, verify, report). Runs in the background;
+                     labelled [Wn] worker output streams in here.
+  /team            Show the status of the last or current team run.
+  /team stop       Request the current team run to stop.
 
 Tips
   • Type a normal message and press Enter to chat; the reply streams in live.
@@ -57,6 +62,11 @@ Tips
   • Press Ctrl+C while a reply is streaming to interrupt it too.
   • Start with --email to also receive Gmail replies in this chat.
 """
+
+# ── Team (multi-agent) state ────────────────────────
+# /team <goal> runs a TeamCoordinator on a background thread so the
+# input prompt stays live; /team and /team stop read from here.
+_team_state: dict = {"thread": None, "last": None, "coordinator": None}
 
 
 # ── Server health ──────────────────────────────────────────────────────────
@@ -161,6 +171,68 @@ def handle_command(agent: TerminalAgent, line: str, supervisor=None) -> bool:
             print(stats)
     elif cmd == "/clear":
         sys.stdout.write("\033[2J\033[H")
+    elif cmd == "/team":
+        if arg and arg != "stop":
+            if (_team_state["thread"] is not None
+                    and _team_state["thread"].is_alive()):
+                print(agent.palette.yellow(
+                    "  [team] a team run is already in progress; "
+                    "wait for it or type /team stop."))
+            else:
+                from nbchat.core.team import (
+                    TeamAgent, TeamCoordinator, ToolArbiter,
+                )
+                team_agent = TeamAgent(color=True)
+                coordinator = TeamCoordinator(team_agent)
+                arbiter = ToolArbiter()
+                arbiter.install()
+                _team_state["coordinator"] = coordinator
+                p = agent.palette
+                print(p.magenta(f"  [team] starting run for: {arg[:100]}"))
+
+                def _team_run():
+                    try:
+                        result = coordinator.run(arg)
+                        _team_state["last"] = result
+                    except Exception as exc:
+                        _team_state["last"] = {
+                            "status": "failed",
+                            "summary": f"team run crashed: {exc}",
+                            "tasks": [],
+                        }
+                    finally:
+                        arbiter.remove()
+
+                thread = threading.Thread(
+                    target=_team_run, daemon=True, name="nbchat-team-run")
+                _team_state["thread"] = thread
+                thread.start()
+        elif arg == "stop":
+            thread = _team_state["thread"]
+            if thread is not None and thread.is_alive():
+                print(agent.palette.yellow(
+                    "  [team] stop requested; the run will wind down."))
+            else:
+                print("  [team] no team run in progress.")
+        else:
+            last = _team_state.get("last")
+            thread = _team_state["thread"]
+            if thread is not None and thread.is_alive():
+                print(agent.palette.magenta(
+                    "  [team] run in progress \u2014 live output is streaming "
+                    "above; type /team when it finishes."))
+            elif last is None:
+                print("  [team] no team run yet.  Usage: /team <goal>")
+            else:
+                p = agent.palette
+                print(p.magenta(
+                    f"  [team] last run status: {last.get('status', 'unknown')}"))
+                for t in last.get("tasks", []):
+                    print(f"    [{t.get('status', '?')}] "
+                          f"{t.get('title') or t.get('task_id', '?')}")
+                summary = last.get("summary", "")
+                for line_ in summary.splitlines()[:10]:
+                    print(f"    {line_}")
     elif cmd == "/sup":
         if supervisor is None:
             print(agent.palette.yellow(

@@ -174,6 +174,108 @@ def _parse_tasks(plan_text: str, max_tasks: int = 8) -> list:
 
 
 # ---------------------------------------------------------------------------
+# ToolArbiter
+# ---------------------------------------------------------------------------
+
+class ToolArbiter:
+    """Serialises repo-mutating tool calls with per-resource locks.
+
+    The LLM tool loop runs on a shared 4-thread executor.  Two workers
+    calling ``make_change_to_file`` simultaneously could interleave writes
+    to the same file and corrupt it.  ``ToolArbiter`` wraps
+    ``nbchat.ui.tool_executor.run_tool`` at the module level so every
+    tool invocation passes through a per-resource ``threading.RLock``
+    (re-entrant per OS thread — a worker that calls ``run_command`` inside
+    ``run_command`` does not self-deadlock).
+
+    Resources (from the design doc):
+
+    * ``repo``  ← ``run_command``, ``make_change_to_file``,
+      ``create_file``, ``push_to_github``
+    * ``tests`` ← ``run_tests``
+
+    All other tools (``browser``, ``get_weather``, ``repo_overview``,
+    ``send_email``, …) are unmanaged and pass through without a lock.
+
+    Usage::
+
+        arbiter = ToolArbiter()
+        arbiter.install()     # wraps run_tool globally (idempotent)
+        ...
+        arbiter.remove()      # restores the original run_tool
+
+    ``install()`` is idempotent: calling it twice does not double-wrap.
+    ``remove()`` is safe to call when the arbiter is not installed (no-op).
+    """
+
+    _MANAGED: dict[str, list[str]] = {
+        "repo": ["run_command", "make_change_to_file",
+                 "create_file", "push_to_github"],
+        "tests": ["run_tests"],
+    }
+
+    def __init__(self) -> None:
+        self._locks: dict[str, threading.RLock] = {
+            res: threading.RLock() for res in self._MANAGED
+        }
+        self._original = None
+        self._installed = False
+
+    # -- public API ------------------------------------------------------
+
+    def resource_for(self, tool_name: str) -> str | None:
+        """Return the resource name for *tool_name*, or ``None``."""
+        for res, tools in self._MANAGED.items():
+            if tool_name in tools:
+                return res
+        return None
+
+    # Backwards-compatible / test-facing alias.
+    _resource_for = resource_for
+
+    def install(self) -> None:
+        """Wrap ``nbchat.ui.tool_executor.run_tool`` with arbiter logic.
+
+        Idempotent — calling ``install()`` twice has no additional effect.
+        """
+        if self._installed:
+            return
+        import nbchat.ui.tool_executor as te
+        self._original = te.run_tool
+        orig = self._original
+        arbiter = self
+
+        def _arbitrated(tool_name: str, args_json: str,
+                        timeout: int | None = None) -> str:
+            res = arbiter.resource_for(tool_name)
+            # Resolve dynamically: tests swap ``arbiter._original`` for a
+            # stub after install(); reading it here keeps the swap live.
+            _fn = arbiter._original
+            if res is None:
+                return _fn(tool_name, args_json, timeout=timeout)
+            with arbiter._locks[res]:
+                return _fn(tool_name, args_json, timeout=timeout)
+
+        _arbitrated.__name__ = "run_tool"
+        _arbitrated.__qualname__ = "ToolArbiter._arbitrated"
+        te.run_tool = _arbitrated
+        self._installed = True
+
+    def remove(self) -> None:
+        """Restore the original ``run_tool``.  No-op if not installed."""
+        if not self._installed:
+            return
+        import nbchat.ui.tool_executor as te
+        te.run_tool = self._original
+        self._original = None
+        self._installed = False
+
+    def is_installed(self) -> bool:
+        return self._installed
+
+
+
+# ---------------------------------------------------------------------------
 # Task queue (claim semantics)
 # ---------------------------------------------------------------------------
 
@@ -757,7 +859,8 @@ class TeamCoordinator:
 
 
 __all__ = [
-    "PLAN_PARSE_FAILED", "PlanParseError", "Task", "TaskQueue", "TeamAgent",
-    "TeamCoordinator", "_coordinator_system_prompt", "_default_worker_prompt",
+    "PLAN_PARSE_FAILED", "PlanParseError", "Task", "TaskQueue",
+    "TeamAgent", "TeamCoordinator", "ToolArbiter",
+    "_coordinator_system_prompt", "_default_worker_prompt",
     "_extract_json", "_parse_tasks", "_sanitize_plan",
 ]
