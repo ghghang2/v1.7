@@ -90,10 +90,11 @@ class MetricsLoggingClient:
             kwargs.setdefault("stream_options", {})["include_usage"] = True
         team_timeout = team_llm_timeout.get()
         if team_timeout is not None:
-            # Bound the in-flight HTTP request and cut the SDK's default
-            # 2-retry behaviour to a single retry inside team runs.
+            # Bound the in-flight HTTP request inside team runs.  (The
+            # SDK's ``max_retries`` is a client-constructor option in
+            # openai 3.x -- passing it per request raises TypeError and
+            # killed every worker LLM call, see incident 2026-09-04.)
             kwargs.setdefault("timeout", float(team_timeout))
-            kwargs.setdefault("max_retries", 1)
         kwargs.setdefault("extra_body", {})["cache_prompt"] = True
         t0 = time.time()
         try:
