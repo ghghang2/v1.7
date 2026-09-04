@@ -44,8 +44,9 @@ _HELP = """Commands
   /history           Print the current session's message history.
   /model             Show the active model, server, reasoning effort and
                      average tokens/sec for the last 50 turns.
-  /effort [E]        Show/set session reasoning effort (none, low, medium,
-                     xhigh); no argument resets to the default (medium).
+  /effort [E]        Show session reasoning effort; with an argument set it
+                     (none, low, medium, xhigh); "default" resets to the
+                     configured default (medium).
   /stats [N] [sess]  Task-completion statistics (default: all tasks,
                      last N, or a specific session id): completion rate,
                      durations, tool/redundancy counts.
@@ -174,6 +175,10 @@ def handle_command(agent: TerminalAgent, line: str, supervisor=None) -> bool:
     elif cmd == "/effort":
         effort = arg.lower()
         if not effort:
+            current = agent.reasoning_effort or config.DEFAULT_REASONING_EFFORT
+            print(f"effort  {current}")
+            return False
+        if effort == "default":
             agent.reasoning_effort = ""
             print(f"reasoning effort reset to default "
                   f"({config.DEFAULT_REASONING_EFFORT}).")
@@ -182,7 +187,7 @@ def handle_command(agent: TerminalAgent, line: str, supervisor=None) -> bool:
             print(f"reasoning effort set to {agent.palette.bold(effort)} for this session.")
         else:
             current = agent.reasoning_effort or config.DEFAULT_REASONING_EFFORT
-            print(f"current: {current}  " + agent.palette.gray("usage: /effort none|low|medium|xhigh"))
+            print(f"current: {current}  " + agent.palette.gray("usage: /effort none|low|medium|xhigh|default"))
     elif cmd == "/stats":
         # Usage: /stats [N] — all tasks, or the last N.  An explicit
         # session id (e.g. /stats tui:s1) restricts to that session.

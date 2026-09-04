@@ -63,7 +63,8 @@ class TerminalAgent(ContextMixin, ConversationMixin):
         self.model_name = config.MODEL_NAME
         # Session reasoning effort ("" = model template default).
         # Set with /effort <value>; reset to the configured default with
-        # /effort (no arg).  An empty value means: use
+        # /effort default.  Bare /effort only shows the current value.
+        # An empty value means: use
         # config.DEFAULT_REASONING_EFFORT (repo_config.yaml, medium).
         # Valid values for the loaded model: none, low, medium, xhigh.
         self.reasoning_effort = ""

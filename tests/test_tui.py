@@ -428,10 +428,19 @@ def test_effort_command_sets_level(capsys):
     assert "set" in out and "medium" in out
 
 
-def test_effort_command_no_arg_resets_to_default(capsys):
+def test_effort_command_no_arg_shows_current(capsys):
     agent = TerminalAgent(color=False)
     agent.reasoning_effort = "xhigh"
     assert handle_command(agent, "/effort") is False
+    assert agent.reasoning_effort == "xhigh"  # unchanged
+    out = capsys.readouterr().out
+    assert "xhigh" in out
+
+
+def test_effort_command_default_resets(capsys):
+    agent = TerminalAgent(color=False)
+    agent.reasoning_effort = "xhigh"
+    assert handle_command(agent, "/effort default") is False
     assert agent.reasoning_effort == ""
     out = capsys.readouterr().out
     assert "reset" in out
@@ -443,7 +452,7 @@ def test_effort_command_invalid_keeps_current(capsys):
     assert handle_command(agent, "/effort max") is False
     assert agent.reasoning_effort == "low"  # unchanged
     out = capsys.readouterr().out
-    assert "usage: /effort none|low|medium|xhigh" in out
+    assert "usage: /effort none|low|medium|xhigh|default" in out
 
 
 def test_model_command_shows_current_effort(capsys):

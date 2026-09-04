@@ -60,7 +60,7 @@ STALL_TURNS: int = int(_cfg["stall_turns"])
 # Default session reasoning effort (none, low, medium, xhigh).  Sent on
 # every completion; the Qwen 27B template default is xhigh, so without this
 # the server would think at xhigh for every turn.  The /effort command
-# overrides it per session; bare /effort resets back to this default.
+# overrides it per session; /effort default resets back to this default.
 DEFAULT_REASONING_EFFORT: str = str(_cfg.get("default_reasoning_effort", "medium"))
 # Mid-stream transport-drop continuations (continue-from-break-point
 # nudges) before a dropped LLM stream is fatal.  .get(): the key is
