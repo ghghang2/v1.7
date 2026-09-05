@@ -711,7 +711,14 @@ class ConversationMixin:
                             entry["function"]["arguments"] += tc.function.arguments
                 if getattr(delta, "reasoning_content", None):
                     reasoning_accum += delta.reasoning_content
-                    self._on_stream_reasoning(reasoning_accum)
+                    # Scrub per-chunk, not just at end of stream: a drifted
+                    # model can emit tool calls as legacy <tool_call> text
+                    # inside reasoning_content, and the live display would
+                    # otherwise render raw XML mid-think.  Display-only
+                    # guard — the same scrub runs again on the stored
+                    # trace in _process_conversation_turn.
+                    self._on_stream_reasoning(
+                        _strip_tool_blocks_reasoning(reasoning_accum))
                 if delta.content:
                     content_accum += delta.content
                     self._on_stream_token(content_accum)
