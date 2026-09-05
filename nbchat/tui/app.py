@@ -248,24 +248,24 @@ def handle_command(agent: TerminalAgent, line: str, supervisor=None) -> bool:
                 )
                 team_agent = TeamAgent(color=True)
                 coordinator = TeamCoordinator(team_agent)
-                arbiter = ToolArbiter()
-                arbiter.install()
                 _team_state["coordinator"] = coordinator
                 p = agent.palette
                 print(p.magenta(f"  [team] starting run for: {arg[:100]}"))
 
                 def _team_run():
-                    try:
-                        result = coordinator.run(arg)
-                        _team_state["last"] = result
-                    except Exception as exc:
-                        _team_state["last"] = {
-                            "status": "failed",
-                            "summary": f"team run crashed: {exc}",
-                            "tasks": [],
-                        }
-                    finally:
-                        arbiter.remove()
+                    # ToolArbiter is a context manager: run_tool is wrapped
+                    # for the duration of the run and restored on exit even
+                    # if coordinator.run() raises.
+                    with ToolArbiter():
+                        try:
+                            result = coordinator.run(arg)
+                            _team_state["last"] = result
+                        except Exception as exc:
+                            _team_state["last"] = {
+                                "status": "failed",
+                                "summary": f"team run crashed: {exc}",
+                                "tasks": [],
+                            }
 
                 thread = threading.Thread(
                     target=_team_run, daemon=True, name="nbchat-team-run")

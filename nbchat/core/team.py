@@ -376,13 +376,16 @@ class ToolArbiter:
 
     Usage::
 
-        arbiter = ToolArbiter()
-        arbiter.install()     # wraps run_tool globally (idempotent)
-        ...
-        arbiter.remove()      # restores the original run_tool
+        with ToolArbiter():
+            coordinator.run(goal)   # run_tool is wrapped inside the
+                                     # block and restored on exit even if
+                                     # run() raises
 
     ``install()`` is idempotent: calling it twice does not double-wrap.
     ``remove()`` is safe to call when the arbiter is not installed (no-op).
+    ``remove()`` only restores the original when the module still carries
+    *this* arbiter's wrapper, so overlapping team runs in one process can
+    no longer clobber each other's global patch.
     """
 
     _MANAGED: dict[str, list[str]] = {
@@ -397,6 +400,20 @@ class ToolArbiter:
         }
         self._original = None
         self._installed = False
+        # Guards the install/remove pair against re-entrant or concurrent
+        # use (the LLM tool loop runs on a shared thread executor).
+        self._lock = threading.Lock()
+
+    # -- context-manager protocol ----------------------------------------
+
+    def __enter__(self) -> "ToolArbiter":
+        self.install()
+        return self
+
+    def __exit__(self, *exc_info) -> bool:
+        # Always restore the original run_tool; never swallow exceptions.
+        self.remove()
+        return False
 
     # -- public API ------------------------------------------------------
 
@@ -414,11 +431,26 @@ class ToolArbiter:
         """Wrap ``nbchat.ui.tool_executor.run_tool`` with arbiter logic.
 
         Idempotent — calling ``install()`` twice has no additional effect.
+
+        Nesting safety: if the module's ``run_tool`` is already a wrapper
+        left behind by an overlapping (or crashed) team run, that wrapper
+        is peeled off so ``remove()`` restores the *true* original rather
+        than re-wrapping an already-arbitrated function.
         """
-        if self._installed:
-            return
-        import nbchat.ui.tool_executor as te
-        self._original = te.run_tool
+        with self._lock:
+            if self._installed:
+                return
+            import nbchat.ui.tool_executor as te
+            current = te.run_tool
+            if (getattr(current, "__qualname__", "")
+                    == "ToolArbiter._arbitrated"
+                    and getattr(current, "_arbiter_original", None) is not None):
+                # A prior ToolArbiter installed its wrapper and never
+                # removed it (crashed run / overlapping run).  Reuse the
+                # original it captured.
+                self._original = current._arbiter_original
+            else:
+                self._original = current
         orig = self._original
         arbiter = self
 
@@ -456,17 +488,29 @@ class ToolArbiter:
 
         _arbitrated.__name__ = "run_tool"
         _arbitrated.__qualname__ = "ToolArbiter._arbitrated"
+        _arbitrated._arbiter_original = self._original
         te.run_tool = _arbitrated
         self._installed = True
 
     def remove(self) -> None:
-        """Restore the original ``run_tool``.  No-op if not installed."""
-        if not self._installed:
-            return
-        import nbchat.ui.tool_executor as te
-        te.run_tool = self._original
-        self._original = None
-        self._installed = False
+        """Restore the original ``run_tool``.  No-op if not installed.
+
+        Restores only if the module still carries *this* arbiter's wrapper;
+        if another run replaced or removed it in the meantime, the module
+        is left alone so we never overwrite a newer install with a stale
+        original.
+        """
+        with self._lock:
+            if not self._installed:
+                return
+            import nbchat.ui.tool_executor as te
+            if (getattr(te.run_tool, "__qualname__", "")
+                    != "ToolArbiter._arbitrated"):
+                self._installed = False
+                return
+            te.run_tool = self._original
+            self._original = None
+            self._installed = False
 
     def is_installed(self) -> bool:
         return self._installed
@@ -965,7 +1009,11 @@ def _default_worker_prompt() -> str:
         "parallel — NEVER report that you are the only worker available "
         "when slots are free.  You MUST NOT delegate work that depends "
         "on your own task's outcome, and delegated subtasks must be "
-        "fully self-contained.  When finished, reply with a TIGHT final "
+        "fully self-contained.  Prefer purpose-built tools over "
+        "hand-rolling API calls: if a dedicated tool covers what the "
+        "task needs (e.g. a weather tool instead of hitting a weather "
+        "API through the browser or run_command), use the dedicated "
+        "tool.  When finished, reply with a TIGHT final "
         "summary (target <= 400 words): put the concrete result(s) "
         "the task asked for at the VERY END of the summary (the "
         "coordinator reports your final answer), preceded by at most a "
@@ -1055,6 +1103,45 @@ def _try_interrupt(worker) -> None:
             fn()
         except Exception:
             pass
+
+
+_team_run_id: contextvars.ContextVar = contextvars.ContextVar(
+    "team_run_id", default="-")
+
+
+def _log_task_traceback(task: Task, exc: BaseException,
+                        run_id: str | None = None) -> None:
+    """Write a failed task's full traceback to ``logs/team_errors.log``.
+
+    Task summaries are reduced to one line (``str(exc)``) for the
+    coordinator; this preserves the traceback so a deep failure in the
+    tool loop remains debuggable.  Best-effort — logging must never
+    fail the run.
+    """
+    if run_id is None:
+        run_id = _team_run_id.get()
+    import logging
+    try:
+        logger = logging.getLogger("team.errors")
+        if not logger.handlers:
+            logger.setLevel(logging.ERROR)
+            try:
+                _err_log_dir.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass
+            handler = logging.FileHandler(
+                _err_log_dir / "team_errors.log", encoding="utf-8")
+            handler.setFormatter(logging.Formatter(
+                "%(asctime)s [%(levelname)s] [team run=%(team_run)s] "
+                "%(message)s"))
+            logger.addHandler(handler)
+            logger.propagate = False
+        logger.error(
+            "task=%s title=%r: %s", task.task_id, task.title, exc,
+            exc_info=exc,
+            extra={"team_run": run_id})
+    except Exception:
+        pass
 
 
 def _worker_run(worker, objective: str, task: Optional[Task] = None,
@@ -1393,17 +1480,13 @@ class TeamCoordinator:
         """One non-streaming LLM call for the coordinator.
 
         Uses ``get_client()`` resolved at call time (so tests can
-        monkeypatch ``nbchat.core.client.get_client``).  Prefers a flat
-        ``chat_completions_create`` attribute (the shape used by test
-        doubles) and falls back to the real client's
-        ``chat.completions.create`` path.
+        monkeypatch ``nbchat.core.client.get_client``).  Uses the
+        OpenAI-compatible ``client.chat.completions.create`` path; test
+        doubles are expected to mirror that structure.
         """
         from nbchat.core.client import get_client
         client = get_client()
-        try:
-            create = client.chat_completions_create
-        except AttributeError:
-            create = client.chat.completions.create
+        create = client.chat.completions.create
         kwargs = dict(
             model=self.agent.model_name,
             messages=[
@@ -1526,6 +1609,10 @@ class TeamCoordinator:
             _try_interrupt(worker)
             return
         except Exception as exc:
+            # Keep the one-line summary for the coordinator, but preserve
+            # the full traceback (hidden file logs/team_errors.log) so a
+            # deep TypeError / state corruption is still debuggable.
+            _log_task_traceback(task, exc)
             task.status = "failed"
             task.summary = str(exc)
             return
@@ -1591,6 +1678,7 @@ class TeamCoordinator:
                     q.stop()
                     break
                 except Exception as exc:  # defensive: harness must not die
+                    _log_task_traceback(task, exc)
                     task.status = "failed"
                     task.summary = f"worker harness error: {exc}"
                 # Wake any worker parked on a prerequisite that just resolved.
@@ -1662,6 +1750,7 @@ class TeamCoordinator:
             }
         self._run_id = uuid.uuid4().hex[:8]
         self.agent.session_id = f"team:{self._run_id}"
+        _team_run_id.set(self._run_id)
         self.agent.sessions = {}
         with self._active_workers_lock:
             self._active_workers = []

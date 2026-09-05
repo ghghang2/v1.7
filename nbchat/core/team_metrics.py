@@ -208,11 +208,12 @@ class TeamRunMetrics:
 
         def _stamp(tid):
             if tid is None:
-                return
+                return tid
             with self._lock:
                 self._task_start.setdefault(tid, {
                     "claimed": time.monotonic(),
                     "ts": time.time()})
+            return tid
 
         def claim_w():
             return _stamp(claim())

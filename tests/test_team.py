@@ -29,6 +29,7 @@ from nbchat.core.team import (
     _default_worker_prompt,
     _extract_json,
     _parse_tasks,
+    _salvage_objects,
     _clip_summary,
     _sanitize_plan,
     _break_dependency_cycles,
@@ -96,6 +97,133 @@ def test_extract_json_nested_arrays():
     inner = "[[[1, 2], 3]]"
     text = f'noise\n```json\n{inner}\n```\nmore noise'
     assert json.loads(_extract_json(text)) == [[[1, 2], 3]]
+
+
+# ---------------------------------------------------------------------------
+# Parser edge cases (review item C: brittle custom JSON state machines)
+# _extract_json / _salvage_objects are hand-rolled, string/escape aware
+# scanners; these cases pin down the behaviours LLM outputs can violate
+# (unicode, nested escapes, brackets inside strings, truncation, whitespace
+# injection).  A regression here must be a hard, visible failure.
+# ---------------------------------------------------------------------------
+
+def test_extract_json_brackets_inside_string_literals():
+    text = 'preamble [{"objective": "note: [[x]] and {a}"}] trailer'
+    got = json.loads(_extract_json(text))
+    assert got == [{"objective": "note: [[x]] and {a}"}]
+
+
+def test_extract_json_nested_escaped_quote():
+    # An escaped quote (backslash + double-quote) inside a string
+    # literal must not terminate the string, and an escaped
+    # backslash (\\\\) must be consumed as a pair, so the scanner
+    # lands on the array's true closing bracket.
+    text = 'here is the plan: [{"objective": "quote: \\" end path: C:\\\\"}] hope this helps'
+    got = json.loads(_extract_json(text))
+    assert got == [{"objective": 'quote: " end path: C:\\'}]
+
+def test_extract_json_escaped_quote_before_brackets():
+    # An escaped quote next to bracket characters must not terminate the
+    # string early or close the top-level array.  json.dumps builds the
+    # literal so the escaping is unambiguous.
+    obj = {"objective": 'say "hi" ] } [ now'}
+    text = "plan: " + json.dumps([obj]) + " hope this helps"
+    got = json.loads(_extract_json(text))
+    assert got == [obj]
+
+
+def test_extract_json_unicode_and_nested_brackets():
+    # Non-ASCII characters and bracket characters inside string
+    # literals must be preserved and must not confuse string tracking.
+    obj = {"objective": "r\u00e9sum\u00e9 \u2014 na\u00efve [draft] \u00abx\u00bb",
+           "title": "\u00fcn\u00efcode"}
+    text = "here: ```json\n" + json.dumps([obj], ensure_ascii=False) + "\n``` ok"
+    got = json.loads(_extract_json(text))
+    assert got == [obj]
+
+
+def test_extract_json_surrounding_whitespace_and_trailing_brackets():
+    # Whitespace/newlines around the array must be stripped, and any
+    # bracket-bearing text AFTER the balanced array must not be captured
+    # (the scanner stops at the array's own closing bracket).
+    obj = {"objective": "trim me"}
+    text = "   \n\t " + json.dumps([obj]) + "  \n  trailing [noise] here"
+    got = json.loads(_extract_json(text))
+    assert got == [obj]
+
+
+def test_extract_json_brackets_inside_string_do_not_close_array():
+    # A bare ] and { } (no escaped quote) inside a string literal must
+    # not reduce the array depth.
+    obj = {"objective": "close ] open [ and braces { } stay inside"}
+    text = json.dumps([obj])
+    got = json.loads(_extract_json(text))
+    assert got == [obj]
+
+
+def test_extract_json_truncation_mid_string_raises_value_error():
+    with pytest.raises(ValueError):
+        _extract_json('[{"objective": "run the full build and t')
+
+
+def test_extract_json_truncation_mid_array_raises_value_error():
+    with pytest.raises(ValueError):
+        _extract_json('[{"a": 1}, {"b": 2}')
+
+
+def test_extract_json_weird_whitespace_injection():
+    text = ("weird \n\t \u00a0 \r\f [\n   {   \"objective\"\n:\n"
+            '"x\"\n}\n ] trailing')
+    got = json.loads(_extract_json(text))
+    assert got == [{"objective": "x"}]
+
+
+def test_extract_json_no_array_raises_value_error():
+    with pytest.raises(ValueError):
+        _extract_json("no array here, only a string")
+
+
+def test_salvage_objects_truncated_last_object_dropped():
+    text = ('[{"title": "a", "objective": "A"}, '
+            '{"title": "b", "objective": "B"}, '
+            '{"title": "trun')
+    objs = _salvage_objects(text)
+    assert objs == [{"title": "a", "objective": "A"},
+                    {"title": "b", "objective": "B"}]
+
+
+def test_salvage_objects_escaped_quote_in_truncated_tail():
+    # An escaped quote before the truncation point must not swallow the
+    # object boundary.
+    text = ('[{"objective": "a: \\"x\\""}, '
+            '{"objective": "b cut m')
+    objs = _salvage_objects(text)
+    assert objs == [{"objective": 'a: "x"'}]
+
+
+def test_salvage_objects_nested_braces_in_strings():
+    text = ('[{"objective": "write {x} and [1]"}, '
+            '{"title": "second"}')
+    objs = _salvage_objects(text)
+    assert objs == [{"objective": "write {x} and [1]"}, {"title": "second"}]
+
+
+def test_salvage_objects_no_array_returns_none():
+    assert _salvage_objects("no bracket at all") is None
+
+
+def test_salvage_objects_no_complete_object_returns_none():
+    assert _salvage_objects('[{"title": "a"') is None
+
+
+def test_parse_tasks_truncated_unicode_object_salvaged():
+    # Truncation inside a unicode-heavy second object: the first, complete,
+    # object must still be recoverable by the planner fallback.
+    text = ('[{"objective": "caf\u00e9 \u2603 done"}, '
+            '{"objective": "\u00fcber [x] cu')
+    tasks = _parse_tasks(text)
+    assert len(tasks) == 1
+    assert tasks[0].objective == "caf\u00e9 \u2603 done"
 
 
 def test_sanitize_plan_drops_unusable_entries_and_caps_count():
@@ -324,8 +452,13 @@ class _MockClient:
     def __init__(self, responses):
         self.responses = list(responses)
         self.calls = []
+        # Mirror the real client's nested ``chat.completions.create`` path so
+        # the production code path (no test-only shortcuts) is exercised.
+        self.chat = type("Chat", (), {})()
+        self.chat.completions = type("Completions", (), {})()
+        self.chat.completions.create = self._create
 
-    def chat_completions_create(self, **kwargs):
+    def _create(self, **kwargs):
         self.calls.append(kwargs)
         text = self.responses.pop(0)
         resp = type("R", (), {})()

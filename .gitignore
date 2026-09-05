@@ -38,3 +38,4 @@ repo_overview.md
 *.db-wal
 nbchat/chat_history.db-shm
 nbchat/chat_history.db-wal
+logs/
