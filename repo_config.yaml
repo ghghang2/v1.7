@@ -41,7 +41,7 @@ max_history_turns: 10
 max_llm_output_tokens: 32768
 
 port: 8080
-n_parallel: 4
+n_parallel: 8
 ctx_size: 240000
 n_gpu_layers: 999
 service_info_path: "service_info.json"
@@ -141,14 +141,15 @@ supervisor_llm_timeout: 60   # per-call timeout (s) for the supervisor's LLM req
 # Multi-agent team execution (see docs/multi_agent.md)
 # ------------------------------------------------------------------
 team_enabled: true
-team_max_workers: 4          # parallel workers per /team run
+team_max_workers: 8          # parallel workers per /team run
 team_task_timeout: 900       # seconds before a drifting task is interrupted
-team_plan_max_tokens: 2048   # planner output budget
-team_synthesis_max_tokens: 1536
+team_plan_max_tokens: 4096   # planner output budget
+team_synthesis_max_tokens: 4096
 team_llm_timeout: 120        # per-call timeout (s) for plan/synthesis requests
 team_max_subtasks: 8         # cap on worker-delegated subtasks per run
 team_max_delegation_depth: 2 # 0 = coordinator task; workers may delegate while depth < limit
 team_plan_attempts: 2        # retries on unparseable/truncated plan before single-task fallback
+team_metrics_enabled: true # auto-record saturation metrics per run (docs/c8-saturation-assessment.md)
 
 # Voice channel (Alfred) — laptop bridge over an SSH tunnel.
 # The TUI runs a localhost FastAPI bridge (voice_port); the laptop reaches

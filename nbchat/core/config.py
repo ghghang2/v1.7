@@ -159,6 +159,12 @@ TEAM_MAX_SUBTASKS: int = int(_cfg.get("team_max_subtasks", 8))
 # depth d may only delegate while d < the limit.
 TEAM_MAX_DELEGATION_DEPTH: int = int(
     _cfg.get("team_max_delegation_depth", 2))
+# Auto-record saturation measurements for /team runs (see
+# docs/c8-saturation-assessment.md, Plan Step 2).  One JSON file per run
+# lands in logs/team_metrics/ with queue depth, peak in-flight, GPU VRAM
+# and per-task durations.  Best-effort: a metrics failure never fails the
+# run (see TeamCoordinator.run).
+TEAM_METRICS_ENABLED: bool = bool(_cfg.get("team_metrics_enabled", True))
 # Planning retries on unparseable/truncated plan output before the
 # coordinator falls back to running the goal as a single task.
 TEAM_PLAN_ATTEMPTS: int = int(_cfg.get("team_plan_attempts", 2))
@@ -261,6 +267,7 @@ __all__ = [
     "TEAM_MAX_TOTAL_TASKS",
     "TEAM_MAX_SUBTASKS",
     "TEAM_MAX_DELEGATION_DEPTH",
+    "TEAM_METRICS_ENABLED",
     "TEAM_PLAN_ATTEMPTS",
     "TEAM_SUMMARY_MAX_CHARS",
     "TEAM_REPORT_MAX_CHARS",

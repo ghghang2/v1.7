@@ -1697,6 +1697,25 @@ class TeamCoordinator:
             queue, self._worker_factory, config.TEAM_MAX_WORKERS, deadline,
             self, config.TEAM_MAX_SUBTASKS, config.TEAM_MAX_TOTAL_TASKS,
             config.TEAM_MAX_DELEGATION_DEPTH)
+        # Step 2 (docs/c8-saturation-assessment.md): auto-record the
+        # saturation measurements (queue depth, peak in-flight, GPU VRAM,
+        # per-task durations) to logs/team_metrics/.  Best-effort: a
+        # metrics failure must never fail the run.
+        metrics = None
+        if config.TEAM_METRICS_ENABLED:
+            try:
+                from nbchat.core.team_metrics import TeamRunMetrics
+                metrics = TeamRunMetrics(
+                    self._run_id, max_workers=config.TEAM_MAX_WORKERS)
+                metrics.start()
+                metrics.attach(queue)
+            except Exception:
+                metrics = None
+        if metrics is not None:
+            try:
+                metrics.attach_pool(pool)
+            except Exception:
+                pass
 
         try:
             result = pool.run()
@@ -1706,6 +1725,16 @@ class TeamCoordinator:
                 if t.status in ("pending", "claimed"):
                     t.status = "interrupted"
                     t.summary = "interrupted"
+        finally:
+            if metrics is not None:
+                try:
+                    _m0 = getattr(metrics, "_start_mono", None)
+                    _makespan = (time.monotonic() - _m0) if _m0 else 0.0
+                    for t in queue._tasks.values():
+                        metrics.task_finished(t)
+                    metrics.stop(_makespan)
+                except Exception:
+                    pass
 
         # Report includes subtasks (delegated children last).
         top = [t for t in queue._tasks.values() if t.parent_id is None]

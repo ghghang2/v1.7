@@ -109,6 +109,50 @@ def _strip_tool_blocks(content: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
+class _StreamScrub:
+    """Stateful, monotonic scrub of legacy ``<tool_call>`` markup in a
+    live reasoning stream.
+
+    The one-shot :func:`_strip_tool_blocks_reasoning` cannot be applied
+    per-chunk to the accumulated trace: its tail-removal regex makes the
+    scrubbed string non-monotonic.  Display hooks derive their delta by
+    slicing the new string against the previously shown one, so a shrink
+    deadlocks that slice: the TUI's ``reasoning[len(printed):]`` becomes
+    empty forever and the thinking visibly stops mid-stream.
+
+    This helper instead commits text only once it is safe, so the returned
+    scrubbed string grows monotonically across chunks:
+
+    * text before the most recent open tag is committed the instant a
+      complete block is found after it,
+    * the text from the most recent open tag onward is held back while the
+      block is incomplete (it never flashes raw markup), and is committed
+      only if the stream ends without a close tag.
+
+    The end-of-stream stored trace still goes through
+    :func:`_strip_tool_blocks_reasoning`, which drops that final tail.
+    """
+
+    def __init__(self) -> None:
+        self._raw = ""        # everything received so far
+        self._pos = 0         # start of the uncommitted region
+        self._shown = ""      # scrubbed text the display has been given
+
+    def feed(self, chunk: str) -> str:
+        """Ingest one streamed chunk; return the scrubbed text to display."""
+        self._raw += chunk
+        # A commit requires a *complete* block: commit everything up to its
+        # end (block removed), then keep scanning — the stream can emit
+        # several blocks before the tail settles.
+        while True:
+            m = _TOOL_BLOCK_RE.search(self._raw, self._pos)
+            if not m:
+                break
+            self._shown += self._raw[self._pos:m.start()]
+            self._pos = m.end()
+        self._shown += self._raw[self._pos:]
+        return self._shown
+
 def _strip_tool_blocks_reasoning(reasoning: str) -> str:
     """Remove legacy <tool_call> markup from a reasoning/thinking trace.
 
@@ -399,14 +443,32 @@ class ConversationMixin:
 
             # Guard: a drifted model can emit tool calls as <tool_call> text
             # inside the reasoning trace rather than the content channel.
-            # Reasoning is display-only (build_messages drops "analysis"
-            # rows), so there is nothing to recover or re-issue — just keep
-            # the markup out of the stored/rendered thinking trace.
+            # Mirror the content-channel recovery below: recover complete,
+            # parseable blocks and route them through the normal
+            # tool-execution path; gate on the drift signature (an OPENING
+            # <tool_call> tag) so a backticked mention in prose does not
+            # trigger anything.  The stored trace is scrubbed either way.
+            reasoning_recovered = None
+            if not tool_calls and reasoning and _TOOL_OPEN_RE.search(reasoning):
+                reasoning_recovered = _recover_text_tool_calls(reasoning)
             reasoning = _strip_tool_blocks_reasoning(reasoning)
             if reasoning:
                 with self._history_lock:
                     self.history.append(("analysis", reasoning, "", "", "", 0))
                 db.log_message(self.session_id, "analysis", reasoning)
+            if reasoning_recovered:
+                _log.warning(
+                    "Recovered %d tool call(s) emitted as legacy XML text in "
+                    "reasoning; executing via normal path.",
+                    len(reasoning_recovered),
+                )
+                self._on_agent_message(
+                    f"Recovered {len(reasoning_recovered)} tool call(s) emitted "
+                    "as text markup; executing them now."
+                )
+                _tt_event(_task_rec, "text_toolcall")
+                tool_calls = reasoning_recovered
+                finish_reason = "tool_calls"
 
             # ── Legacy XML tool-call recovery ───────────────────────────────
             # Some models emit tool calls as <tool_call>...</tool_call> text
