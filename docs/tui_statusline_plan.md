@@ -168,6 +168,24 @@ own loop; wrap the LLM call). Cooldown wait → `idle` (it's asleep, not busy).
 | **P4 (optional)** | Cache-hit % (only if server exposes it — verify llama-server
   response fields first), sparkline of tok/s, `/statusbar quiet` mode. | — |
 
+### Progress
+
+| Item | Status |
+|---|---|
+| **P1** `status.py`: `AgentStatus`/`StatusBar` + pure `render_line(snapshot, term_width)` | [x] done — `nbchat/tui/status.py` |
+| **P1** `/status` command in banner loop printing the agent table | [x] done — `nbchat/tui/app.py` `_print_status()` |
+| **P1** Assistant state hooks (thinking/tool/waiting/error/turn N) | [x] done — `ConversationMixin._status_*` hooks + `TerminalAgent` turn-thread finally (thinking/tool/error/done/stalled-interrupted) |
+| **P1** Context estimator (`_est_window_tokens` / `set_context`) | [x] done — `nbchat/ui/context_manager.py` + `nbchat/tui/status.py` |
+| **P1** Tests (`tests/test_status.py`) | [x] done — render_line widths/states, StatusBar thread-safety, `/status` output |
+| **P2** Ticker thread + ANSI bottom line + `read_line` clear | [ ] |
+| **P2** Context bar wired live + tok/s | [ ] |
+| **P3** Supervisor + team worker registration | [ ] |
+| **P4** Cache % / sparkline / quiet | [ ] (optional) |
+
+**P1 complete** — 327/327 tests passing (12 in `tests/test_status.py`:
+render_line widths/truncation, state handling, StatusBar thread-safety,
+`/status` table output), committed in this repository (single P1 commit).
+
 ### Explicit non-goals
 - No curses/rich/alternate-screen; transcript stays in scrollback.
 - No change to agent behaviour/locks — read-only observers + a lock in

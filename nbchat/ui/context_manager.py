@@ -118,7 +118,13 @@ def _est_tokens(row: _Row) -> int:
             )
         except Exception:
             pass
+
     return max(1, int(chars / (2.5 if role == "tool" else 4.0)))
+
+
+def _est_window_tokens(rows) -> int:
+    """Rough token estimate for a list of history rows (status line)."""
+    return sum(_est_tokens(r) for r in rows)
 
 
 def _parse_structured_summary(text: str) -> dict:

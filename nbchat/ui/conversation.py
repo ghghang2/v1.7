@@ -279,6 +279,15 @@ class ConversationMixin:
     def _on_agent_message(self, text: str) -> None: pass
     def _on_stream_complete(self, content: str, tool_calls: list | None) -> None: pass
     def _append(self, widget) -> None: pass
+
+    # Live status-line hooks (no-op by default; TUI frontends override).
+    def _status_llm_start(self) -> None: pass
+    def _status_tool_start(self, tool_name: str) -> None: pass
+    def _status_tool_done(self) -> None: pass
+    def _status_window(self, estimated_tokens: int, budget: int) -> None: pass
+    def _status_error(self) -> None: pass
+    def _status_thinking(self) -> None: pass
+    def _status_compaction(self, window_rows: int) -> None: pass
     def _refresh_monitoring_panel(self) -> None: pass
     def drain_interjections(self) -> list:
         """Return pending supervisor interjections (empty by default).
@@ -304,6 +313,10 @@ class ConversationMixin:
             _log.debug(msg, exc_info=True)
             mon.flush_session_monitor(self.session_id, db)
             self._on_agent_message(msg)
+            try:
+                self._status_error()
+            except Exception:
+                pass
 
     def _run_conversation_loop(self, client) -> None:
         # L1: update goal from latest user message
@@ -315,9 +328,20 @@ class ConversationMixin:
             _log.debug("L1 goal update failed: %s", exc)
 
         window, _cut = self._window()
+        try:
+            self._status_compaction(len(window))
+        except Exception:
+            pass
         messages = chat_builder.build_messages(window, self.system_prompt, self.task_log)
         for msg in messages:
             msg.pop("reasoning_content", None)
+
+        try:
+            import nbchat.ui.context_manager as _ctx
+            self._status_window(
+                _ctx._est_window_tokens(self.history), config.CONTEXT_BUDGET)
+        except Exception:
+            pass
 
         monitor = mon.get_session_monitor(self.session_id)
         # ── Task telemetry: open one task record per turn ──────────
@@ -368,6 +392,10 @@ class ConversationMixin:
             # loop's success path.
             for _attempt in range(config.MAX_STREAM_RETRIES + 1):
                 try:
+                    try:
+                        self._status_llm_start()
+                    except Exception:
+                        pass
                     _tt_call_start = time.monotonic()
                     reasoning, content, tool_calls, finish_reason = self._stream_response(
                         client, messages
@@ -436,6 +464,10 @@ class ConversationMixin:
             _tt_llm(_task_rec, time.monotonic() - _tt_call_start)
             if tool_calls:
                 _tt_tool_turn(_task_rec)
+            try:
+                self._status_thinking()
+            except Exception:
+                pass
             try:
                 monitor.record_llm_call(volatile_len)
             except Exception:
@@ -663,6 +695,10 @@ class ConversationMixin:
                 tool_name = tc["function"]["name"]
                 tool_args = tc["function"]["arguments"]
 
+                try:
+                    self._status_tool_start(tool_name)
+                except Exception:
+                    pass
                 self._tool_running = True
                 try:
                     raw_result = executor.run_tool(tool_name, tool_args)
@@ -686,6 +722,15 @@ class ConversationMixin:
                 # Derived from the structured tool outcome (exit code / status),
                 # not keyword matching — see db.is_tool_error.
                 error_flag = int(is_tool_error(tool_name, raw_result))
+
+                try:
+                    self._status_tool_end(tool_name, bool(error_flag))
+                except Exception:
+                    pass
+                try:
+                    self._status_thinking()
+                except Exception:
+                    pass
 
                 with self._history_lock:
                     self.history.append(("tool", raw_result, tc["id"], tool_name, tool_args, error_flag))

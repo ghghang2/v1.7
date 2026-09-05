@@ -78,6 +78,7 @@ class TerminalAgent(ContextMixin, ConversationMixin):
             persist_fraction=config.PERSIST_FRACTION
         )
         self._stop_event = threading.Event()
+        self._turn_number = 0
         self._history_lock = threading.Lock()
         self._tool_running = False
         # True while a conversation turn (terminal or injected email) is
@@ -240,6 +241,48 @@ class TerminalAgent(ContextMixin, ConversationMixin):
         with self._send_lock:
             return self._run_turn(text, self._print_user)
 
+    # -- Live status line (status bar hooks) -----------------------------
+
+    def _status(self):
+        """Return the StatusBar, or None when not on a TTY (hooks no-op)."""
+        try:
+            from nbchat.tui import status as st
+            if st._enabled():
+                return st.bar
+        except Exception:
+            pass
+        return None
+
+    def _status_set(self, state: str, detail: str = "") -> None:
+        sb = self._status()
+        if sb is not None:
+            sb.set_state("assistant", state, detail)
+
+    # -- ConversationMixin status hooks (forward to the status bar) -------
+
+    def _status_llm_start(self) -> None:
+        self._status_set("thinking")
+
+    def _status_tool_start(self, tool_name: str) -> None:
+        self._status_set("tool", tool_name)
+
+    def _status_tool_end(self, tool_name: str, had_error: bool) -> None:
+        if had_error:
+            self._status_set("error", tool_name)
+        else:
+            self._status_set("thinking")
+
+    def _status_window(self, estimated_tokens: int, budget: int) -> None:
+        sb = self._status()
+        if sb is not None:
+            sb.set_context(float(estimated_tokens), float(budget))
+
+    def _status_compaction(self, window_rows: int) -> None:
+        self._status_set("compacting", f"{window_rows} msgs")
+
+    def _status_error(self) -> None:
+        self._status_set("error")
+
     def send_async(self, text: str) -> threading.Thread:
         """Run a user turn on a daemon thread and return the thread handle.
 
@@ -263,16 +306,23 @@ class TerminalAgent(ContextMixin, ConversationMixin):
                         "async turn failed")
                     self._turn_failed = True
                 finally:
+                    st_bar = self._status()
                     # Verified terminal state of the turn:
                     #   interrupted  — the user set the stop event
                     #   failed       — a terminal error was surfaced
                     #   complete     — everything else
                     if self._stop_event.is_set():
                         self._voice_fire("interrupted")
+                        if st_bar is not None:
+                            st_bar.set_state("assistant", "stalled", "interrupted")
                     elif self._turn_failed:
                         self._voice_fire("failed")
+                        if st_bar is not None:
+                            st_bar.set_state("assistant", "error")
                     else:
                         self._voice_fire("complete")
+                        if st_bar is not None:
+                            st_bar.set_state("assistant", "done")
 
         thread = threading.Thread(
             target=_runner, name="nbchat-tui-turn", daemon=True
@@ -341,6 +391,11 @@ class TerminalAgent(ContextMixin, ConversationMixin):
         printer(text)
 
         self._turn_active = True
+        from nbchat.tui import status as _st
+        self._turn_number += 1
+        self._status_set("thinking", f"turn {self._turn_number}")
+        if _st._enabled():
+            _st.bar.set_turn(self._turn_number)
         try:
             self._process_conversation_turn()
         finally:
@@ -464,6 +519,7 @@ class TerminalAgent(ContextMixin, ConversationMixin):
         sys.stdout.flush()
 
     def _on_agent_message(self, text: str) -> None:
+        self._status_set("error", text[:80])
         sys.stdout.write(self.palette.red(f"  ! {text}\n"))
         sys.stdout.flush()
         if not self._last_response:

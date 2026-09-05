@@ -37,6 +37,7 @@ _BANNER = """
 
 _HELP = """Commands
   /help              Show this help.
+  /status            Show the live status line + agent-activity table.
   /new               Start a new session.
   /sessions          List terminal sessions (name + id).
   /load <id|name>    Load one of the sessions from /sessions (id or name).
@@ -106,6 +107,37 @@ def print_banner(agent: TerminalAgent, server_up: bool) -> None:
 
 # ── Slash commands ─────────────────────────────────────────────────────────
 
+def _print_status(agent: "TerminalAgent") -> None:
+    """Render the live agent-activity table (the /status command)."""
+    from nbchat.tui import status as st
+
+    bar = st.bar
+    if getattr(agent, "model_name", ""):
+        bar.set_model(agent.model_name)
+    if not bar.agent_ids():
+        bar.register("assistant")
+    if bar._turn == 0 and getattr(agent, "_turn_number", 0):
+        bar.set_turn(agent._turn_number)
+
+    import shutil
+    width = shutil.get_terminal_size((80, 24)).columns
+    print(st.render_line(bar.snapshot(), width))
+
+    snap = bar.snapshot()
+    agents = snap.get("agents") or []
+    if not agents:
+        print("  (no agents registered)")
+        return
+    import time as _time
+    for a in agents:
+        elapsed = max(0.0, _time.monotonic() - a["since"])
+        label = a["label"]
+        state = a["state"]
+        detail = f"  {a['detail']}" if a["detail"] else ""
+        tok = f"  {a['tokens_seen']} tok" if a["tokens_seen"] else ""
+        print(f"  {label:<14} {state:<12} {elapsed:6.1f}s{detail}{tok}")
+
+
 def handle_command(agent: TerminalAgent, line: str, supervisor=None) -> bool:
     """Handle a slash command.  Returns True if the caller should exit."""
     parts = line.split(None, 1)
@@ -136,6 +168,8 @@ def handle_command(agent: TerminalAgent, line: str, supervisor=None) -> bool:
         else:
             agent.set_title(arg)
             print(f"Session named: {agent.session_title}")
+    elif cmd == "/status":
+        _print_status(agent)
     elif cmd == "/load":
         if not arg:
             print("usage: /load <session-id or name>")
