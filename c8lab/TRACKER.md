@@ -1,6 +1,11 @@
 # C=8 saturation experiment — tracker
 
-## State: FIXES DONE — writing RESULTS.md, then commit + push
+## State: COMPLETE — committed 28bbf80 and pushed to main (299 tests pass)
+
+## Final steps (all done)
+- [x] RESULTS.md written (table + 6 findings + bottom line)
+- [x] run_tests: 299 passed
+- [x] Committed (28bbf80) and pushed: all c8lab/ files on main
 
 ## Done (do NOT repeat)
   - Fairness fix: both designs get IDENTICAL sessions (same seed);
