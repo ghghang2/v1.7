@@ -1,6 +1,6 @@
 # C=8 saturation experiment — tracker
 
-## State: COMPLETE — committed 28bbf80 and pushed to main (299 tests pass)
+## State: COMPLETE — pushed to main (28bbf80 + tracker closeout), tree clean, 299 tests pass
 
 ## Final steps (all done)
 - [x] RESULTS.md written (table + 6 findings + bottom line)
