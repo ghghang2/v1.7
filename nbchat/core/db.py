@@ -24,6 +24,24 @@ def is_error_content(content: str) -> bool:
     return any(p in low for p in _ERROR_PATTERNS)
 
 
+def _sanitized(value: Any) -> Any:
+    """Return ``value`` as valid UTF-8 text, or unchanged if it is not a str.
+
+    Tool output occasionally carries isolated surrogate code points (e.g.
+    ``\\udce2``) that SQLite cannot encode: ``conn.execute`` then raises
+    ``UnicodeEncodeError`` and the whole async turn crashes.  We keep only
+    characters that survive UTF-8 encoding, replacing each un-encodable one
+    with U+FFFD so the text is lossy but always storable.
+    """
+    if not isinstance(value, str):
+        return value
+    try:
+        value.encode("utf-8")
+        return value
+    except UnicodeEncodeError:
+        return value.encode("utf-8", "replace").decode("utf-8")
+
+
 # Tools whose output is a JSON object carrying a machine-readable outcome.
 # For these, error_flag must be derived from the structured outcome, not from
 # keyword scanning of the text (a successful `grep` that merely prints the word
@@ -258,7 +276,7 @@ def _meta_set(session_id: str, key: str, value: str) -> None:
         conn.execute(
             "INSERT INTO session_meta (session_id, key, value, ts) VALUES (?,?,?,CURRENT_TIMESTAMP) "
             "ON CONFLICT(session_id, key) DO UPDATE SET value=excluded.value, ts=excluded.ts",
-            (session_id, key, value),
+            (_sanitized(session_id), _sanitized(key), _sanitized(value)),
         )
         conn.commit()
 
@@ -302,7 +320,8 @@ def log_message(session_id: str, role: str, content: str) -> None:
     with _connect() as conn:
         conn.execute(
             "INSERT INTO chat_log (session_id, role, content, error_flag) VALUES (?,?,?,?)",
-            (session_id, role, content, int(is_error_content(content))),
+            (_sanitized(session_id), _sanitized(role), _sanitized(content),
+             int(is_error_content(content))),
         )
         conn.commit()
 
@@ -313,7 +332,8 @@ def log_row(session_id: str, role: str, content: str,
         conn.execute(
             "INSERT INTO chat_log (session_id, role, content, tool_id, tool_name, tool_args, error_flag) "
             "VALUES (?,?,?,?,?,?,?)",
-            (session_id, role, content or "", tool_id or "", tool_name or "", tool_args or "",
+            (_sanitized(session_id), _sanitized(role), _sanitized(content or ""),
+             _sanitized(tool_id or ""), _sanitized(tool_name or ""), _sanitized(tool_args or ""),
              int(is_error_content(content))),
         )
         conn.commit()
@@ -325,7 +345,8 @@ def log_tool_msg(session_id: str, tool_id: str, tool_name: str,
         conn.execute(
             "INSERT INTO chat_log (session_id, role, content, tool_id, tool_name, tool_args, error_flag) "
             "VALUES (?,'tool',?,?,?,?,?)",
-            (session_id, content, tool_id, tool_name, tool_args, int(is_tool_error(tool_name, content))),
+            (_sanitized(session_id), _sanitized(content), _sanitized(tool_id),
+             _sanitized(tool_name), _sanitized(tool_args), int(is_tool_error(tool_name, content))),
         )
         conn.commit()
 
@@ -425,7 +446,7 @@ def replace_session_history(session_id: str, history: list[tuple]) -> None:
         conn.executemany(
             "INSERT INTO chat_log (session_id, role, content, tool_id, tool_name, tool_args, error_flag) "
             "VALUES (?,?,?,?,?,?,?)",
-            [(session_id, *row) for row in history],
+            [(_sanitized(session_id),) + tuple(_sanitized(c) for c in row) for row in history],
         )
         conn.commit()
 
@@ -502,7 +523,8 @@ def append_episodic(session_id: str, turn_id: int, action_type: str,
         conn.execute(
             "INSERT INTO episodic_store (session_id, turn_id, action_type, entity_refs, "
             "outcome_summary, importance_score) VALUES (?,?,?,?,?,?)",
-            (session_id, turn_id, action_type, entity_refs, outcome_summary, importance_score),
+            (_sanitized(session_id), turn_id, _sanitized(action_type), _sanitized(entity_refs),
+             _sanitized(outcome_summary), importance_score),
         )
         conn.commit()
 
@@ -560,7 +582,7 @@ def update_core_memory(session_id: str, updates: dict) -> None:
         conn.executemany(
             "INSERT INTO core_memory (session_id, key, value, ts) VALUES (?,?,?,CURRENT_TIMESTAMP) "
             "ON CONFLICT(session_id, key) DO UPDATE SET value=excluded.value, ts=excluded.ts",
-            [(session_id, k, str(v)) for k, v in updates.items()],
+            [(_sanitized(session_id), _sanitized(k), _sanitized(str(v))) for k, v in updates.items()],
         )
         conn.commit()
 
@@ -593,7 +615,8 @@ def log_context_event(session_id: str, event_type: str, payload: dict) -> None:
     with _connect() as conn:
         conn.execute(
             "INSERT INTO context_events (session_id, event_type, payload) VALUES (?,?,?)",
-            (session_id, event_type, json.dumps(payload)),
+            (_sanitized(session_id), _sanitized(event_type),
+             _sanitized(json.dumps(payload))),
         )
         # Retention cap: keep the last 5000 events per session (debugging
         # telemetry only - bounded growth, no consumer reads further back).
@@ -672,13 +695,13 @@ def record_task(task_id: int | None, **fields: Any) -> int:
         with _connect() as conn:
             cur = conn.execute(
                 f"INSERT INTO task_log ({', '.join(keys)}) VALUES ({ph})",
-                [fields[k] for k in keys],
+                [_sanitized(fields[k]) for k in keys],
             )
         return int(cur.lastrowid)
     sets = ", ".join(f"{k}=?" for k in keys)
     with _connect() as conn:
         conn.execute(f"UPDATE task_log SET {sets} WHERE id=?",
-                     [fields[k] for k in keys] + [task_id])
+                     [_sanitized(fields[k]) for k in keys] + [task_id])
     return int(task_id)
 
 
