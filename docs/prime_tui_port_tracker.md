@@ -212,6 +212,94 @@ Testing conventions (see `tests/conftest.py`, `pytest.ini`):
 | 2026-09-06 | `test_pty_smoke_end_to_end` fails: pty child produces no output / `ModuleNotFoundError` under the pytest+pty harness. | DEFERRED — engine proven sound over a real pty via a standalone probe; test left skipped. Raw-mode correctness handed to user-test checkpoint 1. |
 | 2026-09-06 | A lone keystroke (e.g. Ctrl+C) would block the input loop until 64 bytes accumulated. | FIXED — `TUIApp._read_input()` uses `os.read(fd, 4096)` after `select()` (non-blocking by construction); text-stream read only as fallback. |
 | 2026-09-06 | Esc key never quit the demo. | FIXED — `keys.py` emits name `"escape"`; `demo.py` now matches `"escape"` (was `"esc"`). |
+| 2026-09-06 | **USER TEST — checkpoint 1 (negative):** everything rendered, but the spinner stayed static and no keys responded except Ctrl+C (which exits cleanly). | DIAGNOSED (fix deferred per user). See §10. |
+
+---
+
+## 10. Investigation — user-test checkpoint 1 (why the spinner froze and keys "died")
+
+> 2026-09-06 — user ran the demo in a real terminal. Symptoms: (a) the
+> full screen renders correctly; (b) the animated spinner is static;
+> (c) arrow / PgUp / PgDn / `r` appear to do nothing; (d) Ctrl+C exits
+> cleanly. **No fixes made yet — findings only.**
+
+### 10.1 The three symptoms are ONE root cause
+
+They are not three independent bugs. They are the *same* defect seen from
+three angles:
+
+- The **first frame is written differently from every later frame.**
+  `TUIApp.start()` calls `_render_first()` once before the loop. That
+  first pass runs `render_frame(Frame([]), new)` — i.e. diffing against an
+  *empty* frame — so **every line is written** (all lines are "changed").
+  It is emitted bare, with no double-wrapping and no dependence on cursor
+  position beyond the initial `\033[2J`/`\033[0;0H` home.
+- **Every subsequent update** (spinner tick, event counter, any key) goes
+  through the *diff* path: `diff_frames(prev, new)` emits only the changed
+  lines, and `render_frame` positions the cursor **relatively**
+  (`\033[nB` down / `\033[nA` up from wherever it believes the cursor is)
+  on top of a *contract* that the cursor is always parked at **row 1,
+  col 1** between updates.
+
+So: the first frame is self-contained and correct. The spinner and the
+keys never "fail to fire" — they fire correctly and produce correct new
+frames (verified by the passing diff tests). But their updates **land in
+the wrong place or get dropped by the user's terminal**, because the
+relative-cursor contract is broken. Net effect: the screen freezes on the
+first frame → spinner looks static, keys look dead. Ctrl+C is the only
+thing that "works" because it doesn't need to paint anything — it just
+sets `_running=False` and restores the terminal, which is absolute/safe.
+
+### 10.2 Concrete defects that break the contract (both confirmed in code)
+
+1. **Double synchronized-output wrapper (confirmed bug).**
+   `render_frame()` already wraps its output in `\033[?2026h … \033[?2026l`
+   (frame.py, the `out = [_SYNC_BEGIN] … out.append(_SYNC_END)` lines), and
+   `TUIApp._render_first()` then calls `self.term._write(sync_out(update))`,
+   and `sync_out()` wraps it *again*. The terminal receives
+   `\033[?2026h … \033[?2026l \033[?2026h … \033[?2026l`. Terminals treat
+   CSI 2026 as "buffer everything until the END marker" — the nested/doubled
+   markers are undefined behaviour and can cause the update to be
+   buffered away or mis-applied. This is a **real bug regardless of
+   terminal**: one of the two wrappers must be removed.
+
+2. **Relative-cursor re-anchoring is fragile (design weakness).**
+   `render_frame` assumes the cursor is at row 1 at the *start* of each
+   update and relies on its final `\033[nA` to re-park it there. This is a
+   "the cursor must be exactly where we left it" assumption. Any deviation
+   — a terminal that clamps cursor positions, a line wrap, a CSI 2026
+   quirk from defect #1, or the doubled wrapper — shifts every following
+   write by a constant offset, so **all** later frames (spinner + keys)
+   are garbled while the first (absolute) frame was perfect. prime-agent's
+   engine and most TUI libs instead issue an **absolute** cursor position
+   per written line (or at least re-home at the start of each update)
+   precisely to avoid this.
+
+### 10.3 What is NOT wrong (verified, to avoid wasted effort)
+
+- **Key parsing is correct.** `keys.py` maps `↑↓`→up/down, `5~`/`6~`→
+  pageup/pagedown, `r`→`r`, `q`/Esc→escape, Ctrl+C→`ctrl+c`. The demo's
+  `on_input` matches all of these. The loop reads input via non-blocking
+  `os.read` after `select()`, so keys are delivered (Ctrl+C's clean exit
+  proves the input path is live). The problem is *after* the key is
+  parsed: the re-render it triggers doesn't paint.
+- **The background threads fire.** `_spinner_worker` puts a `render` event
+  every 0.2 s and `_event_worker` every 0.7 s; the loop drains them and
+  calls `_render_first(force=True)`. So new, *different* frames are being
+  generated (the diff tests assert spinner lines actually change). The
+  frames are correct; the **write** is not landing.
+- **The diff logic is correct** against the unit tests (348 passing). The
+  failure is in the terminal-emission layer, not the diff math.
+
+### 10.4 Likely fix direction (NOT yet implemented)
+
+- Remove the redundant `sync_out()` wrapper (keep CSI 2026 exactly once).
+- Make cursor positioning **robust**: either re-home to row 1 at the start
+  of each update, or emit an absolute row position per rewritten line
+  (drop the "parked at row 1" contract). This makes later frames
+  correct even if a single update is partially lost.
+- Re-test checkpoint 1 in the same terminal after those two changes; the
+  spinner should animate and arrows/`r` should respond.
 
 ---
 
