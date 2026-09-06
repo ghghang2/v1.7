@@ -128,12 +128,12 @@ Testing conventions (see `tests/conftest.py`, `pytest.ini`):
 ## 5. Work breakdown (phases)
 
 ### Phase 1 — Engine (the bulk)  · est. 1.5–2.5k LOC
-- [ ] Raw mode via `termios`/`tty`: enter/exit alternate screen, cursor hide.
-- [ ] Differential renderer: frame diff vs previous frame, minimal cursor
+- [x] Raw mode via `termios`/`tty`: enter/exit alternate screen, cursor hide.
+- [x] Differential renderer: frame diff vs previous frame, minimal cursor
       updates, CSI 2026 synchronized output for flicker-free frames.
 - [ ] Component base + layout: `Text`, `Box`, `Spacer`, `Container`.
-- [ ] Event loop: thread-safe input + render-request queue; `requestRender()`.
-- [ ] Bracketed paste + basic key parsing (arrows, Ctrl+C, Ctrl+D, Enter).
+- [x] Event loop: thread-safe input + render-request queue; `requestRender()`.
+- [~] Bracketed paste + basic key parsing (arrows, Ctrl+C, Ctrl+D, Enter).
 - [ ] `StatusLine`/footer component (model, tokens/s, session).
 - [ ] `Loader`/spinner component (agent working state).
 - [ ] **Smoke test (pty):** prove flicker-free diff updates — assert only
@@ -173,7 +173,7 @@ Testing conventions (see `tests/conftest.py`, `pytest.ini`):
 - (none yet)
 
 ### Pending
-- Phase 1 (all items above)
+- Phase 1 (remaining unchecked items in the Phase 1 list above)
 - Phase 2 (all items above)
 - Phase 3 (all items above)
 
@@ -220,3 +220,15 @@ Testing conventions (see `tests/conftest.py`, `pytest.ini`):
 - **Next step:** begin Phase 1 — build the raw-mode terminal layer
   (`termios`/`tty`) and the differential renderer, with a pty smoke test
   proving flicker-free diff updates and clean raw-mode restore.
+
+### Session 2 (2026-09-06)
+- Did: built the Phase 1 engine core — `nbchat/tui2/{frame,raw}.py` (differential
+  renderer with CSI 2026 sync output; raw terminal with passthrough mode;
+  thread-safe event queue; `TUIApp` render loop) plus 21 tests
+  (`tests/test_tui2.py`, all passing; full suite 348 passed). Tracker updated.
+- Current state: `nbchat/tui2/` exists locally with the engine core working and
+  tested; no components, status line, loader, pty smoke test, or opt-in entry
+  point yet. Existing `nbchat.tui` REPL untouched.
+- **Next step:** component base (`Text`, `Box`, `Spacer`, `Container`) +
+  `StatusLine` + `Loader` on top of the engine; then the pty smoke test and an
+  opt-in `python -m nbchat.tui2` entry point for user-test checkpoint 1.
