@@ -14,6 +14,7 @@ See ``docs/prime_tui_port_tracker.md`` for the phased plan and status.
 """
 from .frame import Frame, Line, Segment, Style, diff_frames, render_frame, sync_out
 from .raw import EventQueue, RawTerminal, TUIApp
+from .keys import Key, KeyReader
 
 __all__ = [
     "Frame",
@@ -26,4 +27,6 @@ __all__ = [
     "EventQueue",
     "RawTerminal",
     "TUIApp",
+    "Key",
+    "KeyReader",
 ]

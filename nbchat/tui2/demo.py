@@ -66,6 +66,8 @@ class DemoApp:
         self.tick = int(time.time()) % 8
         self.events_seen = 0
         self.renders = 1
+        # One persistent spinner so its tick state survives across frames.
+        self.loader = Loader("spinner worker (background thread)", active=True)
         self._threads_done = False
         self.app: "TUIApp" = None  # type: ignore[assignment]
 
@@ -117,10 +119,9 @@ class DemoApp:
             clip=True,
             rows=visible + 2,
         )
-        loader = Loader(
-            "spinner worker (background thread)",
-            active=True,
-        ).step(self.tick)
+        # Reuse the persistent spinner; its internal _tick carries over so
+        # step() advances the glyph each frame instead of resetting to 0.
+        loader = self.loader.step(self.tick)
         content = Container([
             box,
             Spacer(1),

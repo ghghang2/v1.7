@@ -236,6 +236,9 @@ class TUIApp:
                         break
                     if self._handle_input(data):
                         break
+                    # Dispatch every key in this chunk to the app handler
+                    # (KeyReader feed); otherwise no key ever reaches on_input.
+                    self.handle_input_events(data)
                     # Keystrokes (or paste) may change UI state: force a
                     # rebuild and diff of the screen.
                     self._render_first(force=True)

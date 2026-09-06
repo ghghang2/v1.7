@@ -399,3 +399,30 @@ def test_pty_smoke_end_to_end():
     assert "\x1b[?1049l" in out
     # No traceback leaked to the terminal.
     assert "Traceback" not in out
+
+
+# ── regression: a normal key must reach on_input (was "dead keys") ──────────
+def test_app_dispatches_keys_to_on_input():
+    """A normal keystroke must be parsed by the KeyReader and delivered to
+    ``on_input``.  Before the fix, only Ctrl+C/Ctrl+D ever reached a handler
+    and every other key was silently dropped ("none of the keys worked")."""
+    from nbchat.tui2 import KeyReader
+
+    out = io.StringIO()
+    term = RawTerminal(io.StringIO(""), out)
+    term._saved = None
+    term._passthrough = True
+
+    app = TUIApp(term)
+    app.set_frame_provider(lambda: frame("static"))
+    reader = KeyReader()
+    app.set_key_reader(reader)
+
+    seen = []
+    app.on_input = lambda key: seen.append(key)
+    # "r" then "q" then Ctrl+C to break the loop.
+    _feed(term, ["r", "q", "\x03"])
+    app.start()
+
+    # The two ordinary keys must have been delivered, in order.
+    assert [k.name for k in seen] == ["r", "q"], seen
