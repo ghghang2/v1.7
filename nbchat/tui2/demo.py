@@ -71,7 +71,7 @@ class DemoApp:
 
     # -- input ----------------------------------------------------------
     def on_input(self, key) -> None:
-        if key.name in ("q", "esc", "ctrl+c"):
+        if key.name in ("q", "escape", "ctrl+c"):
             self._quit()
         elif key.name in ("up", "pageup"):
             self.scroll = max(self.scroll - 1, -3)

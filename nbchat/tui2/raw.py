@@ -231,7 +231,7 @@ class TUIApp:
                     # Non-selectable stream (tests, pipes): read directly.
                     r = True
                 if r:
-                    data = self.term.stdin.read(64)
+                    data = self._read_input()
                     if not data:
                         break
                     if self._handle_input(data):
@@ -248,6 +248,26 @@ class TUIApp:
         finally:
             self._running = False
             self.term.restore()
+
+    def _read_input(self) -> str:
+        """Read one chunk of available keyboard input.
+
+        Uses ``os.read`` on the file descriptor: ``select()`` has just
+        said data is ready, so a raw fd read returns exactly the bytes
+        that are available and never blocks.  A text-stream ``read(n)``
+        would instead block until *n* bytes accumulate — under a real
+        terminal a lone keystroke (e.g. Ctrl+C) would therefore sit
+        unread until 64 more bytes arrived.
+        """
+        fd = self.term.fd
+        if fd is not None and fd >= 0:
+            try:
+                raw = os.read(fd, 4096)
+            except OSError:
+                raw = b""
+            return raw.decode("utf-8", "replace")
+        data = self.term.stdin.read(64)
+        return data or ""
 
     def stop(self) -> None:
         self._running = False
