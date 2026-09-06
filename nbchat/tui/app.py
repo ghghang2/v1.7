@@ -508,7 +508,16 @@ def run(argv: list[str] | None = None) -> int:
                              "your laptop via: ssh -L "
                              f"{config.VOICE_PORT}:127.0.0.1:{config.VOICE_PORT} "
                              "user@server")
+    parser.add_argument("--v2", action="store_true",
+                        help="use the new TUI v2 engine (prime-agent-style "
+                             "fullscreen raw-mode UI; Phase 1 demo)")
     args = parser.parse_args(argv)
+
+    if args.v2:
+        # TUI v2 (Phase 1): self-contained demo; does not need llama-server.
+        from nbchat.tui2 import demo as _tui2_demo
+
+        return _tui2_demo.run()
 
     up = server_ok()
     if args.check:

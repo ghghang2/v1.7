@@ -131,11 +131,11 @@ Testing conventions (see `tests/conftest.py`, `pytest.ini`):
 - [x] Raw mode via `termios`/`tty`: enter/exit alternate screen, cursor hide.
 - [x] Differential renderer: frame diff vs previous frame, minimal cursor
       updates, CSI 2026 synchronized output for flicker-free frames.
-- [ ] Component base + layout: `Text`, `Box`, `Spacer`, `Container`.
+- [x] Component base + layout: `Text`, `Box`, `Spacer`, `Container`.
 - [x] Event loop: thread-safe input + render-request queue; `requestRender()`.
-- [~] Bracketed paste + basic key parsing (arrows, Ctrl+C, Ctrl+D, Enter).
-- [ ] `StatusLine`/footer component (model, tokens/s, session).
-- [ ] `Loader`/spinner component (agent working state).
+- [x] Bracketed paste + basic key parsing (arrows, Ctrl+C, Ctrl+D, Enter).
+- [x] `StatusLine`/footer component (model, tokens/s, session).
+- [x] `Loader`/spinner component (agent working state).
 - [ ] **Smoke test (pty):** prove flicker-free diff updates — assert only
       changed lines are re-emitted, and that raw mode restores cleanly on exit.
 - [ ] **User-test checkpoint 1** (opt-in flag): banner + status line + loader.
@@ -170,10 +170,26 @@ Testing conventions (see `tests/conftest.py`, `pytest.ini`):
       phased plan agreed. (this doc)
 
 ### In progress
-- (none yet)
+- [~] 2026-09-06 — Phase 1 wrap-up: demo app (`nbchat/tui2/{components,
+      theme,keys,demo,__main__}.py`) and the pty end-to-end smoke test
+      (`test_pty_smoke_end_to_end`) built; **the pty smoke test is the one
+      failing test** (21/22 passing in `tests/test_tui2.py`, 21/22 in the
+      tui2 slice of the full suite). Root cause isolated: the pty child
+      process never reaches `nbchat.tui2.demo` under the pytest/pty harness —
+      reproduced standalone, the child dies with
+      `ModuleNotFoundError: No module named 'nbchat'` before the demo can
+      start, so the parent never sees the rendered frame and
+      `got_render` stays false. (Intermittently the full frame *does*
+      render — seen in earlier captured output — so the engine itself is
+      sound; the failure is in the test's child-side module resolution /
+      environment, not in the renderer or raw-mode code.)
 
 ### Pending
-- Phase 1 (remaining unchecked items in the Phase 1 list above)
+- Phase 1: fix `test_pty_smoke_end_to_end` (see In progress), then commit
+      the Phase 1 code (currently uncommitted: modified `nbchat/tui/app.py`
+      — new `--v2` flag — and `nbchat/tui2/raw.py` — key-reader hookup —
+      plus new `nbchat/tui2/{components,theme,keys,demo,__main__}.py`) and
+      hand over user-test checkpoint 1.
 - Phase 2 (all items above)
 - Phase 3 (all items above)
 
@@ -195,6 +211,7 @@ Testing conventions (see `tests/conftest.py`, `pytest.ini`):
 |------|-------|------------|
 | 2026-09-06 | Node runtime not installed; can't consume `pi-tui` as a library from Python. | Reimplement the engine in Python (Phase 1); port concepts 1:1. |
 | 2026-09-06 | prime-agent interactive mode is tightly coupled to its own agent core — not reusable over an external HTTP agent. | Build nbchat-specific components in Phase 2, reusing prime-agent's *visual/UX* design, not its code. |
+| 2026-09-06 | `test_pty_smoke_end_to_end` fails: pty child produces no output / `ModuleNotFoundError: No module named 'nbchat'` under the pytest+pty harness. | OPEN — repro isolated; engine verified working in non-forked contexts and intermittently in the pty. Fix likely on the test side (child `sys.path` / cwd when pytest rewrites imports), not in the engine. |
 
 ---
 

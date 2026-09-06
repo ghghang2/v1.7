@@ -27,6 +27,10 @@ import sys
 import termios
 import tty
 from typing import IO, List, Optional, Tuple
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from .keys import KeyReader
 
 from .frame import Frame, Line, Segment, Style, diff_frames, render_frame, sync_out
 
@@ -196,9 +200,23 @@ class TUIApp:
         self.frame: Optional[Frame] = None
         self._build_frame: object = None
         self._running = False
+        self._key_reader: Optional["KeyReader"] = None
+        self.on_input = None  # type: ignore[assignment]
 
     def set_frame_provider(self, fn) -> None:
         self._build_frame = fn
+
+    def set_key_reader(self, reader: "KeyReader") -> None:
+        """Attach a :class:`~nbchat.tui2.keys.KeyReader`; when set, each
+        completed key is passed to :attr:`on_input` (``fn(key)``)."""
+        self._key_reader = reader
+
+    def handle_input_events(self, data: str) -> None:
+        """Parse *data* into keys and dispatch each to :attr:`on_input`."""
+        if self._key_reader is None or self.on_input is None:
+            return
+        for key in self._key_reader.feed(data):
+            self.on_input(key)
 
     def start(self) -> None:
         self._running = True
