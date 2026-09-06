@@ -39,3 +39,6 @@ repo_overview.md
 nbchat/chat_history.db-shm
 nbchat/chat_history.db-wal
 logs/
+
+# --- Scratch / third-party clones (never commit) ---
+tmp/
