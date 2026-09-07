@@ -433,3 +433,122 @@ def test_app_dispatches_keys_to_on_input():
 
     # The two ordinary keys must have been delivered, in order.
     assert [k.name for k in seen] == ["r", "q"], seen
+
+# \u2500\u2500 Phase 2: chat-surface components (markdown / messages / tools) \u2500\u2500
+def _plain(line):
+    return "".join(s.text for s in line.segments)
+
+
+def test_markdown_heading_and_inline():
+    from nbchat.tui2 import theme
+    from nbchat.tui2.chat import Markdown
+
+    out = Markdown("# Title\n\nhello **bold** and `code`").render(40)
+    text = "\n".join(_plain(l) for l in out)
+    assert "Title" in text
+    assert "hello bold and code" in text
+    head = next(l for l in out if "Title" in _plain(l))
+    assert any(s.style == theme.DARK.accent for s in head.segments
+               if s.text == "Title")
+
+
+def test_markdown_fenced_code_block():
+    from nbchat.tui2.chat import Markdown
+
+    out = Markdown("before\n```\nline1\nline2\n```\nafter").render(30)
+    text = "\n".join(_plain(l) for l in out)
+    assert "line1" in text and "line2" in text and "before" in text
+    # Canonical engine renders code lines with border + muted styles.
+    assert any(s.text == "\u2502 " for l in out for s in l.segments)
+
+
+def test_markdown_bullet_list():
+    from nbchat.tui2.chat import Markdown
+
+    out = Markdown("- a\n- b").render(30)
+    bullets = [_plain(l) for l in out if _plain(l).lstrip().startswith("\u00b7")]
+    assert any("a" in b for b in bullets)
+    assert any("b" in b for b in bullets)
+
+
+def test_markdown_never_crashes_on_unclosed_markup():
+    from nbchat.tui2.chat import Markdown
+
+    for src in ["`unclosed", "**unclosed", "plain"]:
+        out = Markdown(src).render(24)
+        for l in out:
+            assert sum(len(s.text) for s in l.segments) <= 24
+
+
+def test_diff_lines_colouring():
+    from nbchat.tui2.chat import GREEN, RED, DIFF_HUNK, DIFF_CONTEXT
+    from nbchat.tui2 import diff_lines
+
+    out = diff_lines(["+add", "-del", "@@ hunk", " ctx"], width=30)
+
+    def first_style(prefix):
+        row = next(l for l in out if _plain(l).lstrip().startswith(prefix))
+        return row.segments[0].style
+
+    assert first_style("+add") == GREEN
+    assert first_style("-del") == RED
+    assert first_style("@@ hunk") == DIFF_HUNK
+    assert first_style("ctx") == DIFF_CONTEXT
+
+
+def test_toolcall_panel_structure_and_diff():
+    from nbchat.tui2 import ToolCall
+
+    out = ToolCall(
+        "edit", title="tool: edit", status="done",
+        body=["+a", "-b"], show_diff=True,
+    ).render(30)
+    texts = [_plain(l) for l in out]
+    joined = "\n".join(texts)
+    assert "tool: edit" in joined
+    assert "\u256d" in texts[0]
+    assert "\u256f" in texts[-1]
+    assert any(t.lstrip("\u2502").startswith("+a") for t in texts)
+    assert any(t.lstrip("\u2502").startswith("-b") for t in texts)
+
+
+def test_toolcall_omits_when_max_rows():
+    from nbchat.tui2 import ToolCall
+
+    body = [f"line{i}" for i in range(10)]
+    out = ToolCall("t", body=body, max_rows=2).render(30)
+    joined = "\n".join(_plain(l) for l in out)
+    assert "more line(s)" in joined
+    assert "line9" not in joined
+
+
+def test_message_user_and_assistant():
+    from nbchat.tui2 import Message
+
+    u = Message("user", "hello world").render(30)
+    assert "you" in _plain(u[0])
+    a = Message("assistant", "# H\n\ntext here").render(30)
+    joined = "\n".join(_plain(l) for l in a)
+    assert "agent" in _plain(a[0])
+    assert "H" in joined and "text here" in joined
+
+
+def test_thinking_block_collapsed_and_expanded():
+    from nbchat.tui2 import ThinkingBlock
+
+    c = ThinkingBlock("a lot of hidden reasoning", collapsed=True).render(30)
+    assert len(c) == 1
+    assert "thinking" in _plain(c[0])
+    e = ThinkingBlock("visible reasoning", collapsed=False).render(30)
+    joined = "\n".join(_plain(l) for l in e)
+    assert "visible reasoning" in joined
+
+
+def test_chat_components_integrated_into_frame_diff():
+    from nbchat.tui2 import Frame, Message, diff_frames
+
+    def frame_of(text):
+        return Frame(lines=Message("assistant", text).render(30))
+
+    ops = diff_frames(frame_of("v1"), frame_of("v2 totally different"))
+    assert any(op[0] == "write_line" for op in ops)
