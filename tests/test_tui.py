@@ -593,28 +593,55 @@ def test_stream_drop_retries_bounded():
     assert client.captured_calls == MAX_STREAM_RETRIES + 1
 
 
-def test_stream_drop_with_no_content_propagates():
-    """No content rendered yet (the drop happened before any token):
-    nothing to continue, so the error must propagate as before."""
+from nbchat.core import config as _config  # noqa: E402
+MAX_STREAM_RETRIES = _config.MAX_STREAM_RETRIES
+
+def test_stream_drop_with_no_content_recovers():
+    """A transient admission expiry (no content on attempt 1) is retried;
+    when the second attempt completes normally the turn continues and the
+    session is NOT killed — the original failure mode the guard fixes."""
+    client = _StreamingClient([
+        [httpx.RemoteProtocolError("request expired while waiting for admission")],
+        ["All good now."],
+    ])
+    agent = _stream_agent(client)
+    agent._run_conversation_loop(client)
+    assert client.captured_calls == 2
+    asst = [r for r in agent.history if r[0] == "assistant"]
+    # The recovered reply is what lands in the transcript — no error row.
+    assert any(r[1].startswith("All good") for r in asst)
+    # No mid-sentence nudge was injected (nothing had rendered to continue).
+    nudges = [r for r in agent.history if r[0] == "user"
+              and "cut off mid-sentence" in r[1]]
+    assert nudges == []
+
+
+def test_stream_drop_with_no_content_retries_then_propagates():
+    """No content rendered yet (e.g. request expired during admission, or
+    the drop happened before any token): the call is re-issued up to
+    MAX_STREAM_RETRIES times before the error propagates, so a transient
+    admission expiry no longer kills the session immediately."""
     client = _StreamingClient([
         [httpx.RemoteProtocolError("peer closed")],
     ])
     agent = _stream_agent(client)
     with pytest.raises(Exception):
         agent._run_conversation_loop(client)
-    assert client.captured_calls == 1
+    assert client.captured_calls == MAX_STREAM_RETRIES + 1
 
 
-def test_stream_drop_after_tool_call_propagates():
+def test_stream_drop_after_tool_call_retries_then_propagates():
     """A partial tool call cannot be trusted (it may be half-written):
-    the error must propagate rather than be 'continued'."""
+    the call is re-issued up to MAX_STREAM_RETRIES times before the
+    error propagates, so a transient drop mid-tool-call no longer
+    kills the session immediately."""
     client = _StreamingClient([
         ["TC:run_command:partial-args", httpx.RemoteProtocolError("peer closed")],
     ])
     agent = _stream_agent(client)
     with pytest.raises(Exception):
         agent._run_conversation_loop(client)
-    assert client.captured_calls == 1
+    assert client.captured_calls == MAX_STREAM_RETRIES + 1
 
 # ── /model speed stats (last 50 turns) ─────────────────────────────────────
 

@@ -410,13 +410,28 @@ class ConversationMixin:
                     # guard below — the model continues exactly where it
                     # stopped — instead of killing the turn.  A partial
                     # tool call cannot be trusted (it may be half-written)
-                    # so it is discarded; the nudge tells the model to
-                    # re-issue it.  If nothing was rendered yet there is
-                    # nothing to continue, so the error propagates as before.
+                    # so it is discarded and the call is retried with a
+                    # backoff.  If nothing was rendered yet (e.g. admission
+                    # expiry) the call is also retried — the retry loop
+                    # handles it.
                     _tt_retry(_task_rec, exc)
                     _stream_exc = exc
                     if not exc.content or exc.tool_calls:
-                        raise exc
+                        # No content rendered yet (e.g. request expired during
+                        # admission — the server queued the call but the model
+                        # never started responding) or a partial tool call is
+                        # untrustworthy.  Re-issue the call with the same
+                        # messages; the retry loop handles it.  No nudge is
+                        # needed: the model has not started replying.
+                        _log.warning(
+                            "Mid-stream error (no content, %s); "
+                            "attempt %d/%d — retrying.",
+                            type(exc.cause).__name__ if exc.cause else "unknown",
+                            _attempt + 1, config.MAX_STREAM_RETRIES + 1,
+                        )
+                        if _attempt < config.MAX_STREAM_RETRIES:
+                            time.sleep(min(2 ** _attempt, 8))  # exponential backoff
+                        continue
                     if exc.reasoning:
                         with self._history_lock:
                             self.history.append(
