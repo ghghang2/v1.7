@@ -141,13 +141,22 @@ Testing conventions (see `tests/conftest.py`, `pytest.ini`):
 - [ ] **User-test checkpoint 1** (opt-in flag): banner + status line + loader.
 
 ### Phase 2 — Conversation surface  · est. ~1.5k LOC
-- [ ] `Markdown` component (via `rich`), code highlighting.
-- [ ] User/assistant message components (bubbles, backgrounds).
-- [ ] Tool-call panels with diff colouring (add/remove lines).
-- [ ] Thinking blocks (collapsible/dimmed).
+- [x] `Markdown` component — lightweight `nbchat/tui2/markdown.py`
+      (`render_markdown` / `styled_lines` / `style_for`) over our own
+      Line/Segment/Style model (NOT `rich` — the engine owns its own
+      styled segments so the differential renderer can diff them). Headings,
+      bold/italic/inline-code, code fences, lists, links, blockquotes,
+      horizontal rules.
+- [x] User/assistant message components — `Message` (role prefix glyph,
+      dimmed header, wrapped body, per-role styling).
+- [x] Tool-call panels with diff colouring — `ToolCall` + `diff_lines`
+      (add/remove/changed line colouring).
+- [x] Thinking blocks — `ThinkingBlock` (collapsible/dimmed).
 - [ ] Wire all existing `/` commands into the new input line (same semantics).
 - [ ] `SelectList` (fuzzy) for `/sessions`, `/model`.
-- [ ] Port theme JSONs → theme module.
+- [x] Theme module — `nbchat/tui2/theme.py` ported (see Phase 1). The
+      prime-agent theme *JSON* files are consumed as data by the theme
+      module; no separate JSON→module translation remains.
 - [ ] **User-test checkpoint 2**: full chat in the new surface.
 
 ### Phase 3 — Editor polish  · est. ~1k LOC
@@ -184,6 +193,13 @@ Testing conventions (see `tests/conftest.py`, `pytest.ini`):
       not the engine. Raw-mode correctness is covered by user-test
       checkpoint 1 instead. Making the harness test reliable is an
       optional, low-priority nicety.
+- [x] 2026-09-07 — Phase 2 chat-surface components shipped
+      (`nbchat/tui2/chat.py` + `markdown.py`): `Markdown`, `Message`,
+      `ToolCall`, `ThinkingBlock`, `diff_lines`. All exported from
+      `nbchat.tui2`. Test suite: 374 passing.
+      Commits: `1a2f823` (theme SGR fix), `2c04d21` (Phase 2 components).
+      Remaining Phase 2: slash-command wiring, `SelectList`, user-test
+      checkpoint 2.
 
 ### Pending
 - Phase 1: **user-test checkpoint 1** (demo is ready — see table below).
@@ -194,7 +210,10 @@ Testing conventions (see `tests/conftest.py`, `pytest.ini`):
   > Awaiting user re-test of `python -m nbchat.tui2`.
 - Optional: make `test_pty_smoke_end_to_end` reliable (harness-side fix);
       low priority, does not block the product.
-- Phase 2 (all items above)
+- Phase 2 (remaining items): wire `/` commands into the new input line,
+      `SelectList` (fuzzy) for `/sessions`/`/model`, and **user-test
+      checkpoint 2** (full chat in the new surface). Core rendering
+      components are done (see In progress, 2026-09-07).
 
 ### Blocked
 - (none yet)
@@ -203,7 +222,7 @@ Testing conventions (see `tests/conftest.py`, `pytest.ini`):
 | # | What to test | How | Status |
 |---|--------------|-----|--------|
 | 1 | Banner, status line, loader, scroll, clean exit | `python -m nbchat.tui2` (or `python -m nbchat.tui --v2`) — arrows/PgUp/PgDn scroll, `r` re-renders, `q`/Esc/Ctrl+C quits | Ready |
-| 2 | Full chat in new surface | *(TBD at checkpoint)* | Pending |
+| 2 | Full chat in new surface | `python -m nbchat.tui2` (or `python -m nbchat.tui --v2`) — send a prompt, observe rendered reply, tool panel, thinking block | Pending |
 | 3 | Editor feel | *(TBD at checkpoint)* | Pending |
 
 ---
