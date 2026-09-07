@@ -2,43 +2,32 @@
 ``theme/*.json`` files — dark, light, prime).
 
 Each theme is a small immutable mapping of named colours to
-:class:`~nbchat.tui2.frame.Style` values.  Only a compact SGR subset is
-used (30-37 / 90-97 foregrounds plus bold and dim), so it works on every
-terminal and stays cheap to diff.
+:class:`~nbchat.tui2.frame.Style` values.  Colours are expressed as
+0-15 palette indices (8-15 the bright variants) plus bold/dim flags; the
+engine's :class:`Style` renders these through the structured SGR codes
+(``38;5;N`` / attribute flags), which is exactly what the differential
+renderer expects.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Mapping, Tuple
+from typing import Dict, Tuple
 
 from .frame import Style
 
-# SGR codes for the 16 ANSI colours: 40-47 normal, 48;5+x for bright.
-_FG = ("30", "31", "32", "33", "34", "35", "36", "37")
-_BRIGHT_FG = ("90", "91", "92", "93", "94", "95", "96", "97")
-_BOLD = "1"
-_DIM = "2"
-
-
-def _code(fg: str, bold: bool = False, dim: bool = False) -> str:
-    parts = []
-    if bold:
-        parts.append(_BOLD)
-    if dim:
-        parts.append(_DIM)
-    parts.append(fg)
-    return ";".join(parts)
-
 
 def style(fg_index: int, bold: bool = False, dim: bool = False) -> Style:
-    """Build a :class:`Style` from an 0-7 colour index."""
-    return Style(_code(_FG[fg_index], bold, dim))
+    """Build a structured :class:`Style` from a 0-15 colour index.
 
-
-BRIGHT: Mapping[str, str] = dict(zip(
-    ("black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"),
-    _BRIGHT_FG,
-))
+    ``fg_index`` is the palette position (0-7 normal, 8-15 bright).  The
+    ``bold``/``dim`` flags map straight onto the :class:`Style` dataclass
+    so the renderer emits a well-formed SGR sequence — a raw SGR *string*
+    must never be stored in the ``fg`` field, which the renderer assumes
+    is an integer.
+    """
+    if not (0 <= fg_index <= 15):
+        raise ValueError("fg_index must be 0-15")
+    return Style(fg=fg_index, bold=bold, dim=dim)
 
 
 @dataclass(frozen=True)
