@@ -61,7 +61,7 @@ class Theme:
     def as_dict(self) -> Dict[str, str]:
         """Colour name -> SGR code (for inspection/tests)."""
         return {
-            field: s.code for field, s in (
+            field: s.as_code() for field, s in (
                 ("primary", self.primary),
                 ("accent", self.accent),
                 ("muted", self.muted),
