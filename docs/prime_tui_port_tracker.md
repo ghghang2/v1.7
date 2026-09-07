@@ -187,6 +187,11 @@ Testing conventions (see `tests/conftest.py`, `pytest.ini`):
 
 ### Pending
 - Phase 1: **user-test checkpoint 1** (demo is ready — see table below).
+  > **Corrected 2026-09-06 (commit dbd1fe7):** the checkpoint-1 defects
+  > (§10) are fixed — the §10 root-cause analysis was partly wrong
+  > (no double CSI 2026 wrapper exists; the real bugs were the missing
+  > KeyReader dispatch and the per-frame Loader recreation, both fixed).
+  > Awaiting user re-test of `python -m nbchat.tui2`.
 - Optional: make `test_pty_smoke_end_to_end` reliable (harness-side fix);
       low priority, does not block the product.
 - Phase 2 (all items above)
@@ -213,6 +218,7 @@ Testing conventions (see `tests/conftest.py`, `pytest.ini`):
 | 2026-09-06 | A lone keystroke (e.g. Ctrl+C) would block the input loop until 64 bytes accumulated. | FIXED — `TUIApp._read_input()` uses `os.read(fd, 4096)` after `select()` (non-blocking by construction); text-stream read only as fallback. |
 | 2026-09-06 | Esc key never quit the demo. | FIXED — `keys.py` emits name `"escape"`; `demo.py` now matches `"escape"` (was `"esc"`). |
 | 2026-09-06 | **USER TEST — checkpoint 1 (negative):** everything rendered, but the spinner stayed static and no keys responded except Ctrl+C (which exits cleanly). | DIAGNOSED (fix deferred per user). See §10. |
+| 2026-09-06 | **Checkpoint 1 FIXED (dbd1fe7).** Actual root causes: (1) the render loop never fed input chunks to `KeyReader.handle_input_events`, so every key was silently dropped; (2) `build_frame()` built a fresh `Loader()` each frame, so the spinner tick state reset to frame 0 every update. §10's double-CSI-2026-wrapper claim was a code misreading — `render_frame` emits the wrapper exactly once, and the relative-cursor contract is safe (writer re-parks the cursor at row 1 after every update). | FIXED — keys reach `on_input` (regression test `test_app_dispatches_keys_to_on_input` added), persistent `Loader` hoisted into `DemoApp`. |
 
 ---
 
@@ -222,6 +228,12 @@ Testing conventions (see `tests/conftest.py`, `pytest.ini`):
 > full screen renders correctly; (b) the animated spinner is static;
 > (c) arrow / PgUp / PgDn / `r` appear to do nothing; (d) Ctrl+C exits
 > cleanly. **No fixes made yet — findings only.**
+>
+> **[Superseded by the fix in dbd1fe7 — see the 2026-09-06 "Checkpoint 1
+> FIXED" row in §7.] The symptoms below were real, but the root causes in
+> §10.1/§10.2 were wrong: the actual bugs were (1) the render loop never
+> dispatched input chunks to `KeyReader`, and (2) `Loader` was recreated
+> on every frame. There was no double CSI 2026 wrapper in the code.**
 
 ### 10.1 The three symptoms are ONE root cause
 
@@ -348,3 +360,9 @@ sets `_running=False` and restores the terminal, which is absolute/safe.
   checkpoint-1 surface. 21/22 tests pass (1 intentionally skipped).
 - **Next step:** user-test checkpoint 1, then Phase 2 (conversation
   surface: Markdown, message components, /-commands, selectors, themes).
+- **Fast-suite policy (2026-09-06):** the full pytest suite must stay
+  under ~10 s. Slow/interactive tests are opt-in via markers — the pty
+  end-to-end smoke test is now `@pytest.mark.pty` and only runs with
+  `python3 -m pytest --run-pty`. It also no longer blocks on pty reads
+  (`select`-bounded `drain`), so a hung child can never stall the suite.
+  Full suite: 349 passed, 1 skipped, ~9 s; pty test alone: 0.04 s.

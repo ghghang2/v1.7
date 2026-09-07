@@ -286,7 +286,7 @@ def test_app_ignores_identical_frames():
 # ── pty smoke test: the real raw-mode path, end to end ─────────────────
 @pytest.mark.skipif(not hasattr(os, "forkpty"),
                     reason="needs forkpty (POSIX)")
-@pytest.mark.skip(reason="pty child stdout capture issue — fix pending (see tracker)")
+@pytest.mark.pty
 def test_pty_smoke_end_to_end():
     """Spawn the v2 demo in a real pty and verify the whole raw-mode
     path: alternate screen enter, differential rendering of live frames,
@@ -296,16 +296,23 @@ def test_pty_smoke_end_to_end():
     import select
     import time
 
-    def read_all(fd: int) -> str:
+    # The master side must never block indefinitely: if the child fails to
+    # exit fully, its slave fd stays open and a plain os.read() would hang
+    # the whole suite forever.  Drain only what select() says is available.
+
+    def drain(fd: int, settle: float = 0.25) -> str:
         chunks = []
-        while True:
-            try:
+        r, _, _ = select.select([fd], [], [], settle)
+        if not r:
+            return ""
+        try:
+            while select.select([fd], [], [], 0.0)[0]:
                 data = os.read(fd, 4096)
-            except OSError:
-                break
-            if not data:
-                break
-            chunks.append(data)
+                if not data:
+                    break
+                chunks.append(data)
+        except OSError:
+            pass
         return b"".join(chunks).decode("utf-8", "replace")
 
     pid, master = pty.fork()
@@ -354,9 +361,9 @@ def test_pty_smoke_end_to_end():
     out = ""
     got_render = False
     while time.time() < deadline:
-        r, _, _ = select.select([master], [], [], 0.25)
-        if r:
-            out += read_all(master)
+        chunk = drain(master)
+        if chunk:
+            out += chunk
             if "spinner worker" in out:
                 got_render = True
                 break
@@ -371,9 +378,9 @@ def test_pty_smoke_end_to_end():
     before = out.count("\x1b[?2026h")
     deadline = time.time() + 2.0
     while time.time() < deadline:
-        r, _, _ = select.select([master], [], [], 0.25)
-        if r:
-            out += read_all(master)
+        chunk = drain(master)
+        if chunk:
+            out += chunk
             if out.count("\x1b[?2026h") > before:
                 break
 
@@ -382,9 +389,9 @@ def test_pty_smoke_end_to_end():
     deadline = time.time() + 5.0
     exited = False
     while time.time() < deadline:
-        r, _, _ = select.select([master], [], [], 0.25)
-        if r:
-            out += read_all(master)
+        chunk = drain(master)
+        if chunk:
+            out += chunk
         try:
             wpid, status = os.waitpid(pid, os.WNOHANG)
         except ChildProcessError:
@@ -393,7 +400,7 @@ def test_pty_smoke_end_to_end():
             exited = True
             break
     assert exited, "demo did not exit after Ctrl+C (raw mode broken?)"
-    out += read_all(master)
+    out += drain(master, settle=0.2)
     os.close(master)
     # The alternate screen was restored before the child exited.
     assert "\x1b[?1049l" in out
