@@ -103,9 +103,13 @@ persist_fraction: 0.40 # top 40% of exchanges by importance go to L2
 lossless_window: 10
 
 # Retry parameters
-max_retries: 3
-initial_delay: 1.0
-max_delay: 30.0
+# Retries are cheap but wall-clock-expensive; keep the budget small and the
+# backoff short so a failing tool surfaces quickly instead of stalling the
+# session.  (Guarding against the long-hang cases is handled separately by
+# the hang guard in nbchat/core/retry.py.)
+max_retries: 2
+initial_delay: 0.5
+max_delay: 5.0
 backoff_multiplier: 2.0
 
 # Monitoring thresholds

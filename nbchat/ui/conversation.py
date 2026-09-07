@@ -735,7 +735,26 @@ class ConversationMixin:
                 with self._history_lock:
                     self.history.append(("tool", raw_result, tc["id"], tool_name, tool_args, error_flag))
                 db.log_tool_msg(self.session_id, tc["id"], tool_name, tool_args, raw_result)
-                messages.append({"role": "tool", "tool_call_id": tc["id"], "content": model_result})
+                model_content = model_result
+                # Hang guard: if this tool call timed out (hung), nudge the
+                # model to change approach so the session continues instead
+                # of re-issuing the same hanging call (see retry.HangError).
+                try:
+                    from nbchat.core.retry import is_hang
+
+                    if is_hang(raw_result):
+                        model_content = (
+                            model_result
+                            + "\n[session guard: that call HUNG and was killed on its "
+                            "wall-clock budget. Re-issuing it will hang again. "
+                            "Diagnose the root cause — e.g. an infinite loop in a "
+                            "script — fix the input or split it into a smaller, "
+                            "bounded step, and continue the task from the last "
+                            "confirmed-good state.]"
+                        )
+                except Exception:
+                    pass
+                messages.append({"role": "tool", "tool_call_id": tc["id"], "content": model_content})
 
                 # L1 + L2 update
                 try:

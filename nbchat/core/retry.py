@@ -18,16 +18,23 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import time
 from typing import Callable, Any, Optional, TypeVar
 
 _log = logging.getLogger("nbchat.retry")
 
 # Retry configuration
-DEFAULT_MAX_RETRIES = 3
-DEFAULT_INITIAL_DELAY = 1.0  # seconds
-DEFAULT_MAX_DELAY = 30.0  # seconds
+DEFAULT_MAX_RETRIES = 2
+DEFAULT_INITIAL_DELAY = 0.5  # seconds
+DEFAULT_MAX_DELAY = 5.0  # seconds
 DEFAULT_BACKOFF_MULTIPLIER = 2.0
+
+# Hang guard: a tool call that stays silent for this long (wall-clock) is
+# assumed hung (e.g. an infinite loop) and is abandoned so the session can
+# continue instead of stalling.  Kept generous on purpose — a legitimately
+# slow-but-finite tool must be able to complete within this window.
+HANG_TIMEOUT = 120.0  # seconds
 
 # Error types that should be retried
 RETRIFIABLE_ERRORS = (
@@ -62,6 +69,20 @@ class NonRetryableError(Exception):
     """Deterministic failure — skip retry and propagate immediately."""
 
 
+class HangError(Exception):
+    """A tool call exceeded its wall-clock budget and was abandoned.
+
+    A hang is *not* transient — retrying an infinite loop just hangs again.
+    The retry layer treats this as non-retryable so the session fails fast
+    and continues instead of spending retry attempts on a tool that will
+    never return.
+    """
+
+    def __init__(self, message: str, tool: str | None = None):
+        super().__init__(message)
+        self.tool = tool
+
+
 def _is_retryable(error_message: str) -> bool:
     """Check if an error is retryable based on error message."""
     error_lower = error_message.lower()
@@ -71,6 +92,12 @@ def _is_retryable(error_message: str) -> bool:
         if pattern in error_lower:
             return False
     
+    # A wall-clock timeout of a tool call is a HANG, not a transient network
+    # condition.  Treating it as retryable made a hung tool spend every retry
+    # attempt re-hanging (the markdown.py failure mode).  Fail fast instead.
+    if is_hang(error_lower):
+        return False
+
     # Check for retryable errors
     for pattern in RETRIFIABLE_ERRORS:
         if pattern in error_lower:
@@ -82,6 +109,29 @@ def _is_retryable(error_message: str) -> bool:
     # harness is built to avoid.  Only clearly transient failures above
     # are retried.
     return False
+
+
+# A tool call exhausting its per-tool wall-clock budget is a hang even in the
+# bare timeout wording ("Tool 'name' timed out after N seconds.").  The
+# "Tool '...' timed out" prefix is the tool executor's signature, unambiguous
+# that a *tool* (not the network) never returned.
+_TOOL_TIMEOUT_RE = re.compile(r"tool\s+'[^']*'\s+timed out after")
+
+
+def is_hang(error_message: str) -> bool:
+    """True when an error is a wall-clock hang (a call that never returned),
+    as opposed to a transient failure that a retry could recover from.
+
+    Used both by :func:`_is_retryable` (to fail fast) and by the session
+    layer (to fire the hang-continuity guard).
+    """
+    m = error_message.lower() if isinstance(error_message, str) else ""
+    if "hung" in m or "hang" in m or "wall-clock" in m:
+        return True
+    # Per-tool wall-clock timeout (tool executor signature).  A bare
+    # "timed out" without this prefix may be a transient network timeout that
+    # a retry could recover from, so it is NOT treated as a hang.
+    return bool(_TOOL_TIMEOUT_RE.search(m))
 
 
 def _calculate_delay(attempt: int, initial_delay: float, max_delay: float, 
@@ -125,6 +175,12 @@ def retry(
             except Exception as e:
                 last_error = e
                 if isinstance(e, NonRetryableError):
+                    raise
+                if isinstance(e, HangError):
+                    # A hung tool call will hang again — no retry can fix it.
+                    _log.warning(
+                        f"Hang detected in {func.__name__}; not retrying. {e}"
+                    )
                     raise
                 error_msg = str(e).lower()
                 
@@ -190,6 +246,12 @@ def retry_with_backoff(
             last_error = e
             if isinstance(e, NonRetryableError):
                 raise
+            if isinstance(e, HangError):
+                # A hung tool call will hang again — no retry can fix it.
+                _log.warning(
+                    f"Hang detected in {func.__name__}; not retrying. {e}"
+                )
+                raise
             error_msg = str(e).lower()
             
             if not _is_retryable(error_msg):
@@ -219,5 +281,7 @@ __all__ = [
     "retry",
     "retry_with_backoff",
     "NonRetryableError",
+    "HangError",
+    "is_hang",
     "DEFAULT_MAX_RETRIES",
 ]

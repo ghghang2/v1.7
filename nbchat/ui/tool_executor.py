@@ -10,6 +10,8 @@ from nbchat.tools import TOOLS
 from nbchat.core.retry import (
     retry_with_backoff,
     DEFAULT_MAX_RETRIES,
+    HangError,
+    is_hang,
 )
 import nbchat.core.config as config
 
@@ -64,7 +66,17 @@ def run_tool(tool_name: str, args_json: str, timeout: int | None = None) -> str:
         except TimeoutError:
             # Keep a done-callback so the pool doesn't silently drop it.
             future.add_done_callback(lambda _f: None)
-            raise TimeoutError(f"Tool '{tool_name}' timed out after {timeout} seconds.")
+            # A wall-clock timeout is a HANG, not a transient failure.  Raise
+            # HangError so the retry layer abandons it on this attempt instead
+            # of re-hanging for every retry (the markdown.py failure mode).
+            # The message is kept actionable so the model can change approach.
+            raise HangError(
+                f"Tool '{tool_name}' timed out after {timeout} seconds (hung — "
+                f"likely an infinite loop or blocking call). Do not repeat the "
+                f"same call; break the work into a smaller step or use a "
+                f"non-blocking alternative.",
+                tool=tool_name,
+            )
         # NOTE: tool exceptions are deliberately NOT re-wrapped here.
         # Wrapping in a generic Exception("Tool execution error: ...")
         # stripped the original message, which made retry classification
@@ -81,6 +93,11 @@ def run_tool(tool_name: str, args_json: str, timeout: int | None = None) -> str:
         )
         return result
     except Exception as e:
+        from nbchat.core.retry import HangError as _HangError
+
+        if isinstance(e, _HangError):
+            # A hang was NOT retried (see retry.HangError) — report that truthfully.
+            return f"Tool '{tool_name}' aborted (hung, no retry): {e}"
         return f"Tool '{tool_name}' failed after {DEFAULT_MAX_RETRIES} retries: {e}"
 
 
