@@ -19,7 +19,7 @@ from typing import Dict, List, Optional, Tuple
 
 import nbchat.core.db as db
 import nbchat.core.config as config
-from nbchat.ui import chat_builder
+from nbchat.core import chat_builder
 
 _log = logging.getLogger("nbchat.compaction")
 

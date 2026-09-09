@@ -21,9 +21,9 @@ import threading
 from typing import List, Tuple
 
 from nbchat.core.utils import lazy_import
-from nbchat.ui.context_manager import ImportanceTracker
-from nbchat.ui.context_manager import ContextMixin
-from nbchat.ui.conversation import ConversationMixin
+from nbchat.core.context_manager import ImportanceTracker
+from nbchat.core.context_manager import ContextMixin
+from nbchat.core.conversation import ConversationMixin
 
 _log = logging.getLogger("nbchat.whatsapp")
 

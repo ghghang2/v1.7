@@ -5,7 +5,7 @@ interference with literal close-tag sequences.
 """
 import sys
 sys.path.insert(0, "/v1.7")
-from nbchat.ui.conversation import _strip_tool_blocks_reasoning as f
+from nbchat.core.conversation import _strip_tool_blocks_reasoning as f
 
 TC_OPEN = "\x3ctool_call>"
 TC_CLOSE = "\x3c/tool_call>"

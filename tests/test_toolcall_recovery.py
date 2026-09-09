@@ -10,8 +10,8 @@ from __future__ import annotations
 import json
 import re
 
-from nbchat.ui import chat_builder
-from nbchat.ui.conversation import (
+from nbchat.core import chat_builder
+from nbchat.core.conversation import (
     _recover_text_tool_calls,
     _strip_tool_blocks,
 )
@@ -216,18 +216,18 @@ _BLOCK = (
 
 
 def test_gate_ignores_backticked_prose_mention():
-    from nbchat.ui.conversation import _TOOL_OPEN_RE
+    from nbchat.core.conversation import _TOOL_OPEN_RE
     prose = "rows matching `<" + "tool_call` - mostly analysis rows"
     assert _TOOL_OPEN_RE.search(prose) is None
 
 
 def test_gate_ignores_word_without_opening_tag():
-    from nbchat.ui.conversation import _TOOL_OPEN_RE
+    from nbchat.core.conversation import _TOOL_OPEN_RE
     assert _TOOL_OPEN_RE.search("the <" + "tool_call parsing issue") is None
 
 
 def test_gate_fires_on_opening_tag():
-    from nbchat.ui.conversation import _TOOL_OPEN_RE
+    from nbchat.core.conversation import _TOOL_OPEN_RE
     assert _TOOL_OPEN_RE.search(_OPEN)
     assert _TOOL_OPEN_RE.search("check\n" + _BLOCK)
 

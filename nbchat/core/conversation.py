@@ -23,7 +23,7 @@ import nbchat.core.compressor as comp
 import nbchat.core.monitoring as mon
 import nbchat.core.task_tracker as task_tracker
 from nbchat.core.db import is_error_content, is_tool_error
-from nbchat.ui import chat_builder, tool_executor as executor
+from nbchat.core import chat_builder, tool_executor as executor
 import nbchat.tools as tools_mod
 
 _log = logging.getLogger("nbchat.compaction")
@@ -337,7 +337,7 @@ class ConversationMixin:
             msg.pop("reasoning_content", None)
 
         try:
-            import nbchat.ui.context_manager as _ctx
+            import nbchat.core.context_manager as _ctx
             self._status_window(
                 _ctx._est_window_tokens(self.history), config.CONTEXT_BUDGET)
         except Exception:

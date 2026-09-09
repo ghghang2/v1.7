@@ -22,7 +22,7 @@ import pytest
 
 import nbchat.core.retry as retry
 from nbchat.core import config
-from nbchat.ui import tool_executor
+from nbchat.core import tool_executor
 
 
 # -- Configuration -----------------------------------------------------------

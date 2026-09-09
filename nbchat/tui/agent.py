@@ -20,8 +20,8 @@ from nbchat.core import config
 from nbchat.core import db
 from nbchat.core import compressor as comp
 from nbchat.core.supervisor import InterjectionQueue
-from nbchat.ui.context_manager import ContextMixin, ImportanceTracker
-from nbchat.ui.conversation import ConversationMixin
+from nbchat.core.context_manager import ContextMixin, ImportanceTracker
+from nbchat.core.conversation import ConversationMixin
 from nbchat.tui.colors import Palette
 from nbchat.voice.events import ALFRED, VoiceTagParser
 from nbchat.voice.events import VoiceEventBus  # noqa: F401  (type hint)

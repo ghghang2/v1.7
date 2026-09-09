@@ -468,7 +468,7 @@ def test_team_agent_hooks_prefix_and_persist(monkeypatch, capsys):
 
 def test_arbiter_serializes_managed_tools():
     """Two threads calling a repo-managed tool never overlap in-flight."""
-    import nbchat.ui.tool_executor as te
+    import nbchat.core.tool_executor as te
     arbiter = ToolArbiter()
     arbiter.install()
     wrapped = te.run_tool  # the arbiter-wrapped choke point
@@ -507,7 +507,7 @@ def test_arbiter_reentrant_per_thread():
     arbiter = ToolArbiter()
     arbiter.install()
     try:
-        import nbchat.ui.tool_executor as te
+        import nbchat.core.tool_executor as te
         wrapped = te.run_tool
         orig = arbiter._original
         calls = []
@@ -533,7 +533,7 @@ def test_arbiter_reentrant_per_thread():
 
 
 def test_arbiter_install_remove_roundtrip_and_idempotent():
-    import nbchat.ui.tool_executor as te
+    import nbchat.core.tool_executor as te
     orig = te.run_tool
     arbiter = ToolArbiter()
     arbiter.install()
@@ -550,7 +550,7 @@ def test_arbiter_install_remove_roundtrip_and_idempotent():
 def test_arbiter_unmanaged_tools_pass_through():
     """Unmanaged tools (browser, get_weather, etc.) are not serialized
     and must not be affected by the arbiter."""
-    import nbchat.ui.tool_executor as te
+    import nbchat.core.tool_executor as te
     orig = te.run_tool
     calls = []
     arbiter = ToolArbiter()

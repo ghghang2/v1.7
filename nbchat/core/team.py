@@ -360,7 +360,7 @@ class ToolArbiter:
     The LLM tool loop runs on a shared 4-thread executor.  Two workers
     calling ``make_change_to_file`` simultaneously could interleave writes
     to the same file and corrupt it.  ``ToolArbiter`` wraps
-    ``nbchat.ui.tool_executor.run_tool`` at the module level so every
+    ``nbchat.core.tool_executor.run_tool`` at the module level so every
     tool invocation passes through a per-resource ``threading.RLock``
     (re-entrant per OS thread — a worker that calls ``run_command`` inside
     ``run_command`` does not self-deadlock).
@@ -428,7 +428,7 @@ class ToolArbiter:
     _resource_for = resource_for
 
     def install(self) -> None:
-        """Wrap ``nbchat.ui.tool_executor.run_tool`` with arbiter logic.
+        """Wrap ``nbchat.core.tool_executor.run_tool`` with arbiter logic.
 
         Idempotent — calling ``install()`` twice has no additional effect.
 
@@ -440,7 +440,7 @@ class ToolArbiter:
         with self._lock:
             if self._installed:
                 return
-            import nbchat.ui.tool_executor as te
+            import nbchat.core.tool_executor as te
             current = te.run_tool
             if (getattr(current, "__qualname__", "")
                     == "ToolArbiter._arbitrated"
@@ -503,7 +503,7 @@ class ToolArbiter:
         with self._lock:
             if not self._installed:
                 return
-            import nbchat.ui.tool_executor as te
+            import nbchat.core.tool_executor as te
             if (getattr(te.run_tool, "__qualname__", "")
                     != "ToolArbiter._arbitrated"):
                 self._installed = False
