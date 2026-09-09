@@ -27,11 +27,22 @@ if not logger.handlers:
 
 
 class _InstrumentedStream:
-    """Proxies an OpenAI stream, logging TTFT and token usage."""
+    """Proxies an OpenAI stream, logging TTFT and token usage.
 
-    def __init__(self, stream, t0: float):
+    Optionally carries a decode-lane :class:`nbchat.core.lane_gate.GateHandle`
+    that is held for the *entire* decode (released only once, when the
+    stream is exhausted, closed, errors, or the context manager exits).
+    """
+
+    def __init__(self, stream, t0: float, gate=None):
         self._stream = stream
         self._t0 = t0
+        self._gate = gate
+
+    def _release_gate(self) -> None:
+        if self._gate is not None:
+            self._gate.release()
+            self._gate = None
 
     def __iter__(self):
         ttft = None
@@ -51,6 +62,7 @@ class _InstrumentedStream:
             raise
         finally:
             total = time.time() - self._t0
+            self._release_gate()
             if usage:
                 try:
                     from nbchat.core.team_metrics import record_tokens
@@ -68,6 +80,7 @@ class _InstrumentedStream:
         return self
 
     def __exit__(self, *args):
+        self._release_gate()
         return self._stream.__exit__(*args)
 
     def __getattr__(self, name):
@@ -102,14 +115,27 @@ class MetricsLoggingClient:
             # killed every worker LLM call, see incident 2026-09-04.)
             kwargs.setdefault("timeout", float(team_timeout))
         kwargs.setdefault("extra_body", {})["cache_prompt"] = True
+        # Decode-lane gate: cap concurrent in-flight generations to the
+        # saturation ceiling so bursts don't overshoot the KV pool.  The
+        # permit is held for the whole decode (streams release it only on
+        # exhaustion/closing).  acquire() is idempotent-safe and never
+        # blocks indefinitely.
+        from . import lane_gate
+        permit = lane_gate.acquire()
         t0 = time.time()
         try:
             response = self._client.chat.completions.create(*args, **kwargs)
         except Exception as e:
+            if permit is not None:
+                permit.release()
             logger.error("Request failed after %.2fs: %s", time.time() - t0, e)
             raise
         if kwargs.get("stream"):
-            return _InstrumentedStream(response, t0)
+            # Transfer the permit to the stream so it stays held until the
+            # last token is consumed (or the stream is closed early).
+            return _InstrumentedStream(response, t0, gate=permit)
+        if permit is not None:
+            permit.release()
         u = getattr(response, "usage", None)
         if u:
             try:

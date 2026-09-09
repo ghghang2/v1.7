@@ -138,6 +138,24 @@ SUPERVISOR_LLM_TIMEOUT: float = float(_cfg.get("supervisor_llm_timeout", 60.0))
 # optional (.get() defaults) so configs written before team support still load.
 TEAM_ENABLED: bool = bool(_cfg.get("team_enabled", True))
 TEAM_MAX_WORKERS: int = int(_cfg.get("team_max_workers", 4))
+# --- Decode-lane gate (client-side concurrency cap) -----------------------
+# The LaneGate caps concurrent in-flight generations from this process to the
+# saturation ceiling so a burst of LLM calls (workers + planner + subtasks +
+# synthesis) can never overshoot the KV pool.  The cap defaults to
+# ``team_max_workers`` so that with team_max_workers=8 the gate allows exactly
+# the measured 8-decode ceiling (bench/THROUGHPUT_FINDINGS.md) and trims only
+# delegation bursts -- it never sits below the configured worker count, so it
+# cannot throttle a run to less than what was asked for.  Set a lower value
+# (e.g. 4) to be conservative on a shared GPU.  Disable with
+# lane_gate_enabled: false.  LANE_GATE_ACQUIRE_TIMEOUT bounds how long a caller
+# blocks on a permit before proceeding ungated (deadlock safety valve).
+_LANE_GATE_LIMIT_RAW = _cfg.get("lane_gate_limit", None)
+LANE_GATE_LIMIT: int = int(
+    _LANE_GATE_LIMIT_RAW if _LANE_GATE_LIMIT_RAW is not None
+    else TEAM_MAX_WORKERS)
+LANE_GATE_ENABLED: bool = bool(_cfg.get("lane_gate_enabled", True))
+LANE_GATE_ACQUIRE_TIMEOUT: float = float(
+    _cfg.get("lane_gate_acquire_timeout", 120.0))
 # Seconds the coordinator allows a single claimed task before it interrupts
 # the drifting worker and marks the task failed.
 TEAM_TASK_TIMEOUT: int = int(_cfg.get("team_task_timeout", 900))
@@ -268,6 +286,10 @@ __all__ = [
     "TEAM_MAX_SUBTASKS",
     "TEAM_MAX_DELEGATION_DEPTH",
     "TEAM_METRICS_ENABLED",
+    # Decode-lane gate
+    "LANE_GATE_ENABLED",
+    "LANE_GATE_LIMIT",
+    "LANE_GATE_ACQUIRE_TIMEOUT",
     "TEAM_PLAN_ATTEMPTS",
     "TEAM_SUMMARY_MAX_CHARS",
     "TEAM_REPORT_MAX_CHARS",

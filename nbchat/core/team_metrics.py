@@ -208,6 +208,16 @@ class TeamRunMetrics:
             "token_calls": self._tokens.calls,
             "throughput_tok_s": (
                 round(total_tokens / makespan, 1) if makespan > 0 else 0.0),
+            # Decode-only rate: completion (output) tokens / makespan.  This
+            # is the figure that actually scales with concurrency --
+            # total_tokens is dominated by re-sent prompt tokens that grow with
+            # task count rather than with concurrency, so it understates the
+            # effect of pushing workers from 4 to 8 (see
+            # docs/multi-agent-framework-for-c8-saturation.md, sec 8).
+            "completion_tokens": self._tokens.completion_tokens,
+            "decode_tok_s": (
+                round(self._tokens.completion_tokens / makespan, 1)
+                if makespan > 0 else 0.0),
             "peak_inflight": self._peak_inflight,
             "mean_inflight": (
                 round(self._inflight_sum / self._inflight_samples, 2)
@@ -259,6 +269,7 @@ class TeamRunMetrics:
         parts = [
             f"{m['total_tokens']} tokens / {m['makespan_s']}s",
             f"= {m['throughput_tok_s']} tok/s",
+            f"decode {m.get('decode_tok_s', 0.0)} tok/s",
             f"peak in-flight {m['peak_inflight']}/{m['max_workers']}",
         ]
         gpu = m.get("peak_gpu_mem_mib")
