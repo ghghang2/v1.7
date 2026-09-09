@@ -83,10 +83,12 @@ class RawTerminal:
             self._write(
                 _ENTER_ALT_SCREEN + _HIDE_CURSOR + _BRACKETED_PASTE_ON
             )
-            # Park the cursor at row 1, col 1 \u2014 the differential
-            # writer assumes every update starts there.
+            # Clear the screen and hide the cursor.  The differential
+            # writer addresses every line absolutely (CUP), so the
+            # cursor's initial position no longer matters; the clear
+            # just prevents stale content on the first frame.
             self._write("\033[2J")
-            self._write("\033[0;0H")
+            self._write("\033[H")
         else:
             # Not a TTY (tests, pipes): raw mode is unavailable, so run
             # in a no-op passthrough mode — rendering still works
@@ -242,12 +244,21 @@ class TUIApp:
                     # Keystrokes (or paste) may change UI state: force a
                     # rebuild and diff of the screen.
                     self._render_first(force=True)
+                # Coalesce: collapse N "render" events drained in this
+                # tick into a single rebuild (streaming tokens fire
+                # constantly; one rebuild per tick bounds the rate).
+                quit_requested = False
+                render_requested = False
                 for kind, payload in self.events.drain():
                     if kind == "quit":
-                        self.stop()
-                        break
-                    if kind == "render":
-                        self._render_first(force=True)
+                        quit_requested = True
+                    elif kind == "render":
+                        render_requested = True
+                if quit_requested:
+                    self.stop()
+                    break
+                if render_requested:
+                    self._render_first(force=True)
         finally:
             self._running = False
             self.term.restore()

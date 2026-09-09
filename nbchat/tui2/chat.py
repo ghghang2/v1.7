@@ -20,8 +20,8 @@ wrapper so callers have a stable object-oriented entry point.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import List, Sequence
+from dataclasses import dataclass, field
+from typing import List, Optional, Sequence
 
 from . import markdown
 from .components import _clamp, _fit_row, blank
@@ -247,3 +247,119 @@ class ThinkingBlock:
                 [Segment(f"  \u2026 {omitted} more line(s)", DIFF_HUNK)], width))
         out.extend(indented)
         return out
+
+
+# ── structured chat log ─────────────────────────────────────────────────
+
+
+@dataclass
+class ChatBlock:
+    """One piece of an assistant message: tool output or thinking text.
+
+    ``kind`` is ``"tool"`` or ``"thinking"``.  Tool blocks carry the
+    tool *name*, a *title*, a *status* (``"running"`` / ``"done"`` /
+    ``"error"``), an optional *body* and a *diff* flag.  Thinking
+    blocks carry dimmed *text*.
+    """
+    kind: str
+    name: str = ""
+    title: str = ""
+    status: str = "running"
+    body: List[str] = field(default_factory=list)
+    diff: bool = False
+    text: str = ""
+
+
+@dataclass
+class ChatMessage:
+    """A conversation turn in the structured log.
+
+    Either ``text`` (rendered through the markdown engine) or
+    ``blocks`` (a list of :class:`ChatBlock` for tool panels and
+    thinking sections).  ``.render(width)`` is cached per width so
+    streaming re-renders of unchanged messages stay cheap.
+    """
+    role: str
+    text: str = ""
+    blocks: Optional[List[ChatBlock]] = None
+    _cache: "dict" = field(default_factory=dict, repr=False, compare=False)
+
+    def invalidate(self) -> None:
+        self._cache.clear()
+
+    def render(self, width: int) -> List[Line]:
+        key = (self.role, self.text, tuple(
+            (b.kind, b.name, b.status, b.title, b.text, tuple(b.body))
+            for b in (self.blocks or [])))
+        hit = self._cache.get(width)
+        if hit is not None and hit[0] == key:
+            return hit[1]
+        out: List[Line] = []
+        if self.blocks:
+            for b in self.blocks:
+                if b.kind == "tool":
+                    out.extend(ToolCall(
+                        b.name, title=b.title, status=b.status,
+                        body=b.body, show_diff=b.diff,
+                    ).render(width))
+                elif b.kind == "thinking":
+                    out.extend(ThinkingBlock(
+                        b.text, collapsed=False,
+                        title=b.title or "thinking",
+                    ).render(width))
+        elif self.text:
+            out.extend(Message(self.role, self.text).render(width))
+        if len(self._cache) > 4:
+            self._cache.clear()
+        self._cache[width] = (key, out)
+        return out
+
+
+class ChatLog:
+    """The scrolling conversation log.
+
+    Holds messages in order and renders the tail that fits.
+    ``rows`` caps the height (0 = grow to content); scrolling is
+    bottom-anchored — :meth:`scroll` adjusts ``offset`` (lines up from
+    the bottom).  *gutter* blank lines separate messages.
+    """
+
+    def __init__(self, rows: int = 0, gutter: int = 1) -> None:
+        self.messages: List[ChatMessage] = []
+        self.rows = rows
+        self.gutter = gutter
+        self.offset = 0
+
+    def add(self, msg: "ChatMessage") -> None:
+        self.messages.append(msg)
+
+    def update_last(self, msg: "ChatMessage") -> None:
+        """Replace the most recent message (streaming update)."""
+        if self.messages:
+            self.messages[-1] = msg
+        else:
+            self.messages.append(msg)
+
+    def _all_rows(self, width: int) -> List[Line]:
+        out: List[Line] = []
+        for i, msg in enumerate(self.messages):
+            if i:
+                out.extend(blank(width) for _ in range(self.gutter))
+            out.extend(msg.render(width))
+        return out
+
+    def render(self, width: int) -> List[Line]:
+        rows = self._all_rows(width)
+        cap = self.rows if self.rows > 0 else len(rows)
+        start = max(0, len(rows) - cap - self.offset)
+        return rows[start:start + cap]
+
+    def scroll(self, delta: int) -> None:
+        """Move the view up (*delta* > 0) or down (negative)."""
+        total = len(self._all_rows(1))
+        cap = self.rows if self.rows > 0 else total
+        self.offset = max(0, min(self.offset + delta, max(0, total - cap)))
+
+    def reset(self) -> None:
+        self.messages = []
+        self.offset = 0

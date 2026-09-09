@@ -165,13 +165,12 @@ Testing conventions (see `tests/conftest.py`, `pytest.ini`):
 - [ ] Slash-command + path autocomplete.
 - [ ] Fuzzy search in selectors.
 - [ ] (Optional) mouse support.
-- [ ] Wire the real agent conversation loop (`nbchat/tui2/app.py`) into the
-      surface: a frame builder that composes top status / chat log / live turn
-      / loader / editor / bar. **NOT in repo** (see §11.1). Re-scoped per
-      §11.4.2/§11.5: inject a `printer` into
-      `TerminalAgent._run_turn(self, text, printer)` and override the
-      `_status_*` hooks (no global `sys.stdout`/`sys.stderr` swap), plus a
-      per-message render cache.
+- [x] Wire the real agent conversation loop (`nbchat/tui2/app.py`) into the
+      surface: `ChatApp` (a `TerminalAgent` subclass) re-routes the output hooks
+      into the structured render tree and the frame builder composes chat log /
+      live turn / loader / editor / status bar. Shipped 2026-09-09 per the
+      §11.4.2 printer-injection design (no global stdout swap). Remaining:
+      pty-free tests + user-test checkpoint 2.
 - [ ] **User-test checkpoint 3**: editor feel.
 
 ---
@@ -216,22 +215,29 @@ Testing conventions (see `tests/conftest.py`, `pytest.ini`):
       Remaining Phase 2: slash-command wiring, `SelectList`, user-test
       checkpoint 2.
 
-- [~] 2026-09-07 — Phase 3 real-agent wiring **written, not yet functional.**
-      `nbchat/tui2/app.py` (467 LOC) is authored: `TUI2ChatApp` binds the six
-      `TerminalAgent` structured stream hooks + `_status_window`, a
-      `_LogCapture` swaps in for `sys.stdout`/`sys.stderr`, and `run()` builds
-      the `RawTerminal` / `EventQueue` / `TerminalAgent`; the frame builder
-      composes top status / chat log / live turn / loader / editor / bottom
-      bar. **It currently does not import:** it references `ChatLog` and
-      `ChatMessage` from `.chat`, but `chat.py` only defines `Markdown`,
-      `Message`, `ToolCall`, `ThinkingBlock`, `diff_lines` — there is no
-      `ChatLog`/`ChatMessage`. `__main__.py` and the old `--v2` flag still
-      launch the Phase 1 **demo**, not this app. No tests cover `app.py` yet.
+- [x] 2026-09-09 — Phase 3 real-agent wiring **shipped & importing.**
+      `nbchat/tui2/app.py` (325 LOC) defines `ChatApp`, a `TerminalAgent`
+      subclass that re-routes the terminal-output hooks into the structured
+      render tree (the §11.4.2 printer-injection design — **no global
+      `sys.stdout`/`sys.stderr` swap**). Overrides: `_status` (no print bar),
+      `_status_set` (feeds the tui2 status line), `_print_user` (-> `ChatLog`),
+      `_on_stream_reasoning`, `_on_stream_token`, `_on_stream_complete`,
+      `_on_tool_display`, `_on_agent_message`. The turn runs on a daemon worker
+      thread serialized by the agent's own `_send_lock`; `Enter` submits,
+      `Esc` interrupts (via `agent.interrupt()`), `Ctrl+D` on empty editor quits.
+      The frame builder composes chat log / live streaming turn / loader /
+      `LineEditor` box / status line. `chat.py` gained `ChatMessage`
+      (role + `text=`/`blocks=`, `.render(width)`) and `ChatLog`
+      (scroll-to-bottom, `.render(width)`). `__main__.py` now defaults to the
+      real app (`--demo` keeps the Phase 1 demo reachable). **Note:** the
+      legacy `--v2` flag in `nbchat/tui/app.py` still launches the demo;
+      no pty-free tests cover `app.py` yet.
 
-  > **CORRECTION (2026-09-09, \u00a711.1):** this entry describes work that is
-  > **not in the repo** at commit `870cc34` \u2014 `app.py` does not exist. Treat
-  > it as the *intended* design, not shipped code. The `_LogCapture` global
-  > stdout swap is superseded by the printer-injection design (\u00a711.4.2).
+  > **CORRECTION (2026-09-09, \u00a711.1, resolved):** the earlier entry described
+  > work not present at commit `870cc34`. `app.py` **now exists and imports
+  > cleanly** (`from nbchat.tui2.app import ChatApp`); the `_LogCapture`
+  > global stdout swap was superseded by the printer-injection design (\u00a711.4.2)
+  > as shipped above.
 
 ### Pending
 - Phase 1: **user-test checkpoint 1** (demo is ready — see table below).
@@ -248,16 +254,16 @@ Testing conventions (see `tests/conftest.py`, `pytest.ini`):
       components are done (see In progress, 2026-09-07).
 
 - **Phase 3 (real app) — make `python -m nbchat.tui2` a real chat:**
-  1. Add `ChatMessage` (role + `text=` or `blocks=`, with `.render(width)`) and
-     `ChatLog` (list of messages, `rows`, `gutter`, scroll-to-bottom, `.render(width)`)
-     to `nbchat/tui2/chat.py` to match the API `app.py` already calls.
-  2. Verify the six `TerminalAgent` hook names bound in `TUI2ChatApp.bind()`
-     exist with those exact signatures (esp. `_status_window(self, estimated_tokens, budget)`).
-  3. Point `__main__.py` (and `--v2` in `nbchat/tui/app.py`) at the real app;
-     keep the demo reachable (e.g. `--v2-demo` or an env flag).
-  4. Add pty-free tests for `app.py` (fake `TerminalAgent` + in-memory terminal)
+  1. [x] `ChatMessage` + `ChatLog` added to `nbchat/tui2/chat.py`.
+  2. [x] Hook names verified against `TerminalAgent` (`_status_set`,
+     `_on_stream_token`, `_on_stream_complete`, `_on_tool_display`,
+     `_on_agent_message`, `_print_user`); the six-hook `bind()` design was
+     simplified to direct subclass overrides.
+  3. [x] `__main__.py` points at the real `ChatApp`; demo kept reachable via `--demo`.
+     (Legacy `--v2` flag in `nbchat/tui/app.py` still launches the demo — cosmetic, low priority.)
+  4. [ ] Add pty-free tests for `app.py` (fake `TerminalAgent` + in-memory terminal)
      covering hook→log routing and frame composition.
-  5. **User-test checkpoint 2** (full chat in the new surface).
+  5. [ ] **User-test checkpoint 2** (full chat in the new surface).
 
 ### Blocked
 - (none yet)
@@ -266,7 +272,7 @@ Testing conventions (see `tests/conftest.py`, `pytest.ini`):
 | # | What to test | How | Status |
 |---|--------------|-----|--------|
 | 1 | Banner, status line, loader, scroll, clean exit | `python -m nbchat.tui2` (or `python -m nbchat.tui --v2`) — arrows/PgUp/PgDn scroll, `r` re-renders, `q`/Esc/Ctrl+C quits | Ready |
-| 2 | Full chat in new surface | `python -m nbchat.tui2` (or `python -m nbchat.tui --v2`) — send a prompt, observe rendered reply, tool panel, thinking block | **Blocked**: app.py ImportError |
+| 2 | Full chat in new surface | `python -m nbchat.tui2` — send a prompt, observe rendered reply, tool panel, thinking block | Ready (awaiting user re-test) |
 | 3 | Editor feel | *(TBD at checkpoint)* | Pending |
 
 ---

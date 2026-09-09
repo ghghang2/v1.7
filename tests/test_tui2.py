@@ -117,13 +117,21 @@ def test_render_uses_sync_output():
     assert out.startswith("\033[?2026h") and out.endswith("\033[?2026l")
 
 
-def test_render_first_frame_has_no_cursor_moves():
-    # Fresh terminal: cursor is already at row 1; the writer must not
-    # emit absolute moves for a first render (avoids a leading blank row).
+def test_render_first_frame_uses_absolute_positioning():
+    # Fresh terminal: every rewritten line is addressed absolutely, so
+    # the first frame lands regardless of the cursor's starting position.
     out = render_frame(Frame([]), frame("a", "b", "c"))
-    assert "\033[" not in out.replace("\033[?2026h", "").replace("\033[?2026l", "").replace("\033[0m", "") or True
-    # The meaningful assertion: no cursor-position sequences at all.
-    assert "H" not in out.replace("\033[?2026h", "").replace("\033[?2026l", "")
+    # Every rewritten line is addressed absolutely (CUP: ESC[row;1H]),
+    # so the frame lands correctly regardless of where the cursor is.
+    assert "\033[1;1H" in out and "\033[2;1H" in out and "\033[3;1H" in out
+    # No relative cursor movement (CSI A/B) remains in the writer.
+    assert "\033[A" not in out and "\033[B" not in out
+
+
+def test_render_absolute_positioning_after_change():
+    # A change on line 2 of an existing frame still uses CUP addressing.
+    out = render_frame(frame("a", "b"), frame("a", "c"))
+    assert "\033[2;1H" in out and "\033[A" not in out and "\033[B" not in out
 
 
 def test_render_changed_line_cleared_to_eol():
@@ -149,6 +157,19 @@ def test_render_full_reconstruction_roundtrip():
         buf[op[1]] = "".join(s.text for s in op[2])
     assert [buf[i] for i in range(1, 5)] == ["x1", "y2", "y3", "y4"]
 
+
+def test_render_recovers_from_lost_bytes():
+    # The design argument in one test (\u00a712.3.1): drop bytes mid-frame so
+    # the cursor ends up in an unknown place, then render the next
+    # frame.  With absolute (CUP) addressing the frame still lands
+    # line-for-line: each op targets its own row independently.
+    ops = diff_frames(frame("a", "b"), frame("c", "d"))
+    assert ops
+    buf = {1: "b0", 2: "b1"}
+    for op in ops:
+        assert op[0] == "write_line", op
+        buf[op[1]] = "".join(s.text for s in op[2])  # absolute: row only
+    assert buf == {1: "c", 2: "d"}
 
 # ── RawTerminal (passthrough mode, no TTY required) ────────────────
 

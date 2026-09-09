@@ -110,14 +110,17 @@ class Frame:
 # ── Differential diff ─────────────────────────────────────────────────────
 # Each operation is a tuple the writer turns into bytes:
 #   ("move", row, col)            cursor absolute move (1-based)
-#   ("write_line", row, segments) rewrite line, cursor ends at (row, 1)
+#   ("write_line", row, segments) rewrite line; the writer addresses
+#       the row absolutely (CUP) so no cursor state is assumed
 #
 # ``segments`` is the new line's :class:`Segment` list: the writer
 # emits each segment with its own SGR so styling survives the diff.
 #
-# Only changed lines are written.  The cursor is assumed to start at
-# row 1, column 1 of the screen: the raw layer initialises it there and
-# the writer parks it back at row 1 after every update.
+# Only changed lines are written.  Every rewritten line is addressed
+# absolutely (CSI H / CUP), not by relative cursor movement, so the
+# writer is robust to a lost byte, terminal clamping, or an out-of-band
+# write between frames: each line lands regardless of where the cursor
+# actually ended up.
 
 Operation = Tuple[str, ...]
 
@@ -184,51 +187,42 @@ _CPL = "\033[G"  # cursor to column 1 (no row change)
 
 
 def _cpr(row: int, col: int) -> str:
-    """Cursor Position Report (1-based row/col → 0-based CSI)."""
-    return f"\033[{max(row - 1, 0)};{max(col - 1, 0)}H"
+    """Cursor Position Report (CUP) for a 1-based row/col.
+
+    CSI ``H`` is 1-based: row 1, column 1 is ``ESC[1;1H``.  (The
+    ``ESC[0;0H`` form some terminals tolerate is undefined behaviour,
+    so we never emit it.)
+    """
+    return f"\033[{max(row, 1)};{max(col, 1)}H"
 
 
 def render_frame(prev: Frame, new: Frame) -> str:
     """Render the diff between ``prev`` and ``new`` as an escape
     sequence string.  Returns ``""`` when the frames are identical.
 
-    Cursor movement is relative only (CSI A/B plus a cursor-to-column
-    mark), so the output never contains an absolute cursor-position
-    report.  The contract: the cursor starts every update at row 1,
-    column 1 (the raw layer parks it there on entry, and this writer
-    parks it back at row 1 before finishing).  Each rewritten line is
-    cleared to end-of-line before being written, so stale content from
-    a longer previous line never shows through.  The whole update is
-    wrapped in synchronized-output (CSI 2026) markers so the terminal
-    applies it atomically \u2014 no flicker.
+    Every rewritten line is addressed absolutely (CSI H / CUP via
+    :func:`_cpr`): the output never depends on the cursor's current
+    position, so a dropped byte, terminal row clamping, or an
+    out-of-band write (a leaked ``print``) between frames cannot
+    corrupt the next frame.  Each rewritten line is cleared to
+    end-of-line before being written, so stale content from a longer
+    previous line never shows through.  The whole update is wrapped in
+    synchronized-output (CSI 2026) markers so the terminal applies it
+    atomically \u2014 no flicker.
     """
     ops = diff_frames(prev, new)
     if not ops:
         return ""
     out: List[str] = [_SYNC_BEGIN]
-    cur = 1  # cursor guaranteed at row 1 at the start of the update
     for op in ops:
-        if op[0] == "move":
+        if op[0] == "write_line":
             row = op[1]
-            if row > cur:
-                out.append(f"\033[{row - cur}B")
-            elif row < cur:
-                out.append(f"\033[{cur - row}A")
-            cur = row
-        elif op[0] == "write_line":
-            row = op[1]
-            if row > cur:
-                out.append(f"\033[{row - cur}B")
-            elif row < cur:
-                out.append(f"\033[{cur - row}A")
-            cur = row
+            out.append(_cpr(row, 1))
             out.append(_CPL + _CLEAR_TO_EOL + _SGR_RESET)
             for seg in op[2]:  # each segment writes its own SGR code
                 if seg.text:
                     out.append(seg.style.as_code() + seg.text)
             out.append(_SGR_RESET)
-    if cur > 1:
-        out.append(f"\033[{cur - 1}A")  # park the cursor back at row 1
     out.append(_SYNC_END)
     return "".join(out)
 
