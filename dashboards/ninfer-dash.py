@@ -454,8 +454,26 @@ class Handler(BaseHTTPRequestHandler):
 # ---------------------------------------------------------------------------
 # Console mode (--tui): no HTTP server, just a live terminal line
 # ---------------------------------------------------------------------------
+def spark(vals, width=40):
+    chars = " \u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588"
+    if not vals:
+        return ""
+    step = max(1, len(vals) // width)
+    pts = [vals[i] for i in range(0, len(vals), step)][:width]
+    peak = max(1.0, max(pts))
+    return "".join(chars[min(len(chars) - 1, int(v / peak * (len(chars) - 1) + 0.5))] for v in pts)
+
+
 def console_loop(path: Path):
     last = 0.0
+    ansi = sys.stdout.isatty()
+    started = time.strftime("%H:%M:%S")
+    def put(text):
+        if ansi:
+            sys.stdout.write("\033[H\033[2J" + text)
+        else:
+            print(text, flush=True)
+        sys.stdout.flush()
     while True:
         ingest_file(path)
         now = time.time()
@@ -464,14 +482,20 @@ def console_loop(path: Path):
             s = STATE.last_throughput or {}
             sch = s.get("scheduler") or {}
             st = STATE.stats
-            sys.stdout.write(
-                "\r[ninfer] dec=%8.1f pre=%8.1f tok/s | run=%d wait=%d pf=%d ready=%d | "
-                "done=%d err=%d rej=%d   " % (
-                    s.get("decode_tps") or 0, s.get("prefill_tps") or 0,
-                    sch.get("running", 0), sch.get("waiting", 0),
-                    sch.get("prefilling", 0), sch.get("decode_ready", 0),
-                    st["done"], st["errors"], st["rejected"]))
-            sys.stdout.flush()
+            dec_hist = [h[1] for h in STATE.history]
+            pre_hist = [h[2] for h in STATE.history]
+            head = ("ninfer-serve throughput  %s  started %s  %s"
+                    % (time.strftime("%H:%M:%S"), started,
+                       "web off (console mode)"))
+            l1 = ("decode tok/s  %10.1f  %s"
+                    % (s.get("decode_tps") or 0, spark(dec_hist)))
+            l2 = ("prefill tok/s %10.1f  %s" % (s.get("prefill_tps") or 0, spark(pre_hist)))
+            l3 = ("run=%d wait=%d prefilling=%d decode_ready=%d | done=%d err=%d rej=%d"
+                  % (sch.get("running", 0), sch.get("waiting", 0),
+                     sch.get("prefilling", 0), sch.get("decode_ready", 0),
+                     st["done"], st["errors"], st["rejected"]))
+            l4 = "ctrl-c to exit"
+            put("\n".join([head, l1, l2, l3, l4]))
         time.sleep(0.25)
 
 
