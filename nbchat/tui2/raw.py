@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from .keys import KeyReader
 
-from .frame import Frame, Line, Segment, Style, diff_frames, render_frame, sync_out
+from .frame import Frame, Line, Segment, Style, diff_frames, render_frame
 
 # ── Raw terminal ──────────────────────────────────────────────────────────
 
@@ -302,7 +302,9 @@ class TUIApp:
             return
         update = render_frame(self.frame or Frame([]), new_frame)
         if update:
-            self.term._write(sync_out(update))
+            # render_frame already wraps the update in CSI 2026 markers;
+            # it is the single emission entry point (no sync_out double-wrap).
+            self.term._write(update)
         self.frame = new_frame
 
     def quit_event(self) -> None:

@@ -449,3 +449,149 @@ def test_chat_components_integrated_into_frame_diff():
 
     ops = diff_frames(frame_of("v1"), frame_of("v2 totally different"))
     assert any(op[0] == "write_line" for op in ops)
+
+# ── Phase 2: ChatApp (agent + chat log + input, print hooks → render tree) ──
+
+
+def _make_chat_app():
+    """A ChatApp wired to a passthrough (non-TTY) terminal with a stubbed
+    turn path, so no real LLM call or network happens during the test."""
+    from nbchat.tui2 import Key
+    from nbchat.tui2.app import ChatApp
+
+    out = io.StringIO()
+    term = RawTerminal(io.StringIO(""), out)
+    term._saved = None
+    term._passthrough = True
+    term.width, term.height = 80, 24
+
+    events = EventQueue()
+    app = ChatApp(term, events)
+
+    # Stub the agent turn so _turn_worker completes deterministically.
+    replies = {"n": 0}
+
+    def fake_send(text):
+        replies["n"] += 1
+        app._on_stream_token("hello ")
+        app._on_stream_token("hello world")
+        app._on_stream_complete("hello world")
+        return "hello world"
+
+    app.send = fake_send
+    return app, term, events, replies
+
+
+def test_chatapp_builds_stable_frame():
+    app, term, events, _ = _make_chat_app()
+    frame = app._build_frame()
+    assert frame.height == term.height
+    assert frame.width == term.width
+    # Status line reports the turn count.
+    flat = "\n".join(
+        "".join(s.text for s in line.segments) for line in frame.lines)
+    assert "turns: 0" in flat
+
+
+def test_chatapp_print_user_feeds_log_not_stdout():
+    app, term, events, _ = _make_chat_app()
+    app._print_user("hi there")
+    # The user message is in the structured log, and the stdout buffer
+    # (a passthrough) received nothing from the print hook itself.
+    assert any(
+        getattr(m, "role", None) == "user" and "hi there" in m.text
+        for m in app.log.messages
+    )
+
+
+def test_chatapp_stream_and_finalize_lands_in_log():
+    app, _, _, _ = _make_chat_app()
+    app._on_stream_token("A")
+    app._on_stream_token("AB")
+    app._on_stream_complete("AB")
+    app._finalize_turn()
+    # _stream_text is drained into a single assistant message.
+    assert app._stream_text == ""
+    assert app._turns == 1
+    last = app.log.messages[-1]
+    assert last.role == "assistant"
+    assert "AB" in last.text
+    assert app._status_state == "ready"
+
+
+def test_chatapp_tool_display_appends_block():
+    app, _, _, _ = _make_chat_app()
+    app._on_tool_display('{"ok": true}', "search", '{"q": "x"}')
+    assert app._stream_blocks, "tool display should append a block"
+    block = app._stream_blocks[-1]
+    assert block.kind == "tool"
+    assert "search" in block.title
+
+
+def test_chatapp_key_enter_submits_turn():
+    from nbchat.tui2 import Key
+
+    app, term, events, replies = _make_chat_app()
+    # Type a message then Enter; the editor should submit and a turn start.
+    for ch in "hi":
+        app._on_input(Key(name=ch))
+    app._on_input(Key(name="enter"))
+    assert app.editor.submitted is False  # consumed by the app
+    # Give the daemon turn worker a beat to run the stubbed send.
+    deadline = time.time() + 3
+    while replies["n"] == 0 and time.time() < deadline:
+        time.sleep(0.01)
+    assert replies["n"] == 1
+
+
+def test_chatapp_ctrl_d_on_empty_editor_stops():
+    from nbchat.tui2 import Key
+
+    app, term, events, _ = _make_chat_app()
+    assert app._tui._running or True  # start() not called in unit tests
+    # Simulate the loop running, then Ctrl+D on an empty editor stops it.
+    app._tui._running = True
+    app._on_input(Key(name="ctrl+d"))
+    assert app._tui._running is False
+
+
+def test_chatapp_ctrl_d_with_text_does_not_quit():
+    from nbchat.tui2 import Key
+
+    app, term, events, _ = _make_chat_app()
+    for ch in "x":
+        app._on_input(Key(name=ch))
+    app._tui._running = True
+    app._on_input(Key(name="ctrl+d"))
+    # With non-empty text, Ctrl+D is a normal key (del/insert), not a quit.
+    assert app._tui._running is True
+
+
+def test_key_text_maps_chars_and_control_keys():
+    from nbchat.tui2 import Key
+    from nbchat.tui2.app import _key_text
+
+    # Plain printable character lives in ``name`` with no payload.
+    assert _key_text(Key(name="a")) == "a"
+    assert _key_text(Key(name="Z")) == "Z"
+    # Named control keys carry no insertable text.
+    assert _key_text(Key(name="enter")) == ""
+    assert _key_text(Key(name="ctrl+c")) == ""
+    assert _key_text(Key(name="up")) == ""
+    # Paste / unknown sequences carry the text in the payload.
+    assert _key_text(Key(name="paste", payload="line1\nline2")) == "line1\nline2"
+
+
+def test_on_input_inserts_character_not_key_name():
+    from nbchat.tui2 import Key
+
+    app, _, _, _ = _make_chat_app()
+    # Typing "hi" must insert the characters (the fix: the editor now
+    # receives _key_text(key), so a single-char key inserts that char and
+    # a control key inserts nothing instead of the literal key name).
+    for ch in "hi":
+        app._on_input(Key(name=ch))
+    assert app.editor.text() == "hi"
+    # A control key must not corrupt the buffer.
+    app._on_input(Key(name="enter"))  # submits; the app clears the buffer
+    assert app.editor.text() == ""

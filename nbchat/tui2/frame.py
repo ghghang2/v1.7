@@ -5,9 +5,10 @@ render of the component tree (width/height + one line per screen row).
 :class:`Line` is a list of :class:`Segment` s; each segment carries a
 :class:`Style`.  :func:`diff_frames` compares two frames and returns a
 list of write operations that update only the lines that changed,
-minimising cursor movement.  :func:`sync_out` wraps an update in CSI 2026
-synchronized-output markers so the terminal applies it atomically
-(flicker-free), matching the behaviour of prime-agent's pi-tui engine.
+minimising cursor movement.  :func:`render_frame` wraps each update in
+CSI 2026 synchronized-output markers so the terminal applies it
+atomically (flicker-free), matching prime-agent's pi-tui engine \u2014 it
+is the single emission entry point (no separate ``sync_out`` wrapper).
 
 This module is pure (no I/O, no terminal access) so it is trivially
 unit-testable; the raw-terminal layer (``nbchat.tui2.raw``) handles the
@@ -226,14 +227,3 @@ def render_frame(prev: Frame, new: Frame) -> str:
     out.append(_SYNC_END)
     return "".join(out)
 
-
-def sync_out(update: str) -> str:
-    """Wrap ``update`` in synchronized-output (CSI 2026) markers.
-
-    The terminal buffers everything between the begin and end markers
-    and applies it atomically — no mid-frame redraw, no flicker.
-    Returns ``update`` unchanged when it is empty.
-    """
-    if not update:
-        return ""
-    return "\033[?2026h" + update + "\033[?2026l"

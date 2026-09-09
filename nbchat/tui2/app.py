@@ -31,24 +31,28 @@ from .theme import DARK
 from .keys import Key
 from .keys import KeyReader
 from .raw import EventQueue, RawTerminal, TUIApp
+from nbchat.tui.agent import TerminalAgent
 
 # <tool_call> blocks leak through the stream when the model emits them as
 # text instead of structured tool calls; keep the log clean.
 _TOOL_TEXT_RE = re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL)
 
 
-class ChatApp:
-    """A full conversation app: agent + chat log + input line."""
+class ChatApp(TerminalAgent):
+    """A full conversation app: agent + chat log + input line.
+
+    Subclasses :class:`~nbchat.tui.agent.TerminalAgent` directly so the
+    print-based output hooks (``_status_set``, ``_print_user``,
+    ``_on_stream_*``, ``_on_tool_display``, ``_on_agent_message``) resolve
+    to the overrides below instead of writing to ``sys.stdout``.
+    """
 
     def __init__(self, term: RawTerminal, events: EventQueue) -> None:
-        from nbchat.tui.agent import TerminalAgent
-
+        super().__init__(color=False)
         self.term = term
         self.events = events
-        self.agent = TerminalAgent()
-        # TerminalAgent mints its own session id; expose it for the
-        # TUI chrome and any future /sessions wiring.
-        self.session_id = self.agent.session_id
+        # TerminalAgent.__init__ mints self.session_id; the tui2 chrome
+        # and any future /sessions wiring read it directly.
 
         self.editor = LineEditor(
             placeholder="Type a message…  (enter sends · esc interrupts · ctrl+d quits)",
@@ -161,7 +165,7 @@ class ChatApp:
 
     def _turn_worker(self, text: str) -> None:
         try:
-            self.agent.send(text)
+            self.send(text)
             queued = getattr(self, "_queued", 0)
             while queued:
                 self._queued = getattr(self, "_queued", 0)
@@ -194,8 +198,8 @@ class ChatApp:
         self._ui_refresh()
 
     def _interrupt(self) -> None:
-        if self.agent.busy:
-            self.agent.interrupt()
+        if self.busy:
+            self.interrupt()
             self._status_set("interrupted", "")
         else:
             self.editor.clear()
@@ -207,13 +211,13 @@ class ChatApp:
         if key.name == "ctrl+d" and not self.editor.text():
             self._tui.stop()
             return
-        if key.name == "esc":
+        if key.name in ("escape", "esc"):
             self._interrupt()
             return
         if key.name == "paste" and key.payload:
             self.editor.handle("paste", key.payload)
             return
-        self.editor.handle(key.name, key.payload or "")
+        self.editor.handle(key.name, _key_text(key))
         if self.editor.submitted:
             self.editor.submitted = False
             text = self.editor.text().strip()
@@ -233,13 +237,16 @@ class ChatApp:
 
     def _build_frame(self) -> Frame:
         w, h = self.term.width, self.term.height
-        editor_h = 2
+        # The message Box renders 3 rows (top border + input line +
+        # bottom border).  Account for all of them or the status line
+        # below gets clipped off the frame.
+        editor_h = 3
         # chat log gets everything but the rule, editor box and status line
         log_rows = max(h - editor_h - 4, 2)
         self.log.rows = log_rows
         body = self.log.render(w)
 
-        busy = self.agent.busy
+        busy = self.busy
         detail = self._status_detail or self._status_state
         loader = Loader(detail if busy else "ready",
                         active=busy).step(int(time.time()))
@@ -283,6 +290,22 @@ class ChatApp:
             except Exception:
                 pass
         return 0
+
+
+def _key_text(key: Key) -> str:
+    """The insertable text for a parsed key, if any.
+
+    Special keys (``enter``, ``up``, ``ctrl+c``…) carry no printable text.
+    For a plain character the parser puts it in :attr:`Key.name` with
+    ``payload=None``; for multi-byte / unknown sequences the text lives in
+    ``payload``.  This resolves either case to the string the editor should
+    insert (empty when the key has none).
+    """
+    if key.payload:
+        return key.payload
+    if len(key.name) == 1 and ord(key.name[0]) >= 0x20:
+        return key.name
+    return ""
 
 
 def _rule(width: int) -> Line:
