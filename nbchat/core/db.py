@@ -9,7 +9,7 @@ import hashlib
 import json
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 DB_PATH = Path(__file__).resolve().parent.parent / "chat_history.db"
 
@@ -208,6 +208,35 @@ def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_ce_session
                 ON context_events(session_id, event_type);
+
+            -- Supervisor v2 / refinement tables (CREATE IF NOT EXISTS keeps
+            -- this safe for databases created before they existed).
+            CREATE TABLE IF NOT EXISTS lessons (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id  TEXT NOT NULL DEFAULT '',
+                scope       TEXT NOT NULL DEFAULT 'session',
+                content     TEXT NOT NULL,
+                rationale   TEXT DEFAULT '',
+                origin      TEXT DEFAULT 'refine',
+                round_id    INTEGER,
+                useful      INTEGER DEFAULT 0,
+                created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_lessons
+                ON lessons(session_id, useful DESC);
+
+            CREATE TABLE IF NOT EXISTS refinement_history (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id  TEXT NOT NULL,
+                kind        TEXT NOT NULL DEFAULT 'review',
+                round_id    INTEGER,
+                payload     TEXT NOT NULL,
+                action      TEXT DEFAULT '',
+                detail      TEXT DEFAULT '',
+                ts          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_refh
+                ON refinement_history(session_id, kind, id DESC);
         """)
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS task_log (
@@ -725,6 +754,121 @@ def query_tasks(session_id: str | None = None, status: str | None = None,
     rows = conn.execute(sql, params).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Supervisor v2 / refinement helpers (lessons + refinement_history)
+# ---------------------------------------------------------------------------
+
+def _row_to_dict(row) -> dict:
+    return dict(row) if isinstance(row, sqlite3.Row) else dict(row)
+
+
+def insert_lesson(session_id: str, content: str, *,
+                  scope: str = "session", rationale: str = "",
+                  origin: str = "refine", round_id: int | None = None) -> int:
+    """Insert a lesson row; returns the new row id.
+
+    ``scope`` is ``"session"`` (scoped to one session's memory, deletable
+    freely by refinement) or ``"global"`` (injected into every future
+    session's context — conservative: refinement only proposes global
+    edits, and they are applied exactly as proposed, no silent promotion).
+    """
+    with _connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO lessons (session_id, scope, content, rationale,"
+            " origin, round_id) VALUES (?,?,?,?,?,?)",
+            (session_id, scope, content, rationale, origin, round_id))
+        return int(cur.lastrowid)
+
+
+def update_lesson(lesson_id: int, content: str, rationale: str = "") -> None:
+    """Rewrite a lesson in place (refinement ``update`` op)."""
+    with _connect() as conn:
+        conn.execute("UPDATE lessons SET content=?, rationale=? WHERE id=?",
+                     (content, rationale, lesson_id))
+
+
+def delete_lesson(lesson_id: int) -> None:
+    """Delete a lesson (refinement ``delete`` op — session scope only;
+    the executor enforces that guard, this is a dumb primitive)."""
+    with _connect() as conn:
+        conn.execute("DELETE FROM lessons WHERE id=?", (lesson_id,))
+
+
+def get_lesson(lesson_id: int) -> Optional[dict]:
+    """Return one lesson row by id, or ``None`` if absent or deleted."""
+    with _connect() as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.execute("SELECT * FROM lessons WHERE id=?",
+                           (lesson_id,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+def load_lessons(session_id: str = "", *, include_global: bool = True,
+                 limit: int = 50) -> list[dict]:
+    """Return lessons most-useful-first.
+
+    Session-scoped lessons are matched against ``session_id``; global
+    lessons are returned for any caller when ``include_global`` is set
+    (that is the cross-session learning channel).
+    """
+    if include_global:
+        where = "(session_id=? AND scope='session') OR scope='global'"
+    else:
+        where = "session_id=? AND scope='session'"
+    sql = ("SELECT * FROM lessons WHERE " + where
+           + " ORDER BY useful DESC, id DESC LIMIT ?")
+    with _connect() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(sql, [session_id, limit]).fetchall()
+    return [dict(r) for r in rows]
+
+
+def bump_lesson_useful(lesson_id: int) -> None:
+    with _connect() as conn:
+        conn.execute("UPDATE lessons SET useful = useful + 1 WHERE id=?",
+                     (lesson_id,))
+
+
+def insert_refine_event(session_id: str, kind: str, payload: dict,
+                        action: str = "", detail: str = "",
+                        round_id: int | None = None) -> int:
+    """Append a refinement_history audit row (review or refine round)."""
+    import json as _json
+    with _connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO refinement_history (session_id, kind, round_id,"
+            " payload, action, detail) VALUES (?,?,?,?,?,?)",
+            (session_id, kind, round_id, _json.dumps(payload), action, detail))
+        return int(cur.lastrowid)
+
+
+def query_refine_events(session_id: str, kind: str | None = None,
+                        limit: int = 20) -> list[dict]:
+    """Newest-first refinement_history rows (optionally one kind)."""
+    sql = "SELECT * FROM refinement_history WHERE session_id=?"
+    params: list = [session_id]
+    if kind:
+        sql += " AND kind=?"
+        params.append(kind)
+    sql += " ORDER BY id DESC LIMIT ?"
+    params.append(limit)
+    with _connect() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(sql, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def last_refine_round(session_id: str) -> int:
+    """Highest refine round id seen for a session (0 if none) — used to
+    number rounds monotonically so /refine undo is unambiguous."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT MAX(round_id) AS r FROM refinement_history"
+            " WHERE session_id=? AND kind='refine'", (session_id,)).fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
 
 
 def task_summary_rows(session_id: str | None = None,
