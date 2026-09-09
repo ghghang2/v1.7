@@ -233,6 +233,9 @@ Testing conventions (see `tests/conftest.py`, `pytest.ini`):
       legacy `--v2` flag in `nbchat/tui/app.py` still launches the demo;
       no pty-free tests cover `app.py` yet.
 
+- [x] 2026-09-09 — **Documented user-facing behaviour of the shipped entry point** (`python -m nbchat.tui2`), from a code-path review of `app.py`/`__main__.py` (no pty session run yet): what a user can expect *right now*.
+      The real Phase 3 app launches (not the demo); `--demo` and the legacy `--v2` flag both still reach the Phase 1 demo. On start-up it enters the alternate screen in raw mode and hides the cursor (the screen goes briefly blank — normal), shows the dark theme, a status line (model / session id / tokens·s), and a spinner while the agent works; the input is a single-line editor with the placeholder “Type a message… (enter sends · esc interrupts · ctrl+d quits)”. `Enter` submits and the turn streams live on a worker thread while the UI keeps rendering; `Esc` interrupts an in-flight turn; `Ctrl+D` on an empty editor quits and restores the terminal. Assistant output renders through the Phase 2 chat components (Markdown, message bubbles, tool-call panels, dimmed thinking blocks); stray `<tool_call>` text is stripped from the log. It instantiates a real `TerminalAgent`, so the usual nbchat model/credentials config is required. Known gaps (per tracker): no slash commands wired into the new input line yet, no `/sessions` or `/model` selectors, no multi-line editor, and no pty-free tests cover `app.py` — this is a code-path smoke, not an end-to-end conversation verification.
+
   > **CORRECTION (2026-09-09, \u00a711.1, resolved):** the earlier entry described
   > work not present at commit `870cc34`. `app.py` **now exists and imports
   > cleanly** (`from nbchat.tui2.app import ChatApp`); the `_LogCapture`

@@ -74,7 +74,7 @@ SUMMARY_PROMPT: |
 keep_recent_exchanges: 30
 
 # Conversation loop constants
-max_tool_turns: 200
+max_tool_turns: 500
 stall_turns: 3
 # Default session reasoning effort (none, low, medium, xhigh).  The Qwen
 # 27B template default is xhigh; medium is the balanced choice used by
