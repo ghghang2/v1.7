@@ -310,3 +310,84 @@ class Loader:
             else f" {self.glyph()} "
         )
         return [centered(text, width, self.style)]
+
+
+# ── Select list ────────────────────────────────────────────────────────────
+# A modal selector panel: a title row, a list of selectable items with a
+# marker on the selected one, and a footer hint.  Used by the /sessions and
+# /history commands; filtering is fuzzy (the caller passes pre-ranked items,
+# see :func:`nbchat.tui2.fuzzy.fuzzy_rank`).
+
+
+class SelectList:
+    """A bordered list with one highlighted row (the selector modal)."""
+
+    def __init__(
+        self,
+        title: str = "",
+        items: Optional[List[str]] = None,
+        selected: int = 0,
+        hint: str = "",
+        footer: str = "",
+    ) -> None:
+        self.title = title
+        self.items: List[str] = list(items or [])
+        self.selected = selected
+        self.selected = max(0, min(self.selected, max(len(self.items) - 1, 0)))
+        self.hint = hint
+        self.footer = footer
+
+    @property
+    def selected_item(self) -> Optional[str]:
+        if self.items:
+            return self.items[self.selected]
+        return None
+
+    def select(self, index: int) -> None:
+        if 0 <= index < len(self.items):
+            self.selected = index
+
+    def render(self, width: int) -> List[Line]:
+        inner_w = max(width - 2, 0)
+        out: List[Line] = []
+        # Top border with the modal title.
+        title_txt = _clamp(self.title, inner_w - 4) if inner_w > 4 else ""
+        if title_txt:
+            out.append(Line([
+                Segment("\u256d\u2500 ", DARK.border),
+                Segment(title_txt, DARK.accent),
+                Segment("\u2500" * max(inner_w - 4 - len(title_txt), 0) + "\u256e",
+                        DARK.border),
+            ]))
+        else:
+            out.append(Line([Segment(
+                "\u256d" + "\u2500" * max(inner_w - 2, 0) + "\u256e",
+                DARK.border)]))
+        # Body rows.
+        if self.items:
+            for i, item in enumerate(self.items):
+                is_sel = i == self.selected
+                if is_sel:
+                    marker, style = "\u25b8", DARK.accent
+                    text = _clamp(f" {item}", inner_w - 2)
+                else:
+                    marker, style = " ", DARK.muted
+                    text = _clamp(f" {item}", inner_w - 2)
+                segs = [Segment("\u2502", DARK.border),
+                        Segment(marker, style),
+                        Segment(text, style)]
+                out.append(_fit_row(segs, width))
+        else:
+            empty = _clamp(self.hint or "(empty)", inner_w)
+            out.append(_fit_row(
+                [Segment("\u2502", DARK.border),
+                 Segment(" " + empty, DARK.muted)], width))
+        if self.footer:
+            foot = _clamp(self.footer, inner_w)
+            out.append(_fit_row(
+                [Segment("\u2502", DARK.border),
+                 Segment(" " + foot, DARK.muted)], width))
+        out.append(Line([Segment(
+            "\u2570" + "\u2500" * max(inner_w - 2, 0) + "\u256f",
+            DARK.border)]))
+        return out

@@ -276,6 +276,12 @@ class LineEditor:
         return False
 
     # ── value ──────────────────────────────────────────────────────────
+    @property
+    def cursor(self):
+        """Return ``(line_no, col)`` of the cursor."""
+        self._clamp_cursor()
+        return self.cursor_line, self.cursor_col
+
     def text(self) -> str:
         return "\n".join(self.lines).strip()
 

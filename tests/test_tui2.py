@@ -595,3 +595,105 @@ def test_on_input_inserts_character_not_key_name():
     # A control key must not corrupt the buffer.
     app._on_input(Key(name="enter"))  # submits; the app clears the buffer
     assert app.editor.text() == ""
+
+
+# ── Phase 3: fuzzy matching ────────────────────────────────────────
+
+
+def test_fuzzy_rank_orders_and_filters():
+    from nbchat.tui2.fuzzy import fuzzy_match, fuzzy_rank
+
+    ranked = fuzzy_rank("sess", ["sessions", "session-old", "model", "xyz"])
+    assert [it for it, _ in ranked] == ["sessions", "session-old"]
+    assert "model" not in [it for it, _ in ranked]
+    assert "xyz" not in [it for it, _ in ranked]
+    assert fuzzy_match("zzz", "sessions") is None
+    m = fuzzy_match("sio", "sessions")
+    assert m is not None
+    assert all("sessions".lower()[i] == c for i, c in zip(m.indices, "sio"))
+
+
+def test_fuzzy_rank_empty_needle_returns_all_in_order():
+    from nbchat.tui2.fuzzy import fuzzy_rank
+    ranked = fuzzy_rank("", ["a", "b", "c"])
+    assert [it for it, _ in ranked] == ["a", "b", "c"]
+
+
+# ── Phase 3: SelectList component ──────────────────────────────────
+
+
+def test_selectlist_selected_item_and_clamping():
+    from nbchat.tui2.components import SelectList
+
+    sel = SelectList(title="Sessions", items=["a", "b", "c"], selected=5)
+    assert sel.selected == 2
+    assert sel.selected_item == "c"
+    sel.select(0)
+    assert sel.selected_item == "a"
+    sel.select(99)
+    assert sel.selected == 0
+
+
+def test_selectlist_render_shape_and_highlight():
+    from nbchat.tui2.components import SelectList
+
+    sel = SelectList(title="Sessions", items=["s1", "s2"], selected=1,
+                     footer="move with arrows")
+    lines = sel.render(30)
+    assert len(lines) == 5
+    text = ["".join(s.text for s in line.segments) for line in lines]
+    assert "Sessions" in text[0]
+    assert "s1" in text[1]
+    assert "s2" in text[2]
+    assert text[4].startswith("\u2570")
+    assert "\u25b8" in text[2]
+    assert "\u25b8" not in text[1]
+
+
+def test_selectlist_empty_and_narrow():
+    from nbchat.tui2.components import SelectList
+    sel = SelectList(items=[], hint="no matches")
+    lines = sel.render(20)
+    assert any("no matches" in "".join(s.text for s in ln.segments)
+               for ln in lines)
+    assert sel.render(1)
+
+
+# ── Phase 3: LineEditor component ──────────────────────────────────
+
+
+def test_lineeditor_undo_redo_killring():
+    from nbchat.tui2.editor import LineEditor
+
+    ed = LineEditor()
+    for ch in "hello":
+        ed.handle("char", ch)
+    assert ed.text() == "hello"
+    for _ in range(5):
+        ed.handle("ctrl+z")
+    assert ed.text() == ""
+    for _ in range(5):
+        ed.handle("ctrl+r")
+    assert ed.text() == "hello"
+    # Redo leaves the cursor at the end of the line; home first so the
+    # kill-ring check below is independent of undo/redo cursor semantics.
+    ed.handle("home")
+    ed.handle("ctrl+k")
+    assert ed.text() == ""
+    ed.handle("ctrl+y")
+    assert ed.text() == "hello"
+
+
+def test_lineeditor_multiline_and_continuation():
+    from nbchat.tui2.editor import LineEditor
+    ed = LineEditor()
+    for ch in "abc":
+        ed.handle("char", ch)
+    ed.handle("enter")
+    for ch in "def":
+        ed.handle("char", ch)
+    assert ed.text().replace("\n", "") == "abcdef"
+    assert len(ed.lines) == 2
+    ed.handle("up")
+    line_no, col = ed.cursor
+    assert line_no == 0
