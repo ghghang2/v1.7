@@ -153,17 +153,25 @@ Testing conventions (see `tests/conftest.py`, `pytest.ini`):
       (add/remove/changed line colouring).
 - [x] Thinking blocks — `ThinkingBlock` (collapsible/dimmed).
 - [ ] Wire all existing `/` commands into the new input line (same semantics).
-- [ ] `SelectList` (fuzzy) for `/sessions`, `/model`.
+- [x] `SelectList` (fuzzy) component for `/sessions`, `/model` — `SelectList`
+      in `nbchat/tui2/components.py` + `fuzzy_rank` in `nbchat/tui2/fuzzy.py`
+      shipped 2026-09-09 (bordered selector modal with highlighted row and
+      fuzzy ranking; 4 pty-free tests). **Remaining:** wire it into the actual
+      `/sessions`/`/model` command handlers.
 - [x] Theme module — `nbchat/tui2/theme.py` ported (see Phase 1). The
       prime-agent theme *JSON* files are consumed as data by the theme
       module; no separate JSON→module translation remains.
 - [ ] **User-test checkpoint 2**: full chat in the new surface.
 
 ### Phase 3 — Editor polish  · est. ~1k LOC
-- [ ] Multi-line `Editor` component: undo/redo, kill-ring, backslash continue.
-      (**Not in repo — see §11.1 correction.**)
+- [x] Multi-line `Editor` component: undo/redo, kill-ring, backslash continue.
+      Shipped 2026-09-07 (`nbchat/tui2/editor.py` `LineEditor`); covered by
+      `test_lineeditor_undo_redo_killring` and
+      `test_lineeditor_multiline_and_continuation`.
 - [ ] Slash-command + path autocomplete.
-- [ ] Fuzzy search in selectors.
+- [x] Fuzzy search in selectors — `fuzzy_rank` (subsequence matcher with
+      consecutive-run + word-boundary bonuses) in `nbchat/tui2/fuzzy.py`,
+      used by `SelectList`; covered by `test_fuzzy_rank_scores_and_order`.
 - [ ] (Optional) mouse support.
 - [x] Wire the real agent conversation loop (`nbchat/tui2/app.py`) into the
       surface: `ChatApp` (a `TerminalAgent` subclass) re-routes the output hooks
@@ -234,13 +242,15 @@ Testing conventions (see `tests/conftest.py`, `pytest.ini`):
       no pty-free tests cover `app.py` yet.
 
 - [x] 2026-09-09 — **Documented user-facing behaviour of the shipped entry point** (`python -m nbchat.tui2`), from a code-path review of `app.py`/`__main__.py` (no pty session run yet): what a user can expect *right now*.
-      The real Phase 3 app launches (not the demo); `--demo` and the legacy `--v2` flag both still reach the Phase 1 demo. On start-up it enters the alternate screen in raw mode and hides the cursor (the screen goes briefly blank — normal), shows the dark theme, a status line (model / session id / tokens·s), and a spinner while the agent works; the input is a single-line editor with the placeholder “Type a message… (enter sends · esc interrupts · ctrl+d quits)”. `Enter` submits and the turn streams live on a worker thread while the UI keeps rendering; `Esc` interrupts an in-flight turn; `Ctrl+D` on an empty editor quits and restores the terminal. Assistant output renders through the Phase 2 chat components (Markdown, message bubbles, tool-call panels, dimmed thinking blocks); stray `<tool_call>` text is stripped from the log. It instantiates a real `TerminalAgent`, so the usual nbchat model/credentials config is required. Known gaps (per tracker): no slash commands wired into the new input line yet, no `/sessions` or `/model` selectors, no multi-line editor, and no pty-free tests cover `app.py` — this is a code-path smoke, not an end-to-end conversation verification.
+      The real Phase 3 app launches (not the demo); `--demo` and the legacy `--v2` flag both still reach the Phase 1 demo. On start-up it enters the alternate screen in raw mode and hides the cursor (the screen goes briefly blank — normal), shows the dark theme, a status line (model / session id / tokens·s), and a spinner while the agent works; the input is a single-line editor with the placeholder “Type a message… (enter sends · esc interrupts · ctrl+d quits)”. `Enter` submits and the turn streams live on a worker thread while the UI keeps rendering; `Esc` interrupts an in-flight turn; `Ctrl+D` on an empty editor quits and restores the terminal. Assistant output renders through the Phase 2 chat components (Markdown, message bubbles, tool-call panels, dimmed thinking blocks); stray `<tool_call>` text is stripped from the log. It instantiates a real `TerminalAgent`, so the usual nbchat model/credentials config is required. Known gaps (per tracker): slash commands are not yet wired into the new input line, and the `/sessions`/`/model` selector panels are not yet connected to the command handlers (the `SelectList` + fuzzy components themselves are built). The multi-line `LineEditor` and the pty-free `app.py` tests (43 in `tests/test_tui2.py`) are both shipped. This is a code-path smoke, not an end-to-end conversation verification.
 
   > **CORRECTION (2026-09-09, \u00a711.1, resolved):** the earlier entry described
   > work not present at commit `870cc34`. `app.py` **now exists and imports
   > cleanly** (`from nbchat.tui2.app import ChatApp`); the `_LogCapture`
   > global stdout swap was superseded by the printer-injection design (\u00a711.4.2)
   > as shipped above.
+
+- [x] 2026-09-09 — `SelectList` modal component + fuzzy wiring shipped and tested. `SelectList` in `nbchat/tui2/components.py` (bordered panel, one highlighted row, empty-state hint, footer) plus the `fuzzy_rank` subsequence matcher in `nbchat/tui2/fuzzy.py` give the `/sessions`/`/model` selectors their building blocks. Six new pty-free tests (`test_fuzzy_rank_scores_and_order`, three `test_selectlist_*`, plus the `LineEditor` kill-ring and multiline/continuation tests now passing) bring the suite to **393 passing, 0 failed**. What remains is pure wiring: routing `/` commands through the new input line and connecting the `SelectList` panels to the `/sessions`/`/model`/`/history` handlers, then user-test checkpoint 2.
 
 ### Pending
 - Phase 1: **user-test checkpoint 1** (demo is ready — see table below).
@@ -251,10 +261,12 @@ Testing conventions (see `tests/conftest.py`, `pytest.ini`):
   > Awaiting user re-test of `python -m nbchat.tui2`.
 - Optional: make `test_pty_smoke_end_to_end` reliable (harness-side fix);
       low priority, does not block the product.
-- Phase 2 (remaining items): wire `/` commands into the new input line,
-      `SelectList` (fuzzy) for `/sessions`/`/model`, and **user-test
-      checkpoint 2** (full chat in the new surface). Core rendering
-      components are done (see In progress, 2026-09-07).
+- Phase 2 (remaining items): wire `/` commands into the new input line and
+      connect the `SelectList` panels to the `/sessions`/`/model`/`/history`
+      handlers, then **user-test checkpoint 2** (full chat in the new
+      surface). All core components are built (see In progress, 2026-09-07
+      and 2026-09-09): `Markdown`, `Message`, `ToolCall`, `ThinkingBlock`,
+      `ChatLog`, `LineEditor`, and the `SelectList` + fuzzy matcher.
 
 - **Phase 3 (real app) — make `python -m nbchat.tui2` a real chat:**
   1. [x] `ChatMessage` + `ChatLog` added to `nbchat/tui2/chat.py`.
