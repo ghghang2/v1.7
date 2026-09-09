@@ -110,6 +110,12 @@ the git tools, so the worst case is slowdown, not corruption.
   generate at once; the rest queue inside llama.cpp. This is intentional
   backpressure, not a bug. Raising `n_parallel` (and memory) linearly
   increases effective throughput.
+* **Decode-lane gate** (`nbchat/core/lane_gate.py`) — client-side admission
+  control: `LaneGate` (bounded semaphore + deadline-checked `acquire()`) caps
+  concurrent in-flight LLM generations so a burst of workers can never exceed
+  `lane_gate_limit` simultaneous requests at the server (prefill-storm guard).
+  Enabled per config via `lane_gate_enabled`; acquire waits bounded by
+  `lane_gate_acquire_timeout` and raises `LaneGateTimeout` on overrun.
 * **Per-agent turn serialization** — each worker's turns are already
   serialized by its own `_send_lock`; workers never share a history, so no
   cross-worker history corruption is possible.

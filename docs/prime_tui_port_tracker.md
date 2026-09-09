@@ -831,7 +831,11 @@ verify → integrate) as the skeleton; **port three prime-agent ideas**:
    output and in the coordinator's final report.
    *Files: `nbchat/core/team.py`.*
 
-3. **P3 — Admission control on worker LLM submissions (backpressure).**
+3. **P3 — Admission control on worker LLM submissions (backpressure). [x] SHIPPED 2026-09-09**
+   (see `nbchat/core/lane_gate.py`: `LaneGate` — `BoundedSemaphore` +
+   deadline-checked `acquire()`; wired into `MetricsLoggingClient` via
+   config `lane_gate_enabled`/`lane_gate_limit`/`lane_gate_acquire_timeout`;
+   7 tests in `tests/test_lane_gate.py`).
    Prime-agent's `prompt-admission.ts` pattern: a submission awaits
    *admission* (a free lane slot) and can be *cancelled* by signal,
    never leaking unhandled work. In nbchat terms: before a worker issues
@@ -862,7 +866,7 @@ verify → integrate) as the skeleton; **port three prime-agent ideas**:
   push.
 
 ### Order of implementation
-1. `lane_gate.py` + client integration (P3) — small, isolated, tested.
+1. ~~`lane_gate.py` + client integration (P3)~~ **done 2026-09-09** — `LaneGate` shipped with tests; commit `cf18968`.
 2. Worker loop decoupling (P1) — the core change; keep the
    ToolArbiter invariants intact.
 3. Subagent registry + `/team` status (P2).
