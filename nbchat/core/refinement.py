@@ -84,7 +84,7 @@ def should_refine_task(*, status: str, failed_tools: int = 0,
       * task failed or was interrupted — postmortem window;
       * a high tool-failure count within the task (>= 3).
     """
-    if status == "done":
+    if status in ("done", "complete"):
         return True, "task completed"
     if status in ("failed", "error", "interrupted"):
         return True, f"task {status}"

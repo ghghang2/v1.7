@@ -22,6 +22,7 @@ import nbchat.core.config as config
 import nbchat.core.compressor as comp
 import nbchat.core.monitoring as mon
 import nbchat.core.task_tracker as task_tracker
+import nbchat.core.refine_hook as refine_hook
 from nbchat.core.db import is_error_content, is_tool_error
 from nbchat.core import chat_builder, tool_executor as executor
 import nbchat.tools as tools_mod
@@ -34,6 +35,21 @@ def _normalise_args(args_str: str) -> str:
         return json.dumps(json.loads(args_str), sort_keys=True)
     except Exception:
         return args_str
+
+
+def _maybe_refine(agent) -> None:
+    """Fire a background refine round after a task ends (design \u00a72.3).
+
+    Delegates to :func:`nbchat.core.refine_hook.on_task_finished`, which
+    owns the trigger check, in-flight dedup, background thread, voice
+    report and audit event.  Must be called AFTER ``_tt_finish`` so the
+    record is finalised.  Never raises, never blocks the loop.
+    """
+    try:
+        rec = getattr(agent, "_active_task", None)
+        refine_hook.on_task_finished(agent, rec)
+    except Exception:
+        _log.debug("refine hook trigger failed", exc_info=True)
 
 
 _TOOL_BLOCK_RE = re.compile(
@@ -309,6 +325,7 @@ class ConversationMixin:
             self._run_conversation_loop(get_client())
         except Exception as exc:
             _tt_finish(getattr(self, "_active_task", None), status="failed")
+            _maybe_refine(self)
             msg = f"Conversation loop stopped unexpectedly: {type(exc).__name__}: {exc}"
             _log.debug(msg, exc_info=True)
             mon.flush_session_monitor(self.session_id, db)
@@ -362,6 +379,7 @@ class ConversationMixin:
             if self._stop_event.is_set():
                 mon.flush_session_monitor(self.session_id, db)
                 _tt_finish(_task_rec, None, "interrupted")
+                _maybe_refine(self)
                 break
 
             # ── Drain supervisor interjections (safe point) ──────────
@@ -656,6 +674,7 @@ class ConversationMixin:
                 mon.flush_session_monitor(self.session_id, db)
                 self._refresh_monitoring_panel()
                 _tt_finish(_task_rec, content)
+                _maybe_refine(self)
                 break
 
             if turn == self.MAX_TOOL_TURNS:
@@ -667,6 +686,7 @@ class ConversationMixin:
                 db.log_message(self.session_id, "assistant", warning)
                 mon.flush_session_monitor(self.session_id, db)
                 _tt_finish(_task_rec, warning)
+                _maybe_refine(self)
                 break
 
             # Stall detection
