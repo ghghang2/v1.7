@@ -95,6 +95,33 @@ def test_parse_rejects_garbage():
         rf.parse_refine_response("no json here at all")
 
 
+def test_parse_rejects_top_level_array():
+    with pytest.raises(rf.RefineParseError):
+        rf.parse_refine_response("[1, 2, 3]")
+
+
+def test_parse_repairs_unescaped_embedded_quotes():
+    raw = ('{"should_refine": true, "edits": [{"op": "create",'
+           ' "content": "use the "quick" flag", "rationale": "r"}]}')
+    plan = rf.parse_refine_response(raw)
+    assert plan["repaired"]
+    assert plan["edits"][0]["content"] == 'use the "quick" flag'
+
+
+def test_parse_repairs_trailing_comma():
+    raw = ('{"should_refine": true, "edits": [{"op": "create",'
+           ' "content": "x", "rationale": "r",}]}')
+    plan = rf.parse_refine_response(raw)
+    assert plan["repaired"]
+    assert plan["edits"][0]["content"] == "x"
+
+
+def test_parse_keeps_legitimate_escaped_quotes():
+    raw = ('{"edits": [{"op": "create", "content": "say \\"hi\\"",'
+           ' "rationale": "r"}]}')
+    plan = rf.parse_refine_response(raw)
+    assert not plan["repaired"]
+    assert plan["edits"][0]["content"] == 'say "hi"'
 # ── sanitize ──────────────────────────────────────────────────────────────
 
 def _lesson(rid, content, scope="session", useful=0):

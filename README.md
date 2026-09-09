@@ -445,8 +445,11 @@ The round does three things:
 
 1. **Review** — the LLM reviews the task summary, harness state, and recent
    lessons, and proposes *sanitised* edits: a new lesson, a prompt tweak, or
-   a config note. Raw LLM output is parsed strictly (`parse_refine_response`)
-   and every edit passes `sanitize_edits` — deduplicated against existing
+   a config note. Raw LLM output is parsed by `parse_refine_response`, which
+   tolerates fenced blocks plus a small repair ladder for common LLM JSON
+   malformations (trailing commas, `//` comments, unescaped quotes inside
+   string values); the `repaired` flag is recorded on the round's audit
+   event. Every edit passes `sanitize_edits` — deduplicated against existing
    lessons, size-capped, and stripped of anything that is not a plain text
    record. Nothing the LLM says is executed.
 2. **Apply** — accepted edits are written to the `lessons` table in

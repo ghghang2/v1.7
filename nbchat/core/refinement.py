@@ -202,31 +202,112 @@ def _coerce_edits(obj: Any) -> list[dict]:
 def parse_refine_response(raw: str) -> dict:
     """Parse a reviewer LLM response into a normalised plan dict.
 
-    Tolerates a single fenced code block wrapper; raises
-    :class:`RefineParseError` on anything unrecoverable.
+    Tolerates a single fenced code block wrapper and a small ladder of
+    common LLM JSON malformations (trailing commas, unescaped quotes in
+    string values, ``//`` comments); raises :class:`RefineParseError` on
+    anything unrecoverable. The ``repaired`` flag records whether a
+    repair was needed so callers can audit it.
     """
     text = raw.strip()
     m = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
     if m:
         text = m.group(1).strip()
-    start = text.find("{")
-    end = text.rfind("}")
-    if start < 0 or end <= start:
-        raise RefineParseError("no JSON object in response")
-    try:
-        obj = json.loads(text[start:end + 1])
-    except json.JSONDecodeError as exc:
-        raise RefineParseError(f"invalid JSON: {exc}") from exc
-    if not isinstance(obj, dict):
-        raise RefineParseError("top-level JSON must be an object")
+    obj, repaired = _load_json_object(text)
     return {
         "should_refine": bool(obj.get("should_refine", True)),
         "scope": obj.get("scope") if obj.get("scope") in ("session", "global")
         else "session",
         "reasoning": str(obj.get("reasoning", ""))[:300],
         "edits": _coerce_edits(obj.get("edits", [])),
+        "repaired": repaired,
     }
 
+
+def _load_json_object(text: str) -> tuple[dict, bool]:
+    """Locate the top-level ``{...}`` and parse it, repairing common
+    LLM JSON malformations as needed. Returns ``(obj, repaired)``."""
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end <= start:
+        raise RefineParseError("no JSON object in response")
+    candidate = text[start:end + 1]
+    try:
+        obj = json.loads(candidate)
+        if not isinstance(obj, dict):
+            raise RefineParseError("top-level JSON must be an object")
+        return obj, False
+    except json.JSONDecodeError:
+        repaired_text, changed = _repair_json(candidate)
+        if not changed:
+            raise RefineParseError(f"invalid JSON: {candidate[:120]!r}")
+        try:
+            obj = json.loads(repaired_text)
+        except json.JSONDecodeError as exc:
+            raise RefineParseError(f"invalid JSON: {exc}") from exc
+    if not isinstance(obj, dict):
+        raise RefineParseError("top-level JSON must be an object")
+    return obj, True
+
+
+def _repair_json(candidate: str) -> tuple[str, bool]:
+    """Best-effort repairs for common LLM JSON malformations. Returns
+    ``(repaired_text, changed)``; never raises."""
+    text = candidate
+    # 1. Line comments (LLMs trained on JS sometimes emit them).
+    text = re.sub(r"//[^\n\r{}]*", "", text)
+    # 2. Trailing commas before a closing bracket/brace.
+    text = re.sub(r",(\s*[}\]])", r"\1", text)
+    # 3. Unescaped double quotes inside string values.  A state machine
+    #    (tracking open-string state) escapes a quote only when it is
+    #    genuinely inside an open string, so legitimate closing quotes
+    #    followed by a delimiter are left untouched.
+    text = _escape_embedded_quotes(text)
+    return text, text != candidate
+
+
+def _escape_embedded_quotes(text: str) -> str:
+    """Escape ``"`` characters embedded inside open string values.
+
+    Walks the candidate character by character tracking whether we are
+    inside a string and whether the previous character was a backslash.
+    A quote found inside an open string is a *closing* quote when it is
+    followed (after whitespace) by ``:``, ``,``, ``}``, ``]`` or
+    end-of-text; any other quote inside an open string is an embedded
+    quote and gets escaped.
+    """
+    out: list[str] = []
+    in_str = False
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if not in_str:
+            if ch == '"':
+                in_str = True
+            out.append(ch)
+            i += 1
+            continue
+        # inside a string
+        if ch == "\\":
+            out.append(ch)
+            if i + 1 < n:
+                i += 1
+                out.append(text[i])
+            i += 1
+            continue
+        if ch == '"':
+            j = i + 1
+            while j < n and text[j] in " \t\r\n":
+                j += 1
+            if j >= n or text[j] in ":,}]":
+                in_str = False  # genuine closing quote
+            else:
+                out.append("\\")  # embedded quote: escape it
+            out.append(ch)
+            i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
 
 # ---------------------------------------------------------------------------
 # Deterministic executor
@@ -481,7 +562,7 @@ def run_refine_round(
     db.insert_refine_event(
         session_id, "refine",
         {"reasoning": plan["reasoning"], "scope": plan["scope"],
-         "edits": len(edits)},
+         "edits": len(edits), "repaired": plan.get("repaired", False)},
         action="round",
         detail=json.dumps({
             "snapshots": [
