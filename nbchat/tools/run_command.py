@@ -53,7 +53,7 @@ def _run_command(command: str, cwd: Optional[str] = None) -> str:
         repo_root = Path(__file__).resolve().parents[2]
         target_dir = repo_root
 
-        # Hard wall-clock ceiling (see issues.md): a hung child used to
+        # Hard wall-clock ceiling (see docs/archive/issues.md): a hung child used to
         # block the tool-execution thread forever, wedging the agent.
         # start_new_session puts the shell in its own process group so
         # the timeout path can kill the shell AND everything it spawned.

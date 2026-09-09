@@ -201,7 +201,7 @@ fixes, on `main`):
 * Full repo suite: 260 passed, 0 failed.
 
 Defects found during bring-up (T1–T6, all resolved; tracked in
-`issues.md`, section "Multi-agent team") and their fixes:
+`docs/archive/issues.md`, section "Multi-agent team") and their fixes:
 
 | # | Defect | Fix |
 |---|--------|-----|

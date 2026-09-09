@@ -497,6 +497,12 @@ nbchat/
   channels/ WhatsApp bridge (FastAPI + Node)
 run.py      start/stop the local llama-server
 repo_config.yaml   all runtime configuration
+
+bench/      throughput harnesses + probe scripts; bench/lab/c8lab holds the
+            C=8 saturation simulation; bench/results/ has raw run data
+docs/       design docs & guides (multi_agent, tui_usage, voice_setup, …);
+            docs/archive/ holds completed review/tracker documents
+tests/      pytest suite (network mocked; no live server needed)
 ```
 
 ---

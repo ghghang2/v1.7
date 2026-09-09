@@ -1,4 +1,4 @@
-"""Regression tests for the shell lockout (see issues.md, top entry).
+"""Regression tests for the shell lockout (see docs/archive/issues.md, top entry).
 
 A command that never terminates must not be able to hang the agent:
 ``run_command`` enforces a wall-clock timeout and reports it as a

@@ -143,7 +143,7 @@ def _connect() -> sqlite3.Connection:
 
     A contended database then raises a catchable ``OperationalError``
     after ~2 s instead of blocking the calling thread indefinitely
-    (a wedge that froze the agent — see issues.md).
+    (a wedge that froze the agent — see docs/archive/issues.md).
     """
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA busy_timeout=2000")
