@@ -144,3 +144,57 @@ Ranked by expected impact:
 
 ## 5. Action log
 - 2026-09-09: env verified, server cmdline captured, tracker created.
+
+## 2026-09-10 (continued): max_tokens audit + prime-agent research + dashboard fix
+
+### nbchat max_tokens — VERIFIED CORRECT, no change needed
+- repo_config.yaml: max_llm_output_tokens: 32768 (with comment block explaining
+  reasoning-budget carve-out; must exceed reasoning_budget 4096 + content).
+- nbchat/core/config.py:55 reads it (fallback 8192).
+- nbchat/core/conversation.py:827 passes max_tokens=config.MAX_LLM_OUTPUT_TOKENS
+  on the main agent loop. Team plan/synthesis intentionally small (2048/1536).
+- compressor.py:304, context_manager.py:504 (small util calls) intentionally capped.
+- Request-log evidence: dominant max_output_tokens among completed requests is
+  32768 (n=1753) + 16384 (n=1904); small 512/4096 caps are the util calls.
+  So nbchat is already sending the big budget — no code change applicable.
+
+### prime-agent max_tokens — what needs to change
+prime-agent's model budget comes from its model registry, in priority order:
+1. Custom model entry in <agent-dir>/models.json  (agent dir = $PRIME_AGENT_DIR
+   or ~/.prime-agent/), under `providers.<name>.models.<id>` — `maxTokens` and
+   `contextWindow` are supported override fields (ModelDefinitionSchema /
+   ModelOverrideSchema in packages/coding-agent/src/core/model-registry.ts:150-192).
+   This is the ONLY place to set it for a custom OpenAI-compatible endpoint.
+2. Built-in catalog models.generated.ts (not applicable to the local endpoint).
+What to change on the REMOTE host running the 2-3 prime-agent /goal instances:
+- In ~/.prime-agent/models.json, set on the ninfer model entry:
+    "contextWindow": 240000        (match server ctx_size)
+    "maxTokens": 32768             (match nbchat's budget; server can serve it)
+- Verify it applies: prime-agent logs show requested max_tokens per request, or
+  watch the request-log: max_output_tokens in request_start events should flip
+  from the current small default to 32768.
+- Why it matters: with a small maxTokens, prime-agent requests finish early
+  (short decode phase). Under max-concurrency=8, short requests turn over the
+  scheduler slots, so the GPU gets idle inter-request gaps — exactly the
+  6.2s avg gap measured. Bigger budget = longer decodes = higher concurrency
+  utilization toward the 1,000 tok/s aggregate figure.
+- Server side is already correct: --pending-timeout-ms 600000 --max-pending...
+  allow long in-flight decodes; no change needed.
+
+### Dashboard — FIXED and deployed
+- Rewrote /root/ninfer-dash.py (repo copy: dashboards/ninfer-dash.py).
+  Now shows the FULL picture:
+  * live decode + prefill tok/s (throughput events)
+  * complete scheduler queue state: running/waiting/prefilling/decode_ready/
+    materializing/capture_pending/terminal_pending (was: running+waiting only)
+  * live request feed (start/done/error/rejected) with latency + finish reasons
+  * per-request max_output_tokens so client budget misconfig is visible at a glance
+  * server config from server_start (argv: max-concurrency, pending limits, model)
+  * running total counters
+- Old backup at /root/ninfer-dash.py.bak. Verified: py_compile OK; live test
+  against /ninfer-request-log-jsonl.log shows dec/pre tok/s + queue state.
+- NOTE: the user's running TUI session (PID 102816, launched 15:57) still has
+  the OLD code in memory — needs a restart: Ctrl-C, then
+  `python3 /root/ninfer-dash.py --tui` (web mode: `python3 /root/ninfer-dash.py
+  /ninfer-request-log-jsonl.log 8787` — old web instance PID 58354 also still up
+  and should be killed first to free port 8787).
