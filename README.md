@@ -13,6 +13,7 @@ front-end. Only the input/output layer changes:
 | **Terminal UI (TUI)** | `python -m nbchat.tui` | a plain terminal |
 | **Email bridge** (extends the TUI) | `python -m nbchat.tui --email` | the TUI + Gmail app password |
 | **Supervisor** (extends the TUI) | `python -m nbchat.tui --supervisor` | the TUI (uses the 2nd parallel slot) |
+| **Alfred voice bridge** (extends the TUI) | `python -m nbchat.tui --voice` | the TUI + laptop WS client (§13) |
 | **WhatsApp channel** | `python -m nbchat.channels.whatsapp_server` | FastAPI + a Node bridge |
 | **Jupyter notebook UI** | open a `.ipynb` and `from nbchat.ui.chatui import ChatUI` | Jupyter + `ipywidgets` |
 
@@ -64,6 +65,12 @@ You:
 --session ID   resume a specific session id (see /sessions)
 --no-color     disable ANSI colours
 --check        only check the llama-server is reachable, then exit
+--email        poll the Gmail inbox and inject replies into the chat (§3)
+--no-auto-reply with --email: do NOT email the agent's reply back
+--supervisor   start the always-on supervisor watchdog (§4, 2nd slot)
+--voice        start the Alfred voice bridge on port 8765 (§13); reach it
+               from your laptop via: ssh -L 8765:127.0.0.1:8765 user@server
+--v2           use the TUI v2 engine (fullscreen raw-mode UI; Phase 1 demo)
 ```
 
 ### In-session commands
@@ -79,6 +86,9 @@ You:
 /sup <question>  ask the supervisor about system state (needs --supervisor)
 /team <goal>   run a goal as a team of parallel agents
 /team             show team run status / stop
+/effort [lvl]   show/set reasoning effort for this session (none|low|medium|xhigh)
+/status          show session state (model, tools, effort, memory size)
+/stats [N]       task statistics — last N tasks (default all)
 /quit            exit (Ctrl+C / Ctrl+D also work)
 ```
 
@@ -418,7 +428,57 @@ commonly edited keys:
 | `browser_timeout`, `tests_timeout`, `other_tools_timeout` | Per-tool wall-clock budgets (s). |
 | `email_poll_interval`, `email_auto_reply` | Email bridge. |
 | `supervisor_enabled`, `supervisor_interval`, `supervisor_cooldown` | Supervisor. |
+| `voice_enabled`, `voice_port`, `voice_status_min_interval` | Alfred voice bridge (§13). |
+| `refine_hook_enabled`, `refine_llm_timeout` | Refinement engine (§12). |
 
+---
+
+## 12. Refinement engine — post-task self-review
+
+After every task turn the conversation loop evaluates a pure trigger
+(`refinement.should_refine_task`): did the task end in failure, hit a tool
+error, or take an unusually long path? If so, a single background thread runs
+one refine round against the LLM (never on the critical path, never blocking
+the user's prompt).
+
+The round does three things:
+
+1. **Review** — the LLM reviews the task summary, harness state, and recent
+   lessons, and proposes *sanitised* edits: a new lesson, a prompt tweak, or
+   a config note. Raw LLM output is parsed strictly (`parse_refine_response`)
+   and every edit passes `sanitize_edits` — deduplicated against existing
+   lessons, size-capped, and stripped of anything that is not a plain text
+   record. Nothing the LLM says is executed.
+2. **Apply** — accepted edits are written to the `lessons` table in
+   `chat_history.db` with a per-round snapshot. `lessons` feed back into the
+   next review and into L1 core memory, so the agent's self-corrections
+   compound across sessions.
+3. **Audit & rollback** — every round is logged to the audit tables, and
+   `undo_last_round(session_id)` restores the previous snapshot if an edit
+   turns out to be wrong.
+
+Wiring and kill-switch live in `nbchat/core/refine_hook.py`; the pure engine
+is in `nbchat/core/refinement.py` (fully unit-tested in
+`tests/test_refinement.py`). Disable with `refine_hook_enabled: false`.
+
+---
+
+## 13. Alfred voice bridge — talk to the agent from your laptop
+
+`--voice` (or `voice_enabled: true`) starts a localhost FastAPI bridge
+(default port 8765). The laptop runs a tiny WebSocket client that turns
+speech in and speech out; the agent speaks as **Alfred** — a composed,
+dry-witted butler who states task *state* (never task content), in
+one or two sentences, addressed as "sir".
+
+```bash
+ssh -L 8765:127.0.0.1:8765 user@server   # forward the bridge port
+```
+
+The agent is told about the voice channel by the `ALFRED_VOICE_PROMPT`
+appended to its system prompt, so it knows when and what to say aloud
+(task start, milestones, completion, failure, being blocked) and when to
+stay silent.
 Change a value and restart the server / front-end for it to take effect.
 
 ---
