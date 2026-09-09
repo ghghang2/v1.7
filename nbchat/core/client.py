@@ -52,6 +52,12 @@ class _InstrumentedStream:
         finally:
             total = time.time() - self._t0
             if usage:
+                try:
+                    from nbchat.core.team_metrics import record_tokens
+                    record_tokens(usage.total_tokens)
+                except Exception:
+                    pass
+            if usage:
                 logger.info("Latency: %.2fs | P:%d C:%d T:%d",
                             total, usage.prompt_tokens, usage.completion_tokens, usage.total_tokens)
             else:
@@ -106,6 +112,11 @@ class MetricsLoggingClient:
             return _InstrumentedStream(response, t0)
         u = getattr(response, "usage", None)
         if u:
+            try:
+                from nbchat.core.team_metrics import record_tokens
+                record_tokens(u.total_tokens)
+            except Exception:
+                pass
             logger.info("Latency: %.2fs | P:%d C:%d T:%d",
                         time.time() - t0, u.prompt_tokens, u.completion_tokens, u.total_tokens)
         return response

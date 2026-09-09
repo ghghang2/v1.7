@@ -49,6 +49,41 @@ _GPU_TIMEOUT = 2.0
 _METRICS_DIRNAME = Path("logs") / "team_metrics"
 
 
+class _TokenMeter:
+    """Thread-safe cumulative token/call counter for one /team run."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.total_tokens = 0
+        self.calls = 0
+
+    def add(self, n) -> None:
+        if not n:
+            return
+        with self._lock:
+            self.total_tokens += int(n)
+            self.calls += 1
+
+
+# Process-global slot for the currently-recording /team run's token meter.
+# The main terminal agent is idle while a /team run executes (the TUI is
+# blocked on run()), so at most one meter is active at a time; the client
+# reports each completion's token count into it via :func:`record_tokens`.
+_ACTIVE_METER: _TokenMeter | None = None
+
+
+def _set_active_meter(meter: _TokenMeter | None) -> None:
+    global _ACTIVE_METER
+    _ACTIVE_METER = meter
+
+
+def record_tokens(total_tokens) -> None:
+    """Add *total_tokens* to the active run's meter (no-op when idle)."""
+    meter = _ACTIVE_METER
+    if meter is not None:
+        meter.add(total_tokens)
+
+
 def _gpu_used_mib() -> float | None:
     """Return GPU memory used (MiB) from ``nvidia-smi``, or ``None``.
 
@@ -113,11 +148,14 @@ class TeamRunMetrics:
         self._sample_count = 0
         self._start_mono = None
         self._stop_mono = None
+        self._summary = None
+        self._tokens = _TokenMeter()
 
     # -- lifecycle --------------------------------------------------------
 
     def start(self) -> None:
         self._start_mono = time.monotonic()
+        _set_active_meter(self._tokens)
         try:
             self._dir.mkdir(parents=True, exist_ok=True)
             self._path = self._dir / f"{self.run_id}.jsonl"
@@ -158,12 +196,18 @@ class TeamRunMetrics:
         self._stop_mono = time.monotonic()
         duration = (self._stop_mono - self._start_mono) \
             if self._start_mono is not None else makespan
+        total_tokens = self._tokens.total_tokens
+        _set_active_meter(None)
         summary = {
             "type": "summary",
             "run_id": self.run_id,
             "makespan_s": round(makespan, 2),
             "wall_duration_s": round(duration, 2),
             "max_workers": self.max_workers,
+            "total_tokens": total_tokens,
+            "token_calls": self._tokens.calls,
+            "throughput_tok_s": (
+                round(total_tokens / makespan, 1) if makespan > 0 else 0.0),
             "peak_inflight": self._peak_inflight,
             "mean_inflight": (
                 round(self._inflight_sum / self._inflight_samples, 2)
@@ -184,6 +228,7 @@ class TeamRunMetrics:
                                    if self._gpu_error
                                    else "nvidia-smi unavailable "
                                         "(GPU/KV high-water not captured)")
+        self._summary = summary
         self._write(summary)
         if self._fh is not None:
             try:
@@ -198,6 +243,29 @@ class TeamRunMetrics:
         return self._path
 
     # -- queue wiring -----------------------------------------------------
+
+    @property
+    def summary_line(self) -> str:
+        """One-line throughput summary for the coordinator report.
+
+        Returns an empty string until :meth:`stop` has written the summary
+        row.  This is the single most useful number for the C=8 objective:
+        how many decode tokens per second the fixed-KV-pool server produced
+        over the whole run.
+        """
+        m = self._summary
+        if not m:
+            return ""
+        parts = [
+            f"{m['total_tokens']} tokens / {m['makespan_s']}s",
+            f"= {m['throughput_tok_s']} tok/s",
+            f"peak in-flight {m['peak_inflight']}/{m['max_workers']}",
+        ]
+        gpu = m.get("peak_gpu_mem_mib")
+        if gpu is not None:
+            parts.append(f"peak GPU {round(gpu/1024, 1)} GiB")
+        return "throughput: " + ", ".join(parts)
+
 
     def attach(self, queue) -> None:
         """Bind per-task start capture to a :class:`TaskQueue`."""
@@ -321,3 +389,5 @@ class TeamRunMetrics:
             fh.flush()
         except (OSError, TypeError, ValueError):
             pass
+
+

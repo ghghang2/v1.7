@@ -1844,6 +1844,18 @@ class TeamCoordinator:
             except Exception as exc:
                 summary = f"Synthesis LLM call failed ({exc}).\n{report}"
 
+        metrics_line = ""
+        if metrics is not None:
+            try:
+                _s = metrics.summary_line
+                if _s:
+                    metrics_line = f"\n[team] {_s}\n"
+            except Exception:
+                metrics_line = ""
+        if metrics_line:
+            summary = summary + metrics_line
+            print(metrics_line)
+
         print(p.magenta(f"\n  [team] report ({result}):\n"))
         for line in summary.splitlines() or [""]:
             print("  " + line)

@@ -781,3 +781,90 @@ schema point is moot.)
    do I re-author from the Session 4 spec?
 5. **Suite budget** — §11.6 says pick one number: I propose **<30 s
    hard cap, pty e2e gated out of the budget** (measured today: ~18 s).
+
+---
+
+## 8. Multi-agent throughput plan (2026-09-09)
+
+Goal (per `docs/multi_agent.md`): maximize single-5090 throughput under the
+C=8 saturation regime by making nbchat's team engine behave like the
+`dispatcher` design validated in `c8lab` (see `c8lab/THROUGHPUT_FINDINGS.md`),
+porting the useful prime-agent mechanics along the way.
+
+### Assessment: is prime-agent's fan-out "the best" for our objectives?
+Prime-agent (RLM) is a **dynamic, unbounded, tree-shaped fan-out**: any
+agent can spawn subagents on demand (`rlm.run`, max-depth capped), with a
+subagent registry (`list_subagents`/status per child) and a kernel that is
+strictly single-threaded — it serializes *agent work* and relies on the
+backend to queue *LLM work*. That shape is great for **adaptive
+decomposition** but it is **not throughput-optimal for a slot-bound GPU**:
+unbounded spawning gives the engine no view of lane availability, so
+subagents pile up in LLM-side queues and prefill storms thrash the decode
+batch. Our c8lab result says the optimum is a **fixed dispatcher**: one
+shared due-queue, N=C lanes, tool I/O never holding a lane, filler (idle
+backfill) admitted only when no agent turn is due within a grace window.
+
+**Conclusion:** keep nbchat's bounded `TeamCoordinator` (plan → dispatch →
+verify → integrate) as the skeleton; **port three prime-agent ideas**:
+
+1. **P1 — Lane decoupling (the big one).** Today a worker thread runs its
+   whole agentic turn (LLM + tools + LLM + tools …) while effectively
+   occupying the run's concurrency budget; the LLM request is one of many
+   queueing on the server, and tool I/O blocks that worker's *next* LLM
+   submission only if the worker is a bottleneck — the real loss is that a
+   worker stuck in a 30 s tool call still holds a worker slot, so
+   `max_workers` slots ≠ `C` in-flight LLM requests. Port the dispatcher
+   model: workers release the lane after the LLM turn completes (stream
+   close) and re-acquire for the next; the pool spawns claimers up to
+   `team_max_workers` (= C=8) and the server's own n_parallel queue is the
+   only queue. Net effect = `c8lab`'s `dispatcher` design (no
+   `held_gap` wedge, backfill during tool gaps).
+   *Files: `nbchat/core/team.py` (worker run loop), `nbchat/core/client.py`
+   (timeout/queue behaviour), config `team_max_workers` semantics.*
+
+2. **P2 — Subagent registry (visibility).** Prime-agent's
+   `rlm.list_subagents` / per-child `status` + session dir is exactly what
+   our `/team` status view lacks: a live table of every delegated
+   subtask, its status (running/completed/error), which worker owns it,
+   and its session id. Add `TeamCoordinator.list_subtasks()` (data already
+   in `TaskQueue.children()` + statuses) and surface it in `/team` status
+   output and in the coordinator's final report.
+   *Files: `nbchat/core/team.py`.*
+
+3. **P3 — Admission control on worker LLM submissions (backpressure).**
+   Prime-agent's `prompt-admission.ts` pattern: a submission awaits
+   *admission* (a free lane slot) and can be *cancelled* by signal,
+   never leaking unhandled work. In nbchat terms: before a worker issues
+   its next LLM call it should observe the run deadline (cancel, not
+   submit) and respect a global in-flight LLM counter bounded by
+   `team_max_workers` so 8 workers never burst past C concurrent requests
+   into the server queue (prefill storms). Implement as a small
+   `LaneGate` (threading.Semaphore + deadline-checked `acquire()`) around
+   `client.chat` when inside a team run.
+   *Files: new `nbchat/core/lane_gate.py`, `nbchat/core/client.py`,
+   `nbchat/core/team.py`.*
+
+### Verification (prove the GPU is maxed)
+- **V1 (sim, regression guard):** re-run `c8lab.experiment` with the
+  calibrated `EngineSim`; the shipped `dispatcher` numbers must be matched
+  or beaten by the new `nbchat-ported` client model (a thin client that
+  mirrors the P1/P3 semantics, not a re-sim of TS code).
+- **V2 (real-server microbench):** with the inference server up, drive the
+  new team engine on a real multi-task goal (e.g. 8 independent
+  "implement + test module X" tasks) and compare **wall time, in-flight
+  concurrency observed server-side, tokens/s** against the current
+  held-lane behaviour (run both, same tasks). Expect wall time ≈ the
+  dispatcher optimum: no worker sits on a slot during tool I/O.
+- **V3 (end-to-end real-world):** a `/team` run on a genuine multi-file
+  goal in this repo (e.g. porting a small self-contained prime-agent
+  utility into nbchat with tests), timed, with the subtask registry table
+  captured mid-run as evidence of parallelism; `run_tests` green before
+  push.
+
+### Order of implementation
+1. `lane_gate.py` + client integration (P3) — small, isolated, tested.
+2. Worker loop decoupling (P1) — the core change; keep the
+   ToolArbiter invariants intact.
+3. Subagent registry + `/team` status (P2).
+4. V1 sim parity check → V2 real-server microbench → V3 end-to-end.
+5. Tracker + docs (`multi_agent.md`) updates; final email with evidence.

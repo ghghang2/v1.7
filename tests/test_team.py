@@ -495,7 +495,9 @@ def test_run_end_to_end_success(monkeypatch):
     results = coord.run("Do the two things in parallel.")
 
     assert results["status"] == "done"
-    assert results["summary"] == "All tasks completed."
+    # The summary may carry an appended "[team] throughput: ..." line when
+    # metrics recording is enabled; the base report is unchanged.
+    assert results["summary"].startswith("All tasks completed.")
     assert results["tasks"] and all(t["status"] == "done" for t in results["tasks"])
     # Both LLM calls happened: plan + synthesis.
     assert len(client.calls) == 2
