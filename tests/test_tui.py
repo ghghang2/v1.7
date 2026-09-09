@@ -575,6 +575,38 @@ def test_stream_drop_with_partial_content_is_retried():
     assert any("stream interrupted" in n for n in agent._agent_notices)
 
 
+def test_fallback_guard_notices_silent_exit():
+    """Regression: the conversation loop was historically able to exit
+    without any break (a malformed/empty tool_calls payload slips past
+    every handling branch), leaving the user staring at a dead session
+    with no explanation.  The for-loop's else-clause fallback now
+    guarantees a visible notice whenever the loop ever falls through."""
+    from nbchat.core import conversation as conv
+    import ast as _ast
+
+    # 1. The defensive notice itself: it must log + tell the user how
+    #    to resume, and never raise.
+    agent = _stream_agent(None)
+    agent._note_silent_loop_exit()
+    assert any(
+        "Turn ended without a final answer" in n for n in agent._agent_notices
+    )
+
+    # 2. Static wiring: the loop's else-clause must actually call that
+    #    notice, so a fall-through exit can never go silent.
+    tree = _ast.parse(
+        open(conv.__file__).read())
+    wired = False
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.For) and getattr(node.target, "id", "") == "turn":
+            for s in node.orelse:
+                if isinstance(s, _ast.Expr) and isinstance(s.value, _ast.Call):
+                    if getattr(s.value.func, "attr", "") == "_note_silent_loop_exit":
+                        wired = True
+            break
+    assert wired, "loop else-clause no longer calls _note_silent_loop_exit"
+
+
 def test_stream_drop_retries_bounded():
     """A stream that dies mid-content every time must not loop forever:
     after MAX_STREAM_RETRIES continue attempts the error propagates."""

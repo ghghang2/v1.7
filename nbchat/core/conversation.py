@@ -821,7 +821,40 @@ class ConversationMixin:
 
                 self._refresh_monitoring_panel()
 
+        else:
+            # Fallback guard: a `for...else` block runs ONLY when the
+            # loop finishes without hitting a `break`.  Every clean
+            # exit (final answer, max tool turns, user stop) breaks,
+            # so this block is reached only on an unexpected
+            # fall-through — e.g. a malformed tool_calls payload
+            # skipping every handling branch.  Say so out loud instead
+            # of going silent, so the session never appears to hang
+            # with no output and no way to resume.
+            self._note_silent_loop_exit()
+
     # ── Streaming ─────────────────────────────────────────────────────────
+
+    def _note_silent_loop_exit(self) -> None:
+        """Fallback notice for a loop exit that produced no final answer.
+
+        The conversation loop is designed to terminate only via an
+        explicit ``break`` (final answer, MAX_TOOL_TURNS, stop, or a
+        handled mid-stream failure).  If it ever falls through to the
+        ``else`` clause instead, the turn ended without the user seeing
+        a reply and without any explanation — the session appears to
+        hang — the failure mode of the 2026-09-09 silent-termination
+        incident.  This method makes that impossible to miss: it logs
+        the event and posts a visible notice telling the user how to
+        resume.
+        """
+        _log.warning(
+            "Conversation loop exited without a final answer; "
+            "signalling the user so the session never appears to hang."
+        )
+        self._on_agent_message(
+            "Turn ended without a final answer. Send any message "
+            "(e.g. 'continue') to have me pick up where I left off."
+        )
 
     def _stream_response(self, client, messages):
         """Stream one LLM completion, firing output hooks per chunk.

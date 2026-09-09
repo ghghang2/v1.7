@@ -394,6 +394,13 @@ Tuning lives in `repo_config.yaml`:
 - **Output compression** — large tool outputs are compressed (skeletons for
   code/JSON/YAML, head/tail otherwise) before going back to the model to save
   context.
+- **Silent-exit fallback** — the agentic loop is designed to end only via an
+  explicit `break` (final answer, `max_tool_turns`, or user stop). If a turn
+  ever falls through the loop without one (e.g. a malformed `tool_calls`
+  payload that skips every handling branch), the loop's `else` clause posts a
+  visible notice ("Turn ended without a final answer. Send any message to
+  pick up where I left off.") and logs a warning, so the session can never
+  appear to hang with no output.
 
 ---
 
