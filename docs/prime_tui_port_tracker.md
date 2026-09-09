@@ -78,7 +78,7 @@ Clean, zero-dependency **print-based REPL** (~4.5k LOC total). Entry points:
 | `nbchat/tui/status.py` | 309 | Status line + agent-activity table |
 | `nbchat/tui/email_bridge.py` | 528 | Gmail replies into chat |
 | `nbchat/tui/colors.py` | 57 | `Palette` raw-ANSI colour helper (NO_COLOR-aware) |
-| `nbchat/ui/*.py` | ~2.8k | Rich-based chat renderer (existing) |
+| `nbchat/ui/*.py` | ~2.8k | `markdown`-pkg chat renderer (existing, not rich) |
 
 Existing `/` commands: `/help /status /new /sessions /load /title /history
 /model /effort /stats /clear /quit /sup /team [/team stop]`.
@@ -103,12 +103,12 @@ Testing conventions (see `tests/conftest.py`, `pytest.ini`):
    is **not** installed in this environment. We therefore **reimplement** the
    engine in Python (no Node dependency), porting concepts 1:1 rather than
    transpiling.
-3. **Dependencies.** Keep the footprint small and standard. Preferred:
-   `termios`/`tty` (stdlib, raw mode), and **`rich`** for Markdown + code
-   highlighting where it saves re-porting `marked`. `rich` is already in the
-   dependency set (used by `nbchat/ui`), so no new install is expected.
-   (Confirm `rich` availability before first use; if absent, fall back to a
-   minimal ANSI markdown renderer.)
+3. **Dependencies.** Keep the footprint small and standard. Raw mode via
+   `termios`/`tty` (stdlib). **No new third-party deps**: `rich` is NOT
+   installed and NOT in `requirements.txt`, and `nbchat/ui` is not rich-based
+   (it uses the `markdown` pkg). `nbchat/tui2/markdown.py` is a self-contained
+   ANSI renderer over its own Line/Segment/Style model — no `rich`, no
+   `markdown` pkg. Keep it that way; do not add `rich`. (See §11.2.)
 4. **Threading model.** nbchat streams from worker threads. The TUI needs a
    thread-safe event queue → single-threaded render loop (`requestRender()`).
 5. **Themes.** Port prime-agent's `theme/*.json` (dark/light/prime) as the
@@ -160,16 +160,18 @@ Testing conventions (see `tests/conftest.py`, `pytest.ini`):
 - [ ] **User-test checkpoint 2**: full chat in the new surface.
 
 ### Phase 3 — Editor polish  · est. ~1k LOC
-- [x] Multi-line `Editor` component: undo/redo, kill-ring, backslash continue.
+- [ ] Multi-line `Editor` component: undo/redo, kill-ring, backslash continue.
+      (**Not in repo — see §11.1 correction.**)
 - [ ] Slash-command + path autocomplete.
 - [ ] Fuzzy search in selectors.
 - [ ] (Optional) mouse support.
-- [~] Wire the real agent conversation loop (`nbchat/tui2/app.py`) into the
-      surface: the six `TerminalAgent` stream hooks + `_status_window`, a
-      `_LogCapture` on `sys.stdout`/`sys.stderr`, and a frame builder that
-      composes top status / chat log / live turn / loader / editor / bar.
-      **Written but not yet functional** — see Tracker (In progress) and the
-      Session 4 handoff note.
+- [ ] Wire the real agent conversation loop (`nbchat/tui2/app.py`) into the
+      surface: a frame builder that composes top status / chat log / live turn
+      / loader / editor / bar. **NOT in repo** (see §11.1). Re-scoped per
+      §11.4.2/§11.5: inject a `printer` into
+      `TerminalAgent._run_turn(self, text, printer)` and override the
+      `_status_*` hooks (no global `sys.stdout`/`sys.stderr` swap), plus a
+      per-message render cache.
 - [ ] **User-test checkpoint 3**: editor feel.
 
 ---
@@ -225,6 +227,11 @@ Testing conventions (see `tests/conftest.py`, `pytest.ini`):
       `Message`, `ToolCall`, `ThinkingBlock`, `diff_lines` — there is no
       `ChatLog`/`ChatMessage`. `__main__.py` and the old `--v2` flag still
       launch the Phase 1 **demo**, not this app. No tests cover `app.py` yet.
+
+  > **CORRECTION (2026-09-09, \u00a711.1):** this entry describes work that is
+  > **not in the repo** at commit `870cc34` \u2014 `app.py` does not exist. Treat
+  > it as the *intended* design, not shipped code. The `_LogCapture` global
+  > stdout swap is superseded by the printer-injection design (\u00a711.4.2).
 
 ### Pending
 - Phase 1: **user-test checkpoint 1** (demo is ready — see table below).
@@ -377,7 +384,7 @@ sets `_running=False` and restores the terminal, which is absolute/safe.
 |------|----------|-----------|
 | 2026-09-06 | Additive, opt-in new TUI; existing REPL stays default and unchanged. | User hard rule: no breaking changes. |
 | 2026-09-06 | Reimplement engine in Python rather than run Node/TS. | Node not available; keeps one runtime and small footprint. |
-| 2026-09-06 | Use `rich` for Markdown/code highlighting. | Already in deps via `nbchat/ui`; avoids re-porting `marked`. |
+| 2026-09-06 (revised 09-09) | Self-contained ANSI markdown renderer (NOT `rich`). | `rich` is not installed / not a dep, and `nbchat/ui` is not rich-based; tui2's own renderer keeps the repo light. See §11.2. |
 | 2026-09-06 | Differential render + CSI 2026 sync output. | Core of prime-agent's flicker-free feel; must preserve. |
 
 ---
@@ -456,3 +463,298 @@ sets `_running=False` and restores the terminal, which is absolute/safe.
   smoke test stays `@pytest.mark.pty` / `--run-pty` only. Keep the fast-suite
   policy (<~10 s) and the no-breaking-changes rule for the existing
   `nbchat.tui` REPL.
+
+---
+
+## 11. Critical design review (2026-09-09)
+
+> Re-read with a first-principles, critical eye. Goal: port prime-agent's TUI
+> while keeping nbchat's advantages (fast streaming print REPL, no fragile
+> deps, `/team` + email + supervisor + voice) and keeping the repo light and
+> maintainable. Findings below; several earlier claims are corrected.
+> Open questions for the user are in §11.8.
+
+### 11.1 STATUS CORRECTION (supersedes the 2026-09-07 "In progress" bullets)
+
+The tracker's 2026-09-07 entries describing `nbchat/tui2/app.py` (467 LOC),
+`editor.py`, and `fuzzy.py` as "shipped / written but not functional" are
+**not reflected in the repo.** As of commit `870cc34`:
+
+- `nbchat/tui2/` contains 10 files / ~1914 LOC: `__init__, __main__, theme,
+  demo, keys, frame, chat, markdown, raw, components`.
+- **`app.py`, `editor.py`, `fuzzy.py` do not exist.** There is no
+  `ChatLog`/`ChatMessage` and no `LineEditor`.
+- `components.py` defines `Text, Box, Spacer, Container, StatusLine, Loader`
+  (no Editor).
+- So the real state is: **Phase 1 + Phase 2 chat components done and tested;
+  Phase 3 (real app + editor) not started.** The next step is to *author*
+  those files, not to fix an existing `app.py`.
+- Test counts: `tests/test_tui2.py` has 33 tests; the "385 passing" figure in
+  the log is not reproducible (measured suite is ~375).
+
+### 11.2 Fact corrections on dependencies (the repo is lighter than the doc says)
+
+- **`rich` is not installed** (`ModuleNotFoundError`) and is **not in
+  `requirements.txt`**. The earlier claim that "rich is already in the
+  dependency set (used by nbchat/ui)" was false.
+- **`nbchat/ui` is not rich-based**; it uses the `markdown` pip package.
+- Good news: **`tui2/markdown.py` is fully self-contained** (own
+  Line/Segment/Style; no `rich`, no `markdown` pkg). The *code* already meets
+  the "no new dependencies" bar — the doc just needed to say so and to drop
+  the `rich` recommendation (done in §4 and §8).
+
+### 11.3 Decisions that are right (keep)
+
+- Reimplement the engine in Python (no Node) — correct for one-runtime + light.
+- Differential render + CSI 2026 — this *is* prime-agent's flicker-free feel;
+  keep it.
+- Self-contained markdown renderer (not `rich`) — keep; it is the light path.
+- Non-goals (daemon multi-session, subagent roster, mermaid/HTML export,
+  terminal images) — correctly excluded; they do not fit nbchat.
+- Drive the new surface from nbchat's real agent stack (`/team`, email,
+  supervisor, voice) — right; those are nbchat's differentiators.
+
+### 11.4 Design decisions to change / question
+
+1. **Drop the multi-theme JSON system.** nbchat's REPL has no themes (just a
+   NO_COLOR-aware `Palette`). Porting `theme/dark|light|prime.json` +
+   `theme-schema.json` is scope bloat for a power-user tool. **Use one
+   baked-in, NO_COLOR-aware dark palette.** Keep `theme.py` minimal; no theme
+   loader, no schema, no light/prime variants.
+2. **Do not globally swap `sys.stdout`/`sys.stderr` (`_LogCapture`).** That is
+   thread-unsafe (nbchat streams from worker threads), will swallow/interleave
+   the agent's own status + email/voice output, and is hard to reason about.
+   **The existing agent already threads a `printer` through**
+   (`TerminalAgent._run_turn(self, text, printer)`). Inject tui2's emitter
+   there, and override the `_status_*` hooks to write into the render tree
+   instead of printing to the print-based StatusBar. This reuses nbchat's own
+   seam and keeps the existing REPL byte-for-byte unchanged (hard rule).
+3. **The `_status_*` hooks are side-effecting, not structured.** They call
+   `_status_set` (print) and `sb.set_context`. "Bind the six hooks" is an
+   under-specification: in raw mode tui2 must override them so the print
+   StatusBar does not double-fire. (Signatures confirmed: `_status_window(
+   estimated_tokens, budget)` matches.)
+4. **Relative-only cursor contract is a latent fragility + dead code.**
+   `render_frame` relies on "cursor parked at row 1" and uses relative CSI
+   A/B only; `_cpr` (the absolute-positioning helper) is defined but
+   **unused**. A single garbled/lost update shifts all later frames (the same
+   symptom class as checkpoint 1). **Either re-home to row 1 at the start of
+   each `render_frame` (self-heals on the next frame), or emit absolute
+   `_cpr(row, 1)` per rewritten line** — then `_cpr` stops being dead code.
+5. **`sync_out` is a redundant wrapper with double-wrap risk.**
+   `render_frame` already wraps in CSI 2026; calling `sync_out(render_frame(
+   ...))` nests the markers (undefined behaviour). **Delete `sync_out`, or
+   assert `render_frame` is the single emission entry point.**
+
+### 11.5 Performance gap — the big one (add a render cache)
+
+prime-agent ships `render-cache.ts` for exactly this; the plan has **no
+equivalent item**. The spinner ticks every 0.2 s, forcing a full re-render. If
+`Message.render(width)` re-parses markdown for the **entire conversation log**
+each frame, cost is O(history) per tick → CPU spikes + jank as the session
+grows. This directly threatens the "keep nbchat's performance" goal.
+**Add a per-message render cache:** memoize `Message.render(width)` keyed by
+`(message_id, width)`; only the *live streaming turn* re-renders per frame,
+frozen history stays cached. This is the single most important architectural
+addition for the performance requirement.
+
+### 11.6 Maintainability / hygiene
+
+- Delete dead `_cpr` (or wire it in per §11.4.4).
+- Remove/clarify `sync_out` (§11.4.5).
+- The suite budget contradicts itself (24 s cap vs <~10 s policy); measured is
+  ~18 s. Pick one number and state it.
+
+### 11.7 Feature filter (drop what does not fit nbchat)
+
+- **Keep:** `/model`, `/sessions`, tool-call panels, thinking blocks,
+  markdown, status bar, and `/team` + email + supervisor + voice (first-class).
+- **Drop:** onboarding, JSON multi-theme, daemon multi-session, subagent
+  roster, mermaid/HTML, terminal images.
+- **Defer (optional):** fuzzy `SelectList`. Do **numbered lists first**
+  (nbchat already does this in the REPL); add fuzzy only if desired.
+
+### 11.8 Open questions (need a decision from you)
+
+1. **Themes:** confirm dropping multi-theme JSON in favour of one baked-in,
+   NO_COLOR-aware dark palette? (§11.4.1)
+2. **Agent-hook integration:** OK with the *light* route — tui2 injects a
+   `printer` and overrides the `_status_*` hooks, leaving `TerminalAgent` and
+   the existing REPL unchanged? (vs. a bigger refactor that makes the hooks
+   structured for both surfaces.) (§11.4.2 / §11.4.3)
+3. **Selectors:** numbered lists first, fuzzy later — or do you want fuzzy up
+   front? (§11.7)
+4. **Render cache:** agree to make the per-message render cache a **hard**
+   Phase 3 requirement (not optional) before user-test checkpoint 2? (§11.5)
+
+### 11.9 Session 5 handoff (2026-09-09)
+
+- **State:** Phase 1 + Phase 2 components done/tested. Phase 3 (real app,
+  editor) **not started** — `app.py` / `editor.py` / `fuzzy.py` absent.
+- **Next step (pick up cold):** (1) author `ChatMessage` + `ChatLog` in
+  `chat.py` and the `app.py` real-agent app using the `printer`-injection
+  design (§11.4.2), **with the per-message render cache (§11.5)**; (2) re-home
+  the cursor in `render_frame` (§11.4.4) and remove `sync_out` / dead `_cpr`;
+  (3) repoint `__main__` / `--v2` at the real app, keep the demo via
+  `--v2-demo`; (4) add pty-free `app.py` tests (fake `TerminalAgent` +
+  in-memory terminal); (5) user-test checkpoint 2. Run `python3 -m pytest`
+  before pushing (pty e2e is gated behind `--run-pty`).
+
+---
+
+## 12. Supplementary critical review (2026-09-09)
+
+> Second-pass review, appended alongside §11 (same date; §11 landed first
+> and is the primary record). This section adds what §11 did not cover,
+> corrects two factual errors of mine caught during verification, and
+> records one genuine policy conflict. Where §11 and §12 agree, follow
+> §11; where they conflict (theme policy: §11.4.1 vs §12.3.4) it is an
+> open question for the user (§12.5 Q1).
+
+### 12.1 Additions to §11.1 (repo state, verified 2026-09-09)
+
+- **Commit hashes cited as evidence do not exist in this repo's
+  history** (`1a2f823`, `2c04d21`, `dbd1fe7`, `2998ae9` — the repo has a
+  single squashed commit `870cc34`). They point at the pre-squash
+  environment; the decision log should say so so evidence pointers are not
+  mistaken for checkable refs.
+- **`tmp/prime-agent` reference clone is gone** (it was in scratch, not
+  committed). Re-clone (`PrimeIntellect-ai/prime-agent`, MIT) or work from
+  GitHub raw before Phase 3 work.
+- Everything else in §11.1 verified true against the tree (file list,
+  ~1914 LOC, absence of app.py/editor.py/fuzzy.py, suite ≈375).
+
+### 12.2 What was verified this pass (beyond §11)
+
+- `raw.py` `_read_input`: `os.read(fd, 4096)` after `select()`.
+  **Correct as written** — the size argument is a cap, not a
+  block-until-full requirement, so a lone keystroke is delivered
+  immediately; the earlier 64-byte-stall bug class is gone. No change
+  needed.
+- `frame.py:184`: cursor positioning is **relative-only by design**
+  ("the output never contains an absolute cursor-position report") with
+  the parked-at-row-1 contract §10 identified; `_cpr` (frame.py:186) is
+  defined but **unused** — matches §11.4.4.
+- Full suite: 375 passed / 1 skipped / ~18 s (measured 2026-09-09).
+
+### 12.3 Per-decision first-principles review (what §11 did not cover)
+
+#### 12.3.1 Raw mode + differential rendering — KEEP; cursor: absolute wins
+
+Raw mode, differential rendering, and the 0.1 s frame budget are the
+right design and the reason the port will feel like prime-agent:
+per-frame terminal work is O(what changed), independent of history
+length. Keep all of it.
+
+The one change (agrees with §11.4.4's second option, which §12
+recommends over the re-home option): **every rewritten line is addressed
+absolutely** (CUP, `\033[row;1H`) — the parked-cursor contract is
+deleted, and the currently-dead `_cpr` helper (frame.py:186) is exactly
+this design, resurrected. Cost ≈6 bytes per changed line — negligible.
+Benefit: the engine survives lost bytes, terminal clamping, and
+out-of-band writes (a leaked `print`, a traceback) without corrupting
+the next frame — the whole class of bug from checkpoint 1 (§10).
+Re-homing to row 1 each frame is cheaper but leaves a frame window with
+the cursor misplaced; absolute positioning is the strict superset of
+robustness. `sync_out` stays deleted / single-entry-point per §11.4.5.
+
+**One test worth adding** — the design argument in one test: drop a
+byte mid-frame into an in-memory terminal and assert the next frame still
+lands correctly. With absolute addressing this passes by construction;
+with the parked-cursor contract it cannot.
+
+#### 12.3.2 Agent wiring — printer injection; the seam already exists
+
+**Correction to an earlier draft of this section:**
+`TerminalAgent._run_turn(self, text, printer)` (agent.py:377) **already
+threads a printer** — `printer(text)` at line 391; the print REPL passes
+its own printer, so the hard rule (REPL byte-for-byte unchanged) is
+preserved by construction. No new parameter is needed. tui2 passes a printer
+that appends to the message buffer and does
+`events.put("render")` (raw.py's EventQueue, drained every tick by the
+render loop) — no globals, no state to restore, trivially testable
+(printer can be a list; events can be the real EventQueue).
+This matches §11.4.2; the draft claim that `_run_turn` "already takes
+only text (agent.py:290)" was wrong and is withdrawn.
+
+The six `_status_*` hooks (agent.py:263–286, verified) are
+side-effecting — they print / set the old StatusBar context — so the
+tui2 agent subclass must **override** them to route into the render tree,
+not merely bind them (§11.4.3). The light route of §11.8 Q2 is
+confirmed feasible with zero changes to `TerminalAgent`.
+
+#### 12.3.3 Thread model — KEEP as is; one real (small) gap
+
+**Correction to my earlier draft of this section:** `request_render()` does
+not exist — I invented it. The actual mechanism (verified in raw.py):
+workers push events into `EventQueue` (raw.py:147, backed by
+`queue.Queue` — thread-safe by construction, so there is no racy
+flag to fix); the render loop drains the queue every tick and re-renders
+once per `"render"` event, plus a forced rebuild after each keystroke
+chunk. The thread model itself is right and unchanged by the port.
+
+The one real gap: there is **no coalescing** — N `render` events in one
+tick give N re-renders, and streaming tokens fire constantly. Two-part
+fix, both small: (1) at drain time, collapse N `"render"` events to one
+(one rebuild per tick); (2) the §11.5 render cache so each rebuild is
+O(what changed). Together: coalescing bounds the *rate*, the cache
+bounds the *cost per frame*. No new threads, no locks needed beyond
+what `queue.Queue` already provides.
+
+#### 12.3.4 Theme — CONFLICT with §11.4.1 (open question, §12.5 Q1)
+
+§11.4.1 says: drop the multi-theme JSON for one baked-in,
+NO_COLOR-aware dark palette (lightest repo; nbchat's REPL today has no
+themes). This section's original view: keep the JSON mechanism but trim
+each theme to the ~15–20 keys tui2 components actually read, and drop
+`theme-schema.json` for a 20-line stdlib presence check. The case:
+prime-agent's look lives *in the data*; themes are zero code to support
+once palette plumbing exists; a user-swappable theme is a prime-agent
+feature that maps 1:1 onto nbchat's zero-dep constraint. The case for
+§11.4.1: lightest repo, one palette to test. Either is implementable in
+an afternoon; the data decision is the user's. (If §11.4.1 wins, the
+schema point is moot.)
+
+### 12.4 What changes in the plan (concrete)
+
+- **Cursor contract → absolute CUP per rewritten line** (§12.3.1);
+  re-home-to-row-1 dropped; `_cpr` resurrected as the mechanism;
+  `sync_out` per §11.4.5. Rewrite `render_frame` positioning + tests.
+- **Add the byte-drop corruption test** (in-memory terminal, §12.3.1).
+- **Coalesce `render` events at drain time** (one rebuild per tick,
+  §12.3.3). The queue itself is already thread-safe; no lock work.
+- **Adopt §11.5's render cache as a hard Phase 3 requirement** (agree
+  with §11.8 Q4; the single most important addition for the performance
+  goal).
+- **`--v2` mapping:** `--v2` → real app, `--v2-demo` → Phase 1 demo
+  (today `--v2` → demo). Confirm flag names (§12.5 Q3).
+- **`nbchat/ui` decision:** it is a second rendering engine nothing in
+  tui2 needs, and the only consumer of the `markdown` pip dependency
+  (`nbchat/ui/utils.py:2`). Recommendation: deprecate in docs now,
+  remove after user-test checkpoint 2 — removal drops `markdown` from
+  requirements.txt (the repo gets *lighter*, the stated goal). Requires
+  an import-usage check first (`nbchat/__init__` and channels reference
+  it). (§12.5 Q2.)
+- **Editor recovery before re-authoring:** if the prior session's
+  `editor.py`/`fuzzy.py`/`app.py` are retrievable from that environment,
+  recovery beats re-authoring (§12.5 Q4); otherwise re-author from the
+  Session 4 spec (kill-ring Ctrl+K/U/W/Y, word motion, undo/redo,
+  shift+enter newline via xterm `13;2u`, backslash continuation,
+  reverse-style cursor).
+- **Theme trim per the Q1 decision** (§12.3.4).
+- **Note in the decision log** that cited commit hashes are pre-squash
+  (§12.1).
+
+### 12.5 Open questions for the user (supplements §11.8)
+
+1. **Theme policy** — §11.4.1 (one baked-in palette) vs §12.3.4 (trimmed
+   JSON themes)? Deciding factor: "lightest repo" vs "the ported look,
+   user-swappable".
+2. **Retire `nbchat/ui`** — deprecate now + remove after checkpoint 2
+   (would drop the `markdown` dep) or leave alone?
+3. **`--v2` semantics** — confirm `--v2` → real app, `--v2-demo`
+   → demo?
+4. **Editor recovery** — is the prior environment still accessible, or
+   do I re-author from the Session 4 spec?
+5. **Suite budget** — §11.6 says pick one number: I propose **<30 s
+   hard cap, pty e2e gated out of the budget** (measured today: ~18 s).
