@@ -264,8 +264,10 @@ Testing conventions (see `tests/conftest.py`, `pytest.ini`):
      simplified to direct subclass overrides.
   3. [x] `__main__.py` points at the real `ChatApp`; demo kept reachable via `--demo`.
      (Legacy `--v2` flag in `nbchat/tui/app.py` still launches the demo — cosmetic, low priority.)
-  4. [ ] Add pty-free tests for `app.py` (fake `TerminalAgent` + in-memory terminal)
+  4. [x] Add pty-free tests for `app.py` (fake `TerminalAgent` + in-memory terminal)
      covering hook→log routing and frame composition.
+     (43 tests in `tests/test_tui2.py`; 8 ChatApp tests cover
+     hook→log routing, frame composition, key mapping and Ctrl+D.)
   5. [ ] **User-test checkpoint 2** (full chat in the new surface).
 
 ### Blocked
