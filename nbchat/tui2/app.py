@@ -117,9 +117,16 @@ class ChatApp(TerminalAgent):
         self._thinking_visible = True
 
         # Session picker modal (Ctrl+L / no-arg /load): None when closed.
+        # The same widget slot backs three modal kinds (see _modal_kind):
+        #   "session" — load a saved session
+        #   "palette" — Ctrl+P: jump to any slash command
+        #   "search"  — Ctrl+R: search the input history
         self._picker = None          # SelectList
         self._picker_filter = ""     # fuzzy filter text
-        self._picker_sessions: list = []   # raw session rows
+        self._picker_sessions: list = []   # raw selectable rows
+        self._modal_kind = "session" # which modal is (or was) open
+        # Input history for Ctrl+R reverse search (turns + commands).
+        self._history: list = []
 
         # Turn worker bookkeeping.
         self._turn_thread: threading.Thread | None = None
@@ -398,6 +405,12 @@ class ChatApp(TerminalAgent):
         if key.name == "ctrl+l":
             self._open_picker()
             return
+        if key.name == "ctrl+p":
+            self._open_palette()
+            return
+        if key.name == "ctrl+r":
+            self._open_search()
+            return
         # Scrollback: page through the conversation log.
         if key.name == "pageup":
             self._scroll_log(max(5, (self.term.height - 8) // 2))
@@ -437,10 +450,72 @@ class ChatApp(TerminalAgent):
         self._ui_refresh()
 
     def _submit(self, text: str) -> None:
+        # Every submitted line goes on the reverse-search stack (Ctrl+R).
+        self._history.append(text)
+        if len(self._history) > 200:
+            self._history = self._history[-200:]
         if text.startswith("/"):
             self._run_command(text)
             return
+        if text.startswith("!"):
+            self._run_shell(text)
+            return
         self._start_turn(text)
+
+    def _run_shell(self, line: str) -> None:
+        """Run a local shell command (``!cmd`` / ``!!cmd``) and show output.
+
+        ``!!`` additionally stores the combined output on
+        ``self._last_shell`` for later reference.  The command runs on a
+        worker thread so the UI never blocks on it.
+        """
+        store = line.startswith("!!")
+        cmd = (line[2:] if store else line[1:]).strip()
+        self.log.add(chatc.ChatMessage(role="user", text=line))
+        self.log.offset = 0
+        if not cmd:
+            self._note("usage:  !cmd   run a shell command   ·   !!cmd   run "
+                       "and store its output")
+            self._ui_refresh()
+            return
+        self._status_set("running", f"shell: {cmd[:44]}")
+        self._ui_refresh()
+        threading.Thread(target=self._shell_worker, args=(cmd, store),
+                         daemon=True).start()
+
+    def _shell_worker(self, cmd: str, store: bool) -> None:
+        """Synchronous core of ``_run_shell`` (run on a worker thread)."""
+        import subprocess
+        try:
+            p = subprocess.run(
+                cmd, shell=True, capture_output=True, text=True, timeout=120)
+            out, err, code = p.stdout, p.stderr, p.returncode
+        except subprocess.TimeoutExpired:
+            out, err, code = "", "timed out after 120s", 124
+        except Exception as exc:  # never let a shell error kill the UI
+            out, err, code = "", str(exc), -1
+        combined = out
+        if err:
+            combined += ("" if combined.endswith("\n") else "\n")
+            combined += "[stderr]\n" + err
+        if not combined.strip():
+            combined = f"(no output, exit {code})"
+        if store:
+            self._last_shell = combined
+        body = combined.rstrip("\n").splitlines()
+        if len(body) > 30:
+            body = body[:30] + [f"… {len(body) - 30} more line(s)"]
+        self.log.add(chatc.ChatMessage(
+            role="assistant", text="",
+            blocks=[chatc.ChatBlock(
+                kind="tool", name="shell",
+                title=f"exit {code}",
+                status="done" if code == 0 else "error",
+                body=body)]))
+        self._status_set(
+            "ready" if code == 0 else "error",
+            f"shell exit {code}" + (" · output stored (!!)" if store else ""))
+        self._ui_refresh()
 
     # tui2-native slash commands: handled inside the TUI (they need the
     # live frame / clipboard / side-turn state) rather than delegated to the
@@ -741,6 +816,7 @@ class ChatApp(TerminalAgent):
 
     def _open_picker(self) -> None:
         from nbchat.core import db
+        self._modal_kind = "session"
         rows = db.list_sessions_with_title("tui:")
         # Per-session message counts (one pass).
         counts: dict = {}
@@ -767,12 +843,71 @@ class ChatApp(TerminalAgent):
         self._refresh_picker()
         self._ui_refresh()
 
+    # ── Ctrl+P command palette ─────────────────────────────────────────
+
+    # (text inserted into the editor, human label). The label is what the
+    # fuzzy filter matches on, so keep them unique.
+    _PALETTE = (
+        ("/help",              "list all commands"),
+        ("/context",           "model · context bar · compression"),
+        ("/compact ",          "manual one-shot compaction"),
+        ("/refine ",           "schedule a refinement round"),
+        ("/refine rollback",   "revert the last refinement"),
+        ("/lessons",           "applied refinement lessons"),
+        ("/memory",            "L1 core + L2 episodic memory"),
+        ("/btw ",              "throwaway side question"),
+        ("/sessions",          "list saved tui sessions"),
+        ("/load ",             "load a session by id"),
+        ("/new",               "start a fresh session"),
+        ("/save",              "save the current session"),
+        ("/title ",            "set the session title"),
+        ("/name ",             "alias for /title"),
+        ("/copy",              "copy last reply to clipboard"),
+        ("/hotkeys",           "keybinding reference"),
+        ("/quit",              "exit tui2"),
+        ("! ",                 "run a shell command  (!cmd)"),
+        ("!! ",                "run shell, store output (!!cmd)"),
+    )
+
+    def _open_palette(self) -> None:
+        self._modal_kind = "palette"
+        self._picker_sessions = list(self._PALETTE)
+        self._picker_filter = ""
+        self._refresh_picker()
+        self._ui_refresh()
+
+    # ── Ctrl+R reverse search ──────────────────────────────────────────
+
+    def _open_search(self) -> None:
+        self._modal_kind = "search"
+        # Newest first; key = the text to insert, label = a short preview.
+        self._picker_sessions = [
+            (h, h if len(h) <= 48 else h[:47] + "…")
+            for h in reversed(self._history)
+        ]
+        self._picker_filter = ""
+        self._refresh_picker()
+        self._ui_refresh()
+
+    # Per-modal title + footer for the shared picker widget.
+    _MODAL_META = {
+        "session": ("sessions",
+                    "type to filter · ↑↓ move · enter load · esc cancel"),
+        "palette": ("commands",
+                    "type to filter · ↑↓ move · enter insert · esc cancel"),
+        "search": ("history",
+                   "type to filter · ↑↓ move · enter insert · esc cancel"),
+    }
+
     def _refresh_picker(self) -> None:
         from .components import SelectList
         from .fuzzy import fuzzy_rank
+        title, footer = self._MODAL_META.get(
+            self._modal_kind, self._MODAL_META["session"])
         if not self._picker_sessions:
-            self._picker = SelectList(title="sessions", items=["(no sessions)"],
-                                      footer="enter/esc close")
+            self._picker_rows = []
+            self._picker = SelectList(title=f"{title}  (0)",
+                                      items=["(no entries)"], footer=footer)
             return
         needle = self._picker_filter.strip().lower()
         if needle:
@@ -786,17 +921,17 @@ class ChatApp(TerminalAgent):
         else:
             rows = list(self._picker_sessions)
         labels = [lab for _sid, lab in rows]
-        # Keep the cursor on the current session when possible.
+        # For the session modal, keep the cursor on the current session.
         sel = 0
-        for i, (sid, _lab) in enumerate(rows):
-            if sid == self.session_id:
-                sel = i
-                break
+        if self._modal_kind == "session":
+            for i, (sid, _lab) in enumerate(rows):
+                if sid == self.session_id:
+                    sel = i
+                    break
         self._picker_rows = rows
         self._picker = SelectList(
-            title=f"sessions  ({len(rows)}/{len(self._picker_sessions)})",
-            items=labels, selected=sel,
-            footer="type to filter · ↑↓ move · enter load · esc cancel")
+            title=f"{title}  ({len(rows)}/{len(self._picker_sessions)})",
+            items=labels, selected=sel, footer=footer)
 
     def _close_picker(self) -> None:
         self._picker = None
@@ -834,14 +969,23 @@ class ChatApp(TerminalAgent):
         if not self._picker_rows:
             self._close_picker()
             return
-        sid, _label = self._picker_rows[self._picker.selected]
-        self._close_picker()
-        if sid == self.session_id:
+        key, _label = self._picker_rows[self._picker.selected]
+        if self._modal_kind == "session":
+            sid = key
+            self._close_picker()
+            if sid == self.session_id:
+                return
+            self._switch_session(sid)
+            self._session_changed()
+            self.remember_session(self.session_id)
+            self._note(f"loaded session {self.session_id.rsplit(':', 1)[-1]}")
+            self._ui_refresh()
             return
-        self._switch_session(sid)
-        self._session_changed()
-        self.remember_session(self.session_id)
-        self._note(f"loaded session {self.session_id.rsplit(':', 1)[-1]}")
+        # palette / search: drop the chosen text into the editor for
+        # confirmation (the user still presses Enter to actually run it).
+        text = key if isinstance(key, str) else str(key)
+        self._close_picker()
+        self.editor.handle("paste", text)
         self._ui_refresh()
 
     def _scroll_log(self, delta: int) -> None:

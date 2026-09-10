@@ -124,10 +124,13 @@ v1 and their output renders inside the UI.
 Keys: `Enter` submits · `Esc` interrupts a running turn / cancels a modal ·
 `Ctrl+C` interrupts while a turn runs (quits when idle, cancels an open
 modal) · `Ctrl+D` submits when the input has text (quits when empty) ·
-`Ctrl+L` opens the session picker · `Ctrl+T` shows / hides thinking blocks ·
-`Ctrl+Z/Ctrl+A/Ctrl+E/Ctrl+U/Ctrl+K/Ctrl+W/Ctrl+Y` line editing.  Typing a
-new message while a reply is streaming stops that reply and redirects the
-agent to the new text.
+`Ctrl+L` opens the session picker · `Ctrl+P` opens the command palette ·
+`Ctrl+R` reverse-searches the input history · `Ctrl+T` shows / hides thinking
+blocks · `PgUp`/`PgDn` page the log, `Home`/`End` jump to top/bottom (a `↑N`
+marker shows how far up you are) · `Ctrl+Z/Ctrl+A/Ctrl+E/Ctrl+U/Ctrl+K/Ctrl+W/Ctrl+Y` line
+editing.  Typing a new message while a reply is streaming stops that reply
+and redirects the agent to the new text.  Lines starting with `!` run a local
+shell command (`!ls`); `!!` also stores the output for later.
 
 **tui2-native commands** (handled inside the UI, not the v1 REPL):
 
@@ -148,6 +151,13 @@ agent to the new text.
 - `/name <title>` — alias for v1's `/title`.
 - Bare `/load` (no id) opens the **session picker**: type to fuzzy-filter,
   `↑/↓` move, `Enter` loads, `Esc`/`Ctrl+C` cancel.
+- `!cmd` / `!!cmd` — run a local shell command and show its output as a
+  bordered panel (exit code in the title); `!!` also stores the combined
+  output on the app for later reference.
+- `Ctrl+P` — a fuzzy **command palette** over every command above; pick one
+  and it is inserted into the editor for confirmation.  `Ctrl+R` — fuzzy
+  **reverse search** over the input history; pick a line and it is re-entered
+  for editing.
 
 The v1 print-based REPL is unchanged and remains the default; v2 is
 opt-in via the flag above.  Voice / email / supervisor / team surfaces

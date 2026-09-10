@@ -231,6 +231,29 @@ turn *and* committed turns, losslessly (full blocks are kept and restored).
 and new content snaps back to the bottom. Built on `ChatLog.offset` — and
 only works because of the C6 KeyReader fix (PgUp/PgDn are CSI keys).
 
+**Shell prefixes** (`!cmd` / `!!cmd`): a line starting with `!` runs a local
+shell command on a worker thread (so the UI never blocks) and renders the
+output as a bordered tool panel with the exit code in the title; `!!` also
+stores the combined output on the app. `ChatApp._run_shell` /
+`_shell_worker`.
+
+**Command palette** (`Ctrl+P`, herdr's command palette): `ChatApp
+._open_palette` opens the shared picker modal (kind `"palette"`) over a
+curated list of every command; typing fuzzy-filters, `Enter` inserts the
+chosen command into the editor for confirmation. Reuses the same
+`SelectList` + `fuzzy_rank` + modal machinery as the session picker.
+
+**Reverse search** (`Ctrl+R`, herdr's search): `ChatApp._open_search` opens
+the picker (kind `"search"`) over the input history (`ChatApp._history`,
+recorded on every submit, newest first); `Enter` re-enters a line for
+editing. The `LineEditor` previously used `Ctrl+R` for redo; the app now
+intercepts it first, so `Ctrl+R` is reverse search (a deliberate trade).
+
+The picker modal was generalized with a `_modal_kind` field
+(`"session"` / `"palette"` / `"search"`) so all three share one
+`SelectList` slot, one fuzzy filter, and one key handler; `_picker_select`
+dispatches on the kind.
+
 **`ContextMixin.force_compact()`** (`core/context_manager.py`): recomputes
 the token-budget window, persists the summary cache, logs a `FORCE_COMPACT`
 context event, and returns a before/after report (rows, estimated tokens,

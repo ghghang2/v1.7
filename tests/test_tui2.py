@@ -21,6 +21,7 @@ import pytest
 from nbchat.tui2 import (
     EventQueue,
     Frame,
+    Key,
     Line,
     RawTerminal,
     Segment,
@@ -1229,3 +1230,120 @@ def test_keyreader_unknown_csi_swallowed():
     r = KeyReader()
     ks = [k.name for k in r.feed("\x1b[<0;10;5M")]
     assert ks == ["unknown"]
+
+
+# ── Wave 3: shell prefixes, command palette (Ctrl+P), reverse search ──
+
+def test_run_shell_empty_shows_usage():
+    app, *_ = _make_chat_app()
+    app._run_shell("!")
+    last = app.log.messages[-1]
+    assert last.role == "system"
+    assert "usage" in last.text
+
+
+def test_run_shell_records_user_line():
+    app, *_ = _make_chat_app()
+    app._run_shell("!echo hi")
+    assert any(m.role == "user" and m.text == "!echo hi"
+               for m in app.log.messages)
+
+
+def test_shell_worker_renders_output_and_exit():
+    app, *_ = _make_chat_app()
+    app._shell_worker("echo hi", store=False)  # synchronous, deterministic
+    blocks = [b for m in app.log.messages for b in (m.blocks or [])
+              if b.name == "shell"]
+    assert blocks, "no shell block rendered"
+    assert blocks[0].title == "exit 0"
+    assert any("hi" in line for line in blocks[0].body)
+
+
+def test_shell_worker_stores_output_on_double_bang():
+    app, *_ = _make_chat_app()
+    app._shell_worker("echo stored", store=True)
+    assert app._last_shell.strip() == "stored"
+
+
+def test_shell_worker_nonzero_exit_marks_error():
+    app, *_ = _make_chat_app()
+    app._shell_worker("exit 3", store=False)
+    blocks = [b for m in app.log.messages for b in (m.blocks or [])
+              if b.name == "shell"]
+    assert blocks[0].title == "exit 3"
+    assert blocks[0].status == "error"
+
+
+def test_submit_records_history():
+    app, *_ = _make_chat_app()
+    app._submit("/context")
+    app._submit("!ls")
+    assert "/context" in app._history
+    assert "!ls" in app._history
+
+
+# ── Ctrl+P command palette ──
+
+def test_palette_opens_and_filters():
+    app, *_ = _make_chat_app()
+    app._open_palette()
+    assert app._picker is not None
+    assert app._modal_kind == "palette"
+    n_all = len(app._picker_rows)
+    assert n_all >= 10
+    for ch in "comp":                 # type the filter one key at a time
+        app._picker_key(Key(ch))
+    assert app._picker_filter == "comp"
+    assert len(app._picker_rows) < n_all
+    app._close_picker()
+
+
+def test_palette_enter_inserts_command():
+    app, *_ = _make_chat_app()
+    app._open_palette()
+    idx = next(i for i, (_k, lab) in enumerate(app._picker_rows)
+               if lab.startswith("model"))
+    app._picker.select(idx)
+    app._picker_key(Key("enter"))
+    assert app._picker is None
+    assert app.editor.text().startswith("/context")
+
+
+def test_ctrl_p_opens_palette_from_key():
+    app, *_ = _make_chat_app()
+    assert app._picker is None
+    app._on_input(Key("ctrl+p"))
+    assert app._picker is not None
+    assert app._modal_kind == "palette"
+    app._close_picker()
+
+
+# ── Ctrl+R reverse search ──
+
+def test_search_opens_from_history_newest_first():
+    app, *_ = _make_chat_app()
+    app._history = ["alpha", "beta", "gamma"]
+    app._open_search()
+    assert app._picker is not None
+    assert app._modal_kind == "search"
+    assert app._picker_rows[0][0] == "gamma"   # newest on top
+    app._close_picker()
+
+
+def test_search_enter_inserts_text():
+    app, *_ = _make_chat_app()
+    app._history = ["hello world"]
+    app._open_search()
+    app._picker_key(Key("enter"))
+    assert app._picker is None
+    assert app.editor.text() == "hello world"
+
+
+def test_ctrl_r_opens_search_from_key():
+    app, *_ = _make_chat_app()
+    app._history = ["x"]
+    assert app._picker is None
+    app._on_input(Key("ctrl+r"))
+    assert app._picker is not None
+    assert app._modal_kind == "search"
+    app._close_picker()
