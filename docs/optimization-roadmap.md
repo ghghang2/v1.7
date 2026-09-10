@@ -221,8 +221,8 @@ compounding per unit effort. Everything after is additive on top.
 | Phase | Item | Status | Commit | Notes |
 |---|---|---|---|---|
 | 0 | Findings + roadmap doc | done | — | this file |
-| 0 | Scorecard + benchmark task-set | pending | — | |
-| 1b | Adaptive reasoning effort | pending | — | |
+| 0 | Scorecard + benchmark task-set | done | 6d02836 | `nbchat/core/scorecard.py`: read-only one-page baseline over `inference_metrics.log` + `chat_log` + `task_log` (LLM calls, P/C/T tokens, latency, tool error rates, redundancy with task_log-preferred + canonical-args fallback, stalls/truncs, peak context). 10 tests in `tests/test_scorecard.py`; suite 465 passing. Fixed 5-task benchmark defined in `bench/TASK_SET.md`. |
+| 1b | Adaptive reasoning effort | done | — | `nbchat/core/adaptive_effort.py`: pure, per-session state machine. Base effort from `config.DEFAULT_REASONING_EFFORT`; escalates one step on stall (3 identical tool-call turns) or a 2-turn error streak; de-escalates after a clean run; user-pinned `/effort` always wins. Wired into `_run_conversation_loop` via `self._turn_effort()`. 8 tests in `tests/test_adaptive_effort.py`. |
 | 1c | Parallel / batched tool calls | pending | — | |
 | 2a | Subagent distillation | pending | — | |
 | 2b | Idempotent read-tool cache | done | 803e50b | `nbchat/core/tool_executor.py`: closed allow-list classifier (ls/cat/head/tail/wc/grep/rg/diff/file/stat/tree/pwd/whoami/date/df/du/which + git reads; `sed -i` excluded); 64-entry LRU; unclassified `run_command` and all mutating tools flush it, so no stale read survives a mutation. 31 tests in `tests/test_read_cache.py`; suite 455 passing. |

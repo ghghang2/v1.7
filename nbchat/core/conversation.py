@@ -20,6 +20,7 @@ import uuid
 import nbchat.core.db as db
 import nbchat.core.config as config
 import nbchat.core.compressor as comp
+import nbchat.core.adaptive_effort as adaptive_effort
 import nbchat.core.monitoring as mon
 import nbchat.core.task_tracker as task_tracker
 import nbchat.core.refine_hook as refine_hook
@@ -375,6 +376,48 @@ class ConversationMixin:
         STALL_TURNS = config.STALL_TURNS
         _recent_call_sets: list = []
 
+        # ── Phase 1b: adaptive reasoning effort ──
+        # Auto-escalation is only applied on top of an *unpinned* session
+        # (an explicit /effort choice always wins).  Escalate on failure or
+        # stall; reset after a short run of clean turns so the premium
+        # tier is never paid forever.  State lives on the instance so the
+        # _turn_effort() method (used by _stream_response) sees it.
+        _pinned_effort = getattr(self, "reasoning_effort", None) or ""
+        self._auto_effort: str | None = None
+        self._clean_turns = 0
+
+        def _maybe_escalate(reason: str) -> None:
+            if _pinned_effort:
+                return  # user pinned the effort — never override it
+            cur = self._turn_effort()
+            nxt = adaptive_effort.next_effort(cur, reason)
+            if nxt:
+                self._auto_effort = nxt
+                self._clean_turns = 0
+                _log.info("adaptive effort: %s -> %s (%s)", cur, nxt, reason)
+                try:
+                    self._on_agent_message(
+                        f"[adaptive effort] escalating reasoning effort to {nxt} ({reason})"
+                    )
+                except Exception:
+                    pass
+
+        def _note_turn_clean() -> None:
+            self._clean_turns += 1
+            if adaptive_effort.should_reset(self._clean_turns, self._turn_effort()):
+                _log.info(
+                    "adaptive effort: %s -> %s (reset after clean turns)",
+                    self._auto_effort, self._turn_effort(),
+                )
+                try:
+                    self._on_agent_message(
+                        f"[adaptive effort] back to {self._turn_effort()} (clean turns)"
+                    )
+                except Exception:
+                    pass
+                self._auto_effort = None
+                self._clean_turns = 0
+
         for turn in range(self.MAX_TOOL_TURNS + 1):
             if self._stop_event.is_set():
                 mon.flush_session_monitor(self.session_id, db)
@@ -710,6 +753,9 @@ class ConversationMixin:
                 _tt_user_row(_task_rec)
                 messages.append({"role": "user", "content": stall_msg})
                 _recent_call_sets.clear()
+                _error_streak = 0
+                _note_turn_clean()
+                _maybe_escalate("stall")
 
             msg_for_model = {"role": "assistant", "content": content or None, "tool_calls": tool_calls}
             messages.append(msg_for_model)
@@ -757,6 +803,14 @@ class ConversationMixin:
                 # Derived from the structured tool outcome (exit code / status),
                 # not keyword matching — see db.is_tool_error.
                 error_flag = int(is_tool_error(tool_name, raw_result))
+                if error_flag:
+                    _error_streak += 1
+                    if _error_streak >= adaptive_effort.ESCALATE_AFTER_ERRORS:
+                        _maybe_escalate(f"{_error_streak} consecutive tool errors")
+                        _error_streak = 0
+                        _clean_turns = 0
+                else:
+                    _error_streak = 0
 
                 try:
                     self._status_tool_end(tool_name, bool(error_flag))
@@ -790,6 +844,10 @@ class ConversationMixin:
                 except Exception:
                     pass
                 messages.append({"role": "tool", "tool_call_id": tc["id"], "content": model_content})
+
+                # No tool errors this turn — count it toward the clean run
+                # that relaxes an auto-escalation back to the base effort.
+                _note_turn_clean()
 
                 # L1 + L2 update
                 try:
@@ -856,6 +914,19 @@ class ConversationMixin:
             "(e.g. 'continue') to have me pick up where I left off."
         )
 
+    def _turn_effort(self) -> str:
+        """Phase 1b: the reasoning effort this LLM call should use.
+
+        Resolution order: a *pinned* ``/effort`` choice always wins (the
+        user's explicit setting is never overridden); otherwise the
+        adaptive auto-escalation tier set by ``_run_conversation_loop``
+        (on stall/error); otherwise the configured session default.
+        """
+        pinned = getattr(self, "reasoning_effort", None) or ""
+        if pinned:
+            return pinned
+        return getattr(self, "_auto_effort", None) or config.DEFAULT_REASONING_EFFORT
+
     def _stream_response(self, client, messages):
         """Stream one LLM completion, firing output hooks per chunk.
 
@@ -865,7 +936,12 @@ class ConversationMixin:
         # uses it this turn and later ones.  Falls back to the configured
         # default (DEFAULT_REASONING_EFFORT) so no session silently runs at
         # the model template default (xhigh) unless /effort none is used.
-        _effort = getattr(self, "reasoning_effort", None) or config.DEFAULT_REASONING_EFFORT
+        # Phase 1b: _turn_effort() resolves the adaptive auto-escalation
+        # layer (kept on the instance by _run_conversation_loop) on top of
+        # the pinned /effort — it only kicks in when the user has not pinned
+        # /effort.  When _stream_response is called directly (unit tests) no
+        # adaptive state exists, so the pinned / configured default wins.
+        _effort = self._turn_effort()
         reasoning_accum = ""
         content_accum = ""
         tool_buffer: dict = {}
