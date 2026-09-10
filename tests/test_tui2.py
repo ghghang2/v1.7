@@ -466,7 +466,7 @@ def _make_chat_app():
     term.width, term.height = 80, 24
 
     events = EventQueue()
-    app = ChatApp(term, events)
+    app = ChatApp(term, events, resume_last=False)
 
     # Stub the agent turn so _turn_worker completes deterministically.
     replies = {"n": 0}
@@ -697,3 +697,221 @@ def test_lineeditor_multiline_and_continuation():
     ed.handle("up")
     line_no, col = ed.cursor
     assert line_no == 0
+
+
+# ── Fixes pass: regressions for the 2026-07-10 bug list ───────────────────
+
+
+def test_key_text_space_maps_to_space():
+    from nbchat.tui2 import Key
+    from nbchat.tui2.app import _key_text
+
+    # The space bar is named "space" by the KeyReader; it must still
+    # insert a space (the C4 fix — spaces used to be dropped entirely).
+    assert _key_text(Key(name="space")) == " "
+
+
+def test_typing_with_spaces_keeps_them():
+    from nbchat.tui2 import Key
+
+    app, _, _, _ = _make_chat_app()
+    for ch in "Say exactly: PING":
+        app._on_input(Key(name=ch) if ch != " " else Key(name="space"))
+    assert app.editor.text() == "Say exactly: PING"
+    app.editor.clear()
+
+
+def test_editor_placeholder_renders_with_cursor_when_empty():
+    from nbchat.tui2.editor import LineEditor
+
+    ed = LineEditor(placeholder="Type a message…", multiline=False)
+    lines = ed.render(80)
+    text = "".join(s.text for s in lines[0].segments)
+    # Focused empty editor: cursor block over the first placeholder char.
+    assert text.startswith("█")
+    assert "ype a message" in text
+
+
+def test_chatmessage_renders_blocks_and_answer_text():
+    from nbchat.tui2.chat import ChatBlock, ChatMessage
+
+    # The C1 regression: a turn with thinking/tool blocks must STILL show
+    # its final answer text below the blocks.
+    msg = ChatMessage(
+        role="assistant",
+        text="PING",
+        blocks=[
+            ChatBlock(kind="thinking", title="thinking", text="hmm"),
+            ChatBlock(kind="tool", name="run_command",
+                      title="run_command(command=echo PING)",
+                      status="done", body=["PING"]),
+        ],
+    )
+    flat = "\n".join(
+        "".join(s.text for s in ln.segments) for ln in msg.render(80))
+    assert "hmm" in flat
+    assert "run_command" in flat
+    assert "PING" in flat and "agent" in flat
+
+
+def test_chatapp_single_thinking_block_per_llm_call():
+    app, _, _, _ = _make_chat_app()
+    # Call 1: reasoning streams token by token.
+    app._on_stream_reasoning("The user")
+    app._on_stream_reasoning('The user wants "PING".')
+    assert len(app._stream_blocks) == 1, "tokens must update one block"
+    assert app._stream_blocks[0].text == 'The user wants "PING".'
+    app._on_stream_complete('The user wants "PING".')
+    # Call 2 (after a tool): a fresh block opens, chronologically.
+    app._on_tool_display("out", "run_command", '{"command": "echo PING"}')
+    app._on_stream_reasoning("It worked.")
+    thinking = [b for b in app._stream_blocks if b.kind == "thinking"]
+    assert len(thinking) == 2, "one thinking block per LLM call"
+    assert thinking[-1].text == "It worked."
+    # Chronological order: thinking, tool, thinking.
+    kinds = [b.kind for b in app._stream_blocks]
+    assert kinds == ["thinking", "tool", "thinking"]
+
+
+def test_chatapp_full_turn_frame_shows_answer_and_panels():
+    app, term, events, _ = _make_chat_app()
+    app._print_user("Say exactly: PING")
+    app._on_stream_reasoning('The user wants "PING".')
+    app._on_tool_display("PING", "run_command", '{"command": "echo PING"}')
+    app._on_stream_token("PING")
+    app._on_stream_complete("PING")
+    app._finalize_turn()
+    flat = "\n".join(
+        "".join(s.text for s in ln.segments)
+        for ln in app._build_frame().lines)
+    assert "Say exactly: PING" in flat      # spaces kept (C4)
+    assert "run_command(command=echo PING)" in flat
+    # The answer text is on its own line, below the blocks (C1).
+    lines = [l for l in flat.split("\n") if l.strip()]
+    assert any(l.strip() == "PING" for l in lines)
+
+
+def test_chatapp_live_turn_renders_mid_stream():
+    app, _, _, _ = _make_chat_app()
+    app._print_user("hi")
+    app._on_stream_reasoning("thinking hard")
+    app._on_stream_token("He")
+    flat = "\n".join(
+        "".join(s.text for s in ln.segments)
+        for ln in app._build_frame().lines)
+    # The in-flight turn is part of the frame while streaming (C3).
+    assert "thinking hard" in flat
+    assert "He" in flat
+    app._on_stream_complete("He")
+    app._finalize_turn()
+    assert app._stream_text == "" and app._stream_blocks == []
+
+
+def test_chatapp_ctrl_c_interrupts_when_busy_and_quits_when_idle():
+    from nbchat.tui2 import Key
+
+    app, _, _, _ = _make_chat_app()
+    app._tui._running = True
+    # Idle: Ctrl+C quits.
+    assert app._handle_input("\x03") is True
+    # Busy: Ctrl+C is consumed and interrupts the turn (C5).
+    app._tui._running = True
+    app._turn_active = True
+    assert app._handle_input("\x03") is None
+    assert app._stop_event.is_set()
+    app._stop_event.clear()
+    app._turn_active = False
+
+
+def test_chatapp_ctrl_d_submits_when_text_present():
+    from nbchat.tui2 import Key
+
+    app, term, events, replies = _make_chat_app()
+    for ch in "ab":
+        app._on_input(Key(name=ch))
+    app._tui._running = True
+    # Ctrl+D with text submits instead of quitting (C5).
+    assert app._handle_input("\x04") is None
+    assert app.editor.text() == ""
+    deadline = time.time() + 3
+    while replies["n"] == 0 and time.time() < deadline:
+        time.sleep(0.01)
+    assert replies["n"] == 1
+
+
+def test_chatapp_slash_new_resets_log_and_keeps_note():
+    app, _, _, _ = _make_chat_app()
+    app._print_user("old message")
+    assert len(app.log.messages) == 1
+    app._run_command("/new")
+    # Log reset for the fresh session; the command output is a note.
+    assert not any("old message" in m.text for m in app.log.messages)
+    notes = [m for m in app.log.messages if m.role == "system"]
+    assert notes and "Started new session" in notes[-1].text
+
+
+def test_chatapp_slash_quit_stops_the_loop():
+    app, _, _, _ = _make_chat_app()
+    app._tui._running = True
+    app._run_command("/quit")
+    assert app._tui._running is False
+
+
+def test_chatapp_midstream_interjection_redirects():
+    app, _, _, _ = _make_chat_app()
+
+    class _AliveThread:
+        def is_alive(self):
+            return True
+
+    app._turn_thread = _AliveThread()
+    app._turn_active = True
+    app._tui._running = True
+    # A new message while busy: interrupt + pending redirect (M3).
+    app._start_turn("first")
+    assert app._redirect == "first"
+    assert app._stop_event.is_set()
+    app._stop_event.clear()
+    # Latest interjection wins.
+    app._start_turn("newer")
+    assert app._redirect == "newer"
+    # The interrupted turn finalises: the redirect spawns a fresh worker.
+    old = app._turn_thread
+    app._finalize_turn()
+    import threading as _threading
+
+    assert isinstance(app._turn_thread, _threading.Thread)
+    assert app._turn_thread is not old
+    assert app._redirect is None
+    app._turn_thread.join(timeout=10)
+
+
+def test_chatapp_resumes_last_session_into_log():
+    from nbchat.core import db
+    from nbchat.tui2.app import ChatApp
+
+    # Seed a real session with history.
+    seed = __import__("nbchat.tui.agent", fromlist=["TerminalAgent"]) \
+        .TerminalAgent(color=False)
+    seed.remember_session(seed.session_id)
+    sid = seed.session_id
+    db.log_message(sid, "user", "hello from before")
+    db.log_message(sid, "assistant", "hi there")
+
+    out = io.StringIO()
+    term = RawTerminal(io.StringIO(""), out)
+    term._saved = None
+    term._passthrough = True
+    term.width, term.height = 80, 24
+    app = ChatApp(term, EventQueue())  # resume_last is the default
+    assert app.session_id == sid
+    flat = "\n".join(
+        "".join(s.text for s in ln.segments)
+        for ln in app._build_frame().lines)
+    assert "hello from before" in flat
+    assert "hi there" in flat
+    # --new bypasses the last session.
+    app2 = ChatApp(term, EventQueue(), resume_last=False)
+    assert app2.session_id != sid
+    assert app2.log.messages == []
+

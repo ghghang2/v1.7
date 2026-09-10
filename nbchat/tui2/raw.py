@@ -204,6 +204,11 @@ class TUIApp:
         self._running = False
         self._key_reader: Optional["KeyReader"] = None
         self.on_input = None  # type: ignore[assignment]
+        # >0: force a frame rebuild roughly every *clock_interval* seconds
+        # even with no events, so animation (spinners) advances while the
+        # model is thinking between streamed tokens.  0 disables it (the
+        # Phase 1 demo drives its own animation via render events).
+        self.clock_interval: float = 0.0
 
     def set_frame_provider(self, fn) -> None:
         self._build_frame = fn
@@ -223,26 +228,37 @@ class TUIApp:
     def start(self) -> None:
         self._running = True
         try:
+            import time as _time
+
             self._render_first()
             import select
 
+            _clock_due = 0.0
             while self._running:
                 try:
                     r, _, _ = select.select([self.term.stdin], [], [], 0.1)
                 except (OSError, ValueError):
                     # Non-selectable stream (tests, pipes): read directly.
                     r = True
+                if self.clock_interval > 0 and _time.monotonic() >= _clock_due:
+                    # Heartbeat tick: advance spinners even with no input or
+                    # events pending.
+                    _clock_due = _time.monotonic() + self.clock_interval
+                    self._render_first(force=True)
                 if r:
                     data = self._read_input()
                     if not data:
                         break
-                    if self._handle_input(data):
+                    action = self._handle_input(data)
+                    if action is True:
                         break
-                    # Dispatch every key in this chunk to the app handler
-                    # (KeyReader feed); otherwise no key ever reaches on_input.
-                    self.handle_input_events(data)
-                    # Keystrokes (or paste) may change UI state: force a
-                    # rebuild and diff of the screen.
+                    # A ``None`` result means the app consumed the chunk
+                    # itself (e.g. an interrupt or a Ctrl+D submit) — refresh
+                    # the screen but do NOT re-dispatch the raw bytes as keys.
+                    # ``False`` is the classic contract: dispatch every key in
+                    # the chunk to the app handler (KeyReader feed).
+                    if action is False:
+                        self.handle_input_events(data)
                     self._render_first(force=True)
                 # Coalesce: collapse N "render" events drained in this
                 # tick into a single rebuild (streaming tokens fire
@@ -286,8 +302,14 @@ class TUIApp:
     def stop(self) -> None:
         self._running = False
 
-    def _handle_input(self, data: str) -> bool:
-        """Return True when the input requests an exit."""
+    def _handle_input(self, data: str) -> "bool | None":
+        """Decide how a raw input chunk is handled before key parsing.
+
+        Returns ``True`` when the chunk requests an exit, ``None`` when the
+        app has consumed the chunk itself (the loop must not re-dispatch it
+        as keys), or ``False`` to dispatch the chunk to the key reader (the
+        default behaviour; preserves the Phase 1 demo's contract).
+        """
         if data in ("\x03", "\x04"):  # Ctrl+C / Ctrl+D
             return True
         return False

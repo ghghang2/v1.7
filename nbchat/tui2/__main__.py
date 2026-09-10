@@ -6,11 +6,21 @@ Phase 1 rendering demo instead.
 import sys
 
 
+def run() -> int:
+    # ``--v2`` is the v1 entry point's flag for this engine; drop it so the
+    # app's own parser only sees the flags it knows (``--new``,
+    # ``--session``).
+    argv = [a for a in sys.argv[1:] if a != "--v2"]
+    if "--demo" in argv:
+        from .demo import run as demo_run
+
+        return demo_run()
+    from .app import run as app_run
+
+    return app_run(argv)
+
+
 def _main() -> int:
-    if "--demo" in sys.argv[1:]:
-        from .demo import run
-        return run()
-    from .app import run
     return run()
 
 

@@ -99,6 +99,10 @@ class Message:
         if self.role == "user":
             self._accent = DARK.accent
             self._label = USER_GLYPH + " you"
+        elif self.role == "system":
+            # Command output / notes: dimmed, no markdown.
+            self._accent = DARK.muted
+            self._label = "\u2139 note"
         else:
             self._accent = DARK.accent
             self._label = ASSISTANT_GLYPH + " agent"
@@ -109,6 +113,9 @@ class Message:
         out.append(_fit_row([Segment(label, self._accent)], width))
         indent = 2
         if self.role == "user":
+            body = markdown.wrap_segments(
+                [Segment(self.text, self._accent)], width - indent)
+        elif self.role == "system":
             body = markdown.wrap_segments(
                 [Segment(self.text, self._accent)], width - indent)
         else:
@@ -307,7 +314,10 @@ class ChatMessage:
                         b.text, collapsed=False,
                         title=b.title or "thinking",
                     ).render(width))
-        elif self.text:
+        if self.text:
+            # The final answer text renders *below* the thinking/tool
+            # blocks, never instead of them: a turn with tool calls must
+            # still show its reply.
             out.extend(Message(self.role, self.text).render(width))
         if len(self._cache) > 4:
             self._cache.clear()
