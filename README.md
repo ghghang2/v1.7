@@ -148,6 +148,15 @@ shell command (`!ls`); `!!` also stores the output for later.
 - `/memory` — the L1 core memory block plus L2 episodic stats.
 - `/btw <question>` — a throwaway side question on an isolated agent so
   the current session/history is not touched.
+- `/approve [on|off|add <t>|rm <t>|list]` — a herdr-style tool-approval
+  gate: risky tools (shell / push / email by default) show a confirm
+  prompt (`y` approve, `n`/`Esc` decline) before they run.
+- `/goal <objective>` — a running goal (prime-agent style): after each
+  turn the app auto-continues toward the objective until the turn budget
+  is exhausted, the model replies with `GOAL COMPLETE`, or you run
+  `/goal stop`.  `/goal` for status · `/goal stop` · `/goal clear` ·
+  `/goal budget <n>`.  A `goal K/N` pill tracks progress on the status
+  line.
 - `/name <title>` — alias for v1's `/title`.
 - Bare `/load` (no id) opens the **session picker**: type to fuzzy-filter,
   `↑/↓` move, `Enter` loads, `Esc`/`Ctrl+C` cancel.

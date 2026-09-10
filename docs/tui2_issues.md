@@ -261,6 +261,28 @@ budget). **`refine_hook.schedule_manual_refine()`** (`core/refine_hook.py`):
 bypasses the automatic predicate, still honors the `REFINE_HOOK_ENABLED`
 kill switch, runs a background round, and reports via `_on_agent_message`.
 
+**Tool-approval gate** (`/approve`, herdr's interactive tool approval):
+`ChatApp._install_approval_gate` wraps the module-level
+`tool_executor.run_tool` — the exact seam `team.py`'s `ToolArbiter` uses —
+so risky tool calls (`run_command`, `push_to_github`, `send_email` by
+default) show a confirm modal before executing. The worker thread parks on a
+`threading.Event` while the UI renders the prompt; `y`/`Enter` approve,
+`n`/`Esc`/`Ctrl+C` decline (a declined tool gets an actionable
+"DECLINED" result so the model stops retrying). A 5-minute safety timeout
+auto-declines so a parked turn can never wedge. The gate is installed in
+`run()` and removed (restoring the true original) on exit; `/approve
+on|off|add <t>|rm <t>|list` configures it at runtime.
+
+**`/goal`** (prime-agent's flagship): a running objective the app keeps
+auto-continuing toward. `/goal <objective>` sets the goal and starts the
+first turn; after each turn `_finalize_turn` chains the next turn (same
+re-entrancy as the mid-stream redirect) until the turn budget is exhausted,
+the model replies with a completion phrase (`GOAL COMPLETE`, configurable
+via `ChatApp._goal_done_markers`), or the user runs `/goal stop`.
+`/goal` shows status, `/goal clear` clears it, `/goal budget <n>` sets the
+default auto-turn budget (20). A `goal K/N` pill tracks progress on the
+status line.
+
 ---
 
 ## Not addressed (out of scope for this pass, tracked in the port tracker)

@@ -1347,3 +1347,153 @@ def test_ctrl_r_opens_search_from_key():
     assert app._picker is not None
     assert app._modal_kind == "search"
     app._close_picker()
+
+
+# ── Tool-approval gate ─────────────────────────────────────────────
+
+
+def test_approval_gate_wraps_run_tool():
+    import nbchat.core.tool_executor as te
+    app, *_ = _make_chat_app()
+    real = te.run_tool
+    calls = []
+
+    def stub(name, args, timeout=None):
+        calls.append(name)
+        return "STUB_RAN"
+
+    try:
+        te.run_tool = stub
+        app._approval_enabled = True
+        app._risky_tools = {"run_command"}
+        app._install_approval_gate()
+        assert te.run_tool is not stub
+        app._prompt_approval = lambda tool, args: True
+        assert te.run_tool("run_command", "{}") == "STUB_RAN"
+        assert calls == ["run_command"]
+        app._prompt_approval = lambda tool, args: False
+        res = te.run_tool("run_command", "{}")
+        assert "DECLINED" in res
+        assert calls == ["run_command"]  # declined -> stub not called
+        # Non-risky tool: no prompt.
+        def _boom(tool, args):
+            raise AssertionError("should not prompt")
+        app._prompt_approval = _boom
+        assert te.run_tool("get_weather", "{}") == "STUB_RAN"
+        assert calls == ["run_command", "get_weather"]
+        # Disabled: risky tools not prompted.
+        app._approval_enabled = False
+        assert te.run_tool("run_command", "{}") == "STUB_RAN"
+        assert calls == ["run_command", "get_weather", "run_command"]
+    finally:
+        app._remove_approval_gate()
+        te.run_tool = real
+
+
+def test_approval_gate_restores_and_unblocks():
+    import nbchat.core.tool_executor as te
+    app, *_ = _make_chat_app()
+    real = te.run_tool
+    try:
+        app._install_approval_gate()
+        assert te.run_tool is not real
+        app._remove_approval_gate()
+        assert te.run_tool is real
+        # Removal unblocks a parked approval prompt.
+        ev = threading.Event()
+        app._approval = {"tool": "run_command", "args": "x",
+                         "event": ev, "result": False}
+        app._remove_approval_gate()
+        assert ev.is_set() and app._approval is None
+    finally:
+        te.run_tool = real
+
+
+def test_approval_modal_renders_and_keys():
+    app, term, events, _ = _make_chat_app()
+    ev = threading.Event()
+    app._approval = {"tool": "run_command", "args": "git push",
+                     "event": ev, "result": False}
+    frame = app._build_frame()
+    flat = "\n".join(
+        "".join(s.text for s in ln.segments) for ln in frame.lines)
+    assert "approve tool" in flat and "run_command" in flat
+    app._on_input(Key("y"))
+    assert ev.is_set() and app._approval["result"] is True
+    ev2 = threading.Event()
+    app._approval = {"tool": "push_to_github", "args": "x",
+                     "event": ev2, "result": True}
+    app._on_input(Key("n"))
+    assert ev2.is_set() and app._approval["result"] is False
+
+
+def test_cmd_approve():
+    app, *_ = _make_chat_app()
+    assert "ON" in app._cmd_approve("")
+    assert "OFF" in app._cmd_approve("off")
+    assert app._approval_enabled is False
+    assert "ON" in app._cmd_approve("on")
+    out = app._cmd_approve("add create_file")
+    assert "create_file" in out and "create_file" in app._risky_tools
+    app._cmd_approve("rm create_file")
+    assert "create_file" not in app._risky_tools
+
+
+# ── /goal ──────────────────────────────────────────────────────────
+
+
+def test_goal_next_prompt_budget():
+    app, *_ = _make_chat_app()
+    assert app._goal_next_prompt() is None
+    app._goal = {"objective": "ship it", "remaining": 3, "budget": 3,
+                 "done": 0, "stopped": False}
+    p1 = app._goal_next_prompt()
+    assert p1 and "ship it" in p1 and "1/3" in p1
+    p2 = app._goal_next_prompt()
+    assert p2 and "2/3" in p2
+    p3 = app._goal_next_prompt()
+    assert p3 and "3/3" in p3
+    p4 = app._goal_next_prompt()
+    assert p4 is None and app._goal["stopped"] is True
+
+
+def test_goal_declared_done():
+    app, *_ = _make_chat_app()
+    assert app._goal_declared_done("All done. GOAL COMPLETE. Shipped.")
+    assert not app._goal_declared_done("still working")
+    assert not app._goal_declared_done("")
+
+
+def test_goal_finalize_continues_then_stops():
+    app, term, events, _ = _make_chat_app()
+    started = []
+    app._start_turn = lambda text: started.append(text)
+    app._tui._running = True
+    app._goal = {"objective": "ship it", "remaining": 5, "budget": 5,
+                 "done": 0, "stopped": False}
+    app._stream_text = "working on it"
+    app._stream_blocks = []
+    app._finalize_turn()
+    assert len(started) == 1
+    assert "ship it" in started[0] and "1/5" in started[0]
+    assert app._goal["done"] == 1 and app._goal["remaining"] == 4
+    started.clear()
+    app._stream_text = "All done. GOAL COMPLETE. Shipped."
+    app._finalize_turn()
+    assert started == [] and app._goal["stopped"] is True
+
+
+def test_cmd_goal_commands():
+    app, *_ = _make_chat_app()
+    started = []
+    app._start_turn = lambda text: started.append(text)
+    assert "no active goal" in app._cmd_goal("")
+    assert "budget set to 5" in app._cmd_goal("budget 5")
+    out = app._cmd_goal("do the thing")
+    assert app._goal is not None
+    assert app._goal["objective"] == "do the thing"
+    assert started and "do the thing" in started[0]
+    assert "running" in app._cmd_goal("")
+    assert "stopping" in app._cmd_goal("stop")
+    assert "cleared" in app._cmd_goal("clear")
+    assert app._goal is None

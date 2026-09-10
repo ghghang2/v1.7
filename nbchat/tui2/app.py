@@ -128,6 +128,27 @@ class ChatApp(TerminalAgent):
         # Input history for Ctrl+R reverse search (turns + commands).
         self._history: list = []
 
+        # Tool-approval gate (herdr-style safety): risky tool calls prompt
+        # the user before running.  The gate wraps the module-level
+        # ``tool_executor.run_tool`` (the same seam ``team.py``'s
+        # ToolArbiter uses) and is installed/removed in ``run()``.
+        self._approval_enabled = True
+        # External-effect / mutating tools that must be confirmed.
+        self._risky_tools = {"run_command", "push_to_github", "send_email"}
+        self._approval = None              # pending approval modal state
+        self._approval_orig = None         # original run_tool (for restore)
+
+        # /goal — a running objective the app keeps auto-continuing toward
+        # (prime-agent style): after each turn it chains the next turn until
+        # the turn budget is exhausted, the model declares completion, or the
+        # user runs ``/goal stop``.
+        self._goal = None
+        self._goal_budget = 20  # default auto-continue turn budget
+        # Phrases the model can emit to mark the goal achieved.
+        self._goal_done_markers = ("goal complete", "goal: complete",
+                                   "goal achieved", "[goal done]",
+                                   "goal accomplished")
+
         # Turn worker bookkeeping.
         self._turn_thread: threading.Thread | None = None
 
@@ -317,6 +338,38 @@ class ChatApp(TerminalAgent):
         finally:
             self._finalize_turn()
 
+    def _goal_next_prompt(self):
+        """Return the next auto-continue prompt, or ``None`` to stop.
+
+        Called at the end of each turn (worker thread).  Advances the goal
+        bookkeeping and returns a prompt when another auto-continue turn
+        should run, else ``None`` (budget exhausted / stopped / completed).
+        """
+        g = self._goal
+        if g is None or g.get("stopped"):
+            return None
+        if g["remaining"] <= 0:
+            g["stopped"] = True
+            self._note(f"goal: turn budget exhausted "
+                       f"({g['budget']} auto-turns) — stopping")
+            return None
+        g["remaining"] -= 1
+        g["done"] += 1
+        progress = "(goal turn %d/%d)" % (g["done"], g["budget"])
+        prompt = ("Keep working toward this goal: " + g["objective"]
+                  + "\n" + progress + "\n"
+                  + "If the goal is now fully achieved, reply with the exact "
+                  + "line 'GOAL COMPLETE' plus a one-line summary; otherwise "
+                  + "continue and do not stop early.")
+        return prompt
+
+    def _goal_declared_done(self, text: str) -> bool:
+        """True when the model's reply marks the goal achieved."""
+        if not text:
+            return False
+        low = text.lower()
+        return any(m in low for m in self._goal_done_markers)
+
     def _finalize_turn(self) -> None:
         self._close_thinking()
         self.log.offset = 0  # a new reply lands: snap back to the bottom
@@ -354,6 +407,22 @@ class ChatApp(TerminalAgent):
             self._turn_thread = None
             if self._tui._running:
                 self._start_turn(redirect)
+            return
+        # Goal auto-continue (only when the user has not redirected this
+        # turn).  The model can mark the goal achieved with a completion
+        # phrase; otherwise chain the next turn until the budget runs out.
+        goal = self._goal
+        if goal is not None and not goal.get("stopped"):
+            if self._goal_declared_done(msg.text):
+                goal["stopped"] = True
+                self._note("goal: model reported it complete — stopping "
+                           "auto-continue")
+            else:
+                nxt = self._goal_next_prompt()
+                if nxt is not None:
+                    self._turn_thread = None
+                    if self._tui._running:
+                        self._start_turn(nxt)
 
     def _interrupt(self) -> None:
         if self.busy:
@@ -375,6 +444,12 @@ class ChatApp(TerminalAgent):
         the byte (``None``) instead of letting it reach the key reader.
         """
         if data == "\x03":  # Ctrl+C
+            if self._approval is not None:
+                # Decline the pending tool (unblocks the parked worker)
+                # rather than trying to interrupt a thread that is blocked
+                # on the approval prompt.
+                self._approval_answer(False)
+                return None
             if self._picker is not None:
                 self._close_picker()
                 return None
@@ -395,6 +470,13 @@ class ChatApp(TerminalAgent):
         return False
 
     def _on_input(self, key: Key) -> None:
+        # A tool-approval prompt captures keys while it is pending.
+        if self._approval is not None:
+            if key.name in ("enter", "y"):
+                self._approval_answer(True)
+            elif key.name in ("n", "escape", "esc"):
+                self._approval_answer(False)
+            return
         # The session-picker modal captures all keys while it is open.
         if self._picker is not None:
             self._picker_key(key)
@@ -517,11 +599,105 @@ class ChatApp(TerminalAgent):
             f"shell exit {code}" + (" · output stored (!!)" if store else ""))
         self._ui_refresh()
 
+    # ── Tool-approval gate (herdr-style safety) ─────────────────────────
+
+    def _install_approval_gate(self) -> None:
+        """Wrap ``tool_executor.run_tool`` so risky tools prompt first.
+
+        Reuses the exact seam ``team.py``'s ToolArbiter uses (a module-level
+        wrapper that is idempotent and restores the true original).  Runs
+        on the turn worker thread when a tool is about to execute.
+        """
+        if self._approval_orig is not None:
+            return  # already installed
+        import nbchat.core.tool_executor as te
+        current = te.run_tool
+        if (getattr(current, "__qualname__", "")
+                == "ChatApp._gated" and getattr(current, "_gate_orig", None)):
+            # A prior (crashed) app left its wrapper; reuse its original.
+            self._approval_orig = current._gate_orig
+        else:
+            self._approval_orig = current
+        orig = self._approval_orig
+        app = self
+
+        def _gated(tool_name: str, args_json: str,
+                   timeout: int | None = None) -> str:
+            if app._approval_enabled and tool_name in app._risky_tools:
+                if not app._prompt_approval(tool_name, args_json):
+                    return (f"User DECLINED to run '{tool_name}'. Do not "
+                            "retry it. If the task cannot proceed without "
+                            "it, stop and report that the action was "
+                            "declined.")
+            return orig(tool_name, args_json, timeout=timeout)
+
+        _gated.__name__ = "run_tool"
+        _gated.__qualname__ = "ChatApp._gated"
+        _gated._gate_orig = orig
+        te.run_tool = _gated
+
+    def _remove_approval_gate(self) -> None:
+        """Restore the original ``run_tool`` and unblock any pending ask."""
+        # Unblock a worker parked on an approval (e.g. the user quit).
+        pend = self._approval
+        if pend is not None:
+            pend["result"] = False
+            try:
+                pend["event"].set()
+            except Exception:
+                pass
+            self._approval = None
+        if self._approval_orig is None:
+            return
+        import nbchat.core.tool_executor as te
+        if getattr(te.run_tool, "__qualname__", "") == "ChatApp._gated":
+            te.run_tool = self._approval_orig
+        self._approval_orig = None
+
+    def _prompt_approval(self, tool: str, args_json: str) -> bool:
+        """Show the approval modal and block until the user answers.
+
+        Called from the turn worker thread.  Returns ``True`` to allow the
+        tool, ``False`` to decline.  Auto-declines after a 5-minute safety
+        timeout so a parked turn can never wedge forever.
+        """
+        import json as _json
+        try:
+            args_brief = _json.dumps(_json.loads(args_json),
+                                     ensure_ascii=False)
+            if len(args_brief) > 160:
+                args_brief = args_brief[:157] + "…"
+        except Exception:
+            args_brief = str(args_json)[:160]
+        ev = threading.Event()
+        self._approval = {"tool": tool, "args": args_brief,
+                          "event": ev, "result": False}
+        self._status_set("running", f"approval: {tool}")
+        self._ui_refresh()
+        ev.wait(timeout=300)  # 5-minute safety timeout -> auto-deny
+        result = self._approval["result"] if self._approval else False
+        self._approval = None
+        self._status_set("ready", f"{tool}: {'approved' if result else 'declined'}")
+        self._ui_refresh()
+        return result
+
+    def _approval_answer(self, allow: bool) -> None:
+        """Called from the UI thread when the user answers the prompt."""
+        pend = self._approval
+        if pend is None:
+            return
+        pend["result"] = allow
+        try:
+            pend["event"].set()
+        except Exception:
+            pass
+
     # tui2-native slash commands: handled inside the TUI (they need the
     # live frame / clipboard / side-turn state) rather than delegated to the
     # v1 print REPL.  Everything else falls through to v1 ``handle_command``.
     _TUI2_NATIVE = ("/context", "/hotkeys", "/copy", "/compact",
-                    "/refine", "/lessons", "/memory", "/btw")
+                    "/refine", "/lessons", "/memory", "/btw", "/approve",
+                    "/goal")
 
     def _run_command(self, line: str) -> None:
         """Route a slash command.
@@ -576,6 +752,8 @@ class ChatApp(TerminalAgent):
             "/lessons": self._cmd_lessons,
             "/memory": self._cmd_memory,
             "/btw": self._cmd_btw,
+            "/approve": self._cmd_approve,
+            "/goal": self._cmd_goal,
         }
         fn = handlers.get(cmd)
         try:
@@ -669,6 +847,88 @@ class ChatApp(TerminalAgent):
         t = threading.Thread(target=self._btw_worker, args=(arg,),
                              name="btw-side", daemon=True)
         t.start()
+
+    def _cmd_approve(self, arg: str) -> str:
+        """Manage the tool-approval gate.
+
+        ``/approve`` — status.  ``/approve on|off`` — toggle.
+        ``/approve add <tool>`` / ``/approve rm <tool>`` — adjust the
+        set of tools that require confirmation.
+        """
+        import nbchat.tools as _tools
+        known = sorted(t.name for t in _tools.TOOLS)
+        a = arg.split(None, 1)
+        sub = a[0].lower() if a else ""
+        rest = a[1].strip() if len(a) > 1 else ""
+        if sub in ("on", "enable"):
+            self._approval_enabled = True
+            return "tool approval ON — risky tools will prompt"
+        if sub in ("off", "disable"):
+            self._approval_enabled = False
+            return "tool approval OFF — tools run without prompting"
+        if sub == "add" and rest:
+            self._risky_tools.add(rest)
+            return f"approval now required for: {sorted(self._risky_tools)}"
+        if sub in ("rm", "remove") and rest:
+            self._risky_tools.discard(rest)
+            return f"approval no longer required for: {rest}; " \
+                   f"risky = {sorted(self._risky_tools)}"
+        if sub == "list":
+            return (f"risky tools: {sorted(self._risky_tools)}\n"
+                    f"all tools: {known}")
+        # Default: show status.
+        state = "ON" if self._approval_enabled else "OFF"
+        return (f"tool approval {state} · prompts before: "
+                f"{sorted(self._risky_tools)}")
+
+    def _goal_first_prompt(self, objective: str) -> str:
+        return ("Work toward this goal: " + objective
+                + "\nWhen the goal is fully achieved, reply with the exact "
+                  "line 'GOAL COMPLETE' plus a one-line summary.")
+
+    def _cmd_goal(self, arg: str) -> str:
+        """Manage the running /goal objective.
+
+        ``/goal`` — status.  ``/goal <objective>`` — start a goal.
+        ``/goal stop`` — stop auto-continue (current turn finishes).
+        ``/goal clear`` — clear the goal entirely.
+        ``/goal budget <n>`` — set the auto-continue turn budget.
+        """
+        a = arg.split(None, 1)
+        sub = a[0].lower() if a else ""
+        rest = a[1].strip() if len(a) > 1 else ""
+        g = self._goal
+        if sub == "stop" and g is not None:
+            g["stopped"] = True
+            return "goal: stopping auto-continue (current turn finishes)"
+        if sub in ("stop", "clear"):
+            self._goal = None
+            return "goal: cleared"
+        if sub == "budget":
+            if not rest.isdigit() or int(rest) < 1:
+                return "usage: /goal budget <n>"
+            self._goal_budget = int(rest)
+            return f"goal turn budget set to {self._goal_budget}"
+        if not arg:
+            if g is None:
+                return ("no active goal · /goal <objective> to start "
+                        f"(default {self._goal_budget}-turn budget)")
+            state = "running" if not g.get("stopped") else "stopped"
+            return (f"goal ({state}): {g['objective']}\n"
+                    f"auto-turns: {g['done']}/{g['budget']}\n"
+                    "/goal stop · /goal clear · /goal budget <n>")
+        # /goal <objective> — start a new goal.
+        objective = arg
+        self._goal = {"objective": objective,
+                      "remaining": self._goal_budget,
+                      "budget": self._goal_budget, "done": 0,
+                      "stopped": False}
+        if self.busy:
+            return (f"goal set: {objective}\n"
+                    "(a turn is in flight — auto-continue starts after it "
+                    "finishes)")
+        self._start_turn(self._goal_first_prompt(objective))
+        return f"goal started: {objective} (budget {self._goal_budget})"
 
     def _btw_worker(self, arg: str) -> None:
         try:
@@ -1011,14 +1271,22 @@ class ChatApp(TerminalAgent):
                 pass
         if self._tok_times:
             parts.append(f"{len(self._tok_times):.1f} tok/s")
+        g = self._goal
+        if g is not None:
+            tag = ("goal" if not g.get("stopped") else "goal·done")
+            parts.append(f"{tag} {g['done']}/{g['budget']}")
         return "  ".join(parts)
 
     def _build_frame(self) -> Frame:
         w, h = self.term.width, self.term.height
         header_h = 1
-        # Bottom area: the 3-row message editor, or the session-picker modal
-        # while it is open (its rendered height, capped to the terminal).
-        if self._picker is not None:
+        # Bottom area: the 3-row message editor, the tool-approval prompt,
+        # or the session-picker modal while it is open (its rendered
+        # height, capped to the terminal).
+        if self._approval is not None:
+            picker_rows = []
+            bottom_h = 5
+        elif self._picker is not None:
             picker_rows = self._picker.render(w)
             bottom_h = min(len(picker_rows), max(5, h - 6))
         else:
@@ -1047,7 +1315,9 @@ class ChatApp(TerminalAgent):
                        else (self._status_detail or "ready"))
         status_right = self._status_right()
 
-        if self._picker is not None:
+        if self._approval is not None:
+            rows.extend(self._approval_lines(w))
+        elif self._picker is not None:
             shown = picker_rows
             if len(shown) > bottom_h:
                 shown = shown[:bottom_h - 1] + [shown[-1]]
@@ -1063,6 +1333,19 @@ class ChatApp(TerminalAgent):
             right=status_right,
         ).render(w)[0])
         return Frame(lines=rows[:h], width=w, height=h)
+
+    def _approval_lines(self, w: int):
+        """Render the pending tool-approval prompt (3 inner rows)."""
+        a = self._approval
+        tool = (a or {}).get("tool", "?")
+        args = (a or {}).get("args", "")
+        inner = w - 4
+        lines: List[Line] = []
+        lines.extend(_to_lines("\u25b8 " + tool, inner))
+        lines.extend(_to_lines(args if args else "(no args)", inner))
+        lines.extend(_to_lines("y approve  ·  n / esc decline", inner))
+        lines = lines[:3]  # keep the prompt to 3 inner rows
+        return Box(title="approve tool", lines=lines, clip=True).render(w)
 
     def _editor_lines(self):
         return self.editor.render(width=self.term.width - 4) \
@@ -1088,10 +1371,12 @@ class ChatApp(TerminalAgent):
             stderr_file = None
         try:
             with self.term:
+                self._install_approval_gate()
                 self._tui.start()
         except KeyboardInterrupt:
             pass
         finally:
+            self._remove_approval_gate()
             sys.stderr = saved_stderr
             if stderr_file is not None:
                 try:
