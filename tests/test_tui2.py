@@ -30,6 +30,7 @@ from nbchat.tui2 import (
     diff_frames,
     render_frame,
 )
+from nbchat.tui2.notify import NotifyStack
 
 CYAN = Style(fg=36)
 BOLD = Style(bold=True)
@@ -1497,3 +1498,79 @@ def test_cmd_goal_commands():
     assert "stopping" in app._cmd_goal("stop")
     assert "cleared" in app._cmd_goal("clear")
     assert app._goal is None
+
+
+# ── Notification stack (herdr-style toasts + BEL) ─────────────────────
+
+def test_notify_stack_push_prune_render():
+    n = NotifyStack(max_age=0.05)
+    assert n.active == []
+    n.push("hello", "body", "ok", write=None)
+    assert len(n.active) == 1
+    assert n.active[0].kind == "ok"
+    lines = n.render_one(80)
+    assert len(lines) >= 2  # border rows at minimum
+    time.sleep(0.06)
+    n.prune()
+    assert n.active == []
+
+
+def test_notify_max_visible_cap():
+    n = NotifyStack(max_visible=2)
+    for title in ("a", "b", "c"):
+        n.push(title, "", "info", write=None)
+    assert len(n.active) == 2
+    assert [t.title for t in n.active] == ["b", "c"]
+
+
+def test_notify_frame_renders_toast():
+    app, term, events, _ = _make_chat_app()
+    app._notify.push("turn complete", "", "ok", write=None)
+    frame = app._build_frame()
+    text = "\n".join(
+        "".join(s.text for s in ln.segments) for ln in frame.lines)
+    assert "turn complete" in text
+    assert len(frame.lines) == term.height  # frame height preserved
+
+
+def test_notify_toasts_disabled_hides_card():
+    app, term, events, _ = _make_chat_app()
+    app._notify.toasts = False
+    app._notify.push("hidden", "", "ok", write=None)
+    frame = app._build_frame()
+    text = "\n".join(
+        "".join(s.text for s in ln.segments) for ln in frame.lines)
+    assert "hidden" not in text
+
+
+def test_cmd_notify():
+    app, *_ = _make_chat_app()
+    assert "toasts: True" in app._cmd_notify("")
+    assert "toasts: False" in app._cmd_notify("toasts off")
+    assert "toasts: True" in app._cmd_notify("toasts on")
+    assert "bel: False" in app._cmd_notify("bel off")
+    app._cmd_notify("test warn")
+    assert any(t.kind == "warn" for t in app._notify.active)
+    assert "usage" in app._cmd_notify("bogus")
+
+
+def test_approval_always_removes_risky():
+    app, *_ = _make_chat_app()
+    import threading
+    ev = threading.Event()
+    app._approval = {"tool": "run_command", "args": "{}",
+                     "event": ev, "result": False}
+    app._risky_tools = {"run_command", "push_to_github"}
+    app._on_input(Key("a"))
+    assert ev.is_set()
+    assert app._approval["result"] is True
+    assert "run_command" not in app._risky_tools
+    assert "push_to_github" in app._risky_tools
+
+
+def test_help_addendum_lists_tui2_extras():
+    app, *_ = _make_chat_app()
+    add = app._tui2_help_addendum()
+    assert "TUI v2 extras" in add
+    for tok in ("/goal", "/notify", "/approve", "/compact", "Ctrl+P"):
+        assert tok in add

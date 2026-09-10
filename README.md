@@ -150,7 +150,13 @@ shell command (`!ls`); `!!` also stores the output for later.
   the current session/history is not touched.
 - `/approve [on|off|add <t>|rm <t>|list]` — a herdr-style tool-approval
   gate: risky tools (shell / push / email by default) show a confirm
-  prompt (`y` approve, `n`/`Esc` decline) before they run.
+  prompt (`y` approve, `n`/`Esc` decline, `a` **always** — approve now and
+  stop prompting for that tool this session) before they run.
+- `/notify [toasts|bel|sound on|off]` — the in-TUI notification stack:
+  transient toast cards (above the input box) plus a terminal `BEL` and an
+  optional `.wav` (set `NBCHAT_SOUND_DIR`, kill switch `NBCHAT_NO_SOUND=1`).
+  Fires on turn-complete (quiet), a pending approval, and a failed shell
+  command.  `/notify test [kind]` fires a sample.
 - `/goal <objective>` — a running goal (prime-agent style): after each
   turn the app auto-continues toward the objective until the turn budget
   is exhausted, the model replies with `GOAL COMPLETE`, or you run

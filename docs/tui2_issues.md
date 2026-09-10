@@ -283,6 +283,22 @@ via `ChatApp._goal_done_markers`), or the user runs `/goal stop`.
 default auto-turn budget (20). A `goal K/N` pill tracks progress on the
 status line.
 
+**Notification stack** (`/notify`, herdr's attention system): a new
+`nbchat/tui2/notify.py` `NotifyStack` holds a bounded queue of transient
+*toasts*. Each toast renders as a small bordered card (coloured by kind:
+ok/warn/error) just above the input box for ~5 s; auto-dismiss is
+timestamp-based and checked in the per-frame pass (no timers or threads).
+Side channels are best-effort and dependency-free: a terminal `BEL`
+(`\a`) always works, and a `.wav` plays on a daemon thread only when
+`NBCHAT_SOUND_DIR` is set and `aplay`/`afplay` exists (kill switch
+`NBCHAT_NO_SOUND=1`). Events wired: **turn-complete** (a quiet "done"
+card — no BEL/sound, matching herdr's suppression of the focused pane),
+**approval pending** (a warn card + forced BEL), and **shell failure**
+(an error card + forced BEL). `/notify toasts|bel|sound on|off` toggles
+the channels; `/notify test [kind]` fires a sample. `/help` now appends a
+"TUI v2 extras" addendum listing the tui2-native commands, and `/hotkeys`
+covers the new bindings.
+
 ---
 
 ## Not addressed (out of scope for this pass, tracked in the port tracker)

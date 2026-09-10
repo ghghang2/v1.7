@@ -40,6 +40,7 @@ from .theme import DARK
 from .keys import Key
 from .keys import KeyReader
 from .raw import EventQueue, RawTerminal, TUIApp
+from .notify import NotifyStack
 from nbchat.tui.agent import TerminalAgent
 
 # <tool_call> blocks leak through the stream when the model emits them as
@@ -142,6 +143,9 @@ class ChatApp(TerminalAgent):
         # (prime-agent style): after each turn it chains the next turn until
         # the turn budget is exhausted, the model declares completion, or the
         # user runs ``/goal stop``.
+        # In-TUI notification stack (toasts + BEL + optional sound).
+        self._notify = NotifyStack()
+
         self._goal = None
         self._goal_budget = 20  # default auto-continue turn budget
         # Phrases the model can emit to mark the goal achieved.
@@ -403,18 +407,18 @@ class ChatApp(TerminalAgent):
         # _start_turn would otherwise take the busy branch again.
         redirect = self._redirect
         self._redirect = None
+        chained = False
         if redirect:
             self._turn_thread = None
             if self._tui._running:
                 self._start_turn(redirect)
-            return
-        # Goal auto-continue (only when the user has not redirected this
-        # turn).  The model can mark the goal achieved with a completion
-        # phrase; otherwise chain the next turn until the budget runs out.
-        goal = self._goal
-        if goal is not None and not goal.get("stopped"):
+                chained = True
+        elif self._goal is not None and not self._goal.get("stopped"):
+            # Goal auto-continue (only when the user has not redirected this
+            # turn).  The model can mark the goal achieved with a completion
+            # phrase; otherwise chain the next turn until the budget runs out.
             if self._goal_declared_done(msg.text):
-                goal["stopped"] = True
+                self._goal["stopped"] = True
                 self._note("goal: model reported it complete — stopping "
                            "auto-continue")
             else:
@@ -423,6 +427,15 @@ class ChatApp(TerminalAgent):
                     self._turn_thread = None
                     if self._tui._running:
                         self._start_turn(nxt)
+                        chained = True
+        # Turn-complete toast — only when the turn actually ended (no
+        # redirect / goal continue).  Quiet by default: the focused chat's
+        # own turn fires no BEL/sound (herdr suppresses the active pane);
+        # the card is a subtle "done" marker.
+        if not chained:
+            self._notify.push("turn complete", "", "ok",
+                              write=self._term_write)
+            self._ui_refresh()
 
     def _interrupt(self) -> None:
         if self.busy:
@@ -474,6 +487,8 @@ class ChatApp(TerminalAgent):
         if self._approval is not None:
             if key.name in ("enter", "y"):
                 self._approval_answer(True)
+            elif key.name == "a":
+                self._approval_always()
             elif key.name in ("n", "escape", "esc"):
                 self._approval_answer(False)
             return
@@ -597,6 +612,10 @@ class ChatApp(TerminalAgent):
         self._status_set(
             "ready" if code == 0 else "error",
             f"shell exit {code}" + (" · output stored (!!)" if store else ""))
+        if code != 0:
+            self._notify.push("shell failed", f"exit {code}: {cmd[:50]}",
+                              "error", write=self._term_write,
+                              force_bel=True)
         self._ui_refresh()
 
     # ── Tool-approval gate (herdr-style safety) ─────────────────────────
@@ -673,6 +692,10 @@ class ChatApp(TerminalAgent):
         self._approval = {"tool": tool, "args": args_brief,
                           "event": ev, "result": False}
         self._status_set("running", f"approval: {tool}")
+        # Needs-attention: ring the BEL and raise a warn toast even if the
+        # user muted the main-turn chime.
+        self._notify.push("approval needed", tool, "warn",
+                          write=self._term_write, force_bel=True)
         self._ui_refresh()
         ev.wait(timeout=300)  # 5-minute safety timeout -> auto-deny
         result = self._approval["result"] if self._approval else False
@@ -697,7 +720,7 @@ class ChatApp(TerminalAgent):
     # v1 print REPL.  Everything else falls through to v1 ``handle_command``.
     _TUI2_NATIVE = ("/context", "/hotkeys", "/copy", "/compact",
                     "/refine", "/lessons", "/memory", "/btw", "/approve",
-                    "/goal")
+                    "/goal", "/notify")
 
     def _run_command(self, line: str) -> None:
         """Route a slash command.
@@ -733,6 +756,10 @@ class ChatApp(TerminalAgent):
             sys.stdout = old
         out = buf.getvalue().strip()
 
+        if cmd == "/help":
+            addendum = self._tui2_help_addendum()
+            out = (out + "\n\n" + addendum) if out else addendum
+
         if self.session_id != prev_sid:
             self._session_changed()
         if out:
@@ -740,6 +767,27 @@ class ChatApp(TerminalAgent):
         self._ui_refresh()
         if should_quit:
             self._tui.stop()
+
+    def _tui2_help_addendum(self) -> str:
+        """tui2-native features appended to ``/help`` (v1 knows none)."""
+        nl = chr(10)
+        rows = [
+            "TUI v2 extras (not in v1):",
+            "  /context    model + context window + compression stats",
+            "  /compact    force a context summarisation now",
+            "  /copy       copy last reply to the clipboard",
+            "  /btw <q>    side question, kept out of this session",
+            "  /approve    tool-approval gate (on/off/add/rm/list)",
+            "  /goal <x>   auto-continue until done or budget (stop)",
+            "  /notify     toasts / BEL / sound (test)",
+            "  /lessons    /memory  /refine   continual-harness",
+            "  !<cmd>      run a shell command ( !! stores output )",
+            "  Ctrl+T      show / hide thinking blocks",
+            "  Ctrl+L      session picker (bare /load = picker)",
+            "  Ctrl+P      command palette    Ctrl+R reverse search",
+            "  PgUp/PgDn   scrollback         Home/End top/bottom",
+        ]
+        return nl.join(rows)
 
     def _run_tui2_command(self, cmd: str, arg: str) -> None:
         """Dispatch a tui2-native slash command to its handler."""
@@ -754,6 +802,7 @@ class ChatApp(TerminalAgent):
             "/btw": self._cmd_btw,
             "/approve": self._cmd_approve,
             "/goal": self._cmd_goal,
+            "/notify": self._cmd_notify,
         }
         fn = handlers.get(cmd)
         try:
@@ -805,7 +854,11 @@ class ChatApp(TerminalAgent):
             ("ctrl+l", "session picker (or bare /load)"),
             ("pgup/pgdn", "scroll the conversation up / down"),
             ("home/end", "jump to the top / bottom of the log"),
-            ("/help", "list slash commands"),
+            ("ctrl+p", "command palette (fuzzy find)"),
+            ("ctrl+r", "reverse search of submitted input"),
+            ("!<cmd>", "run a shell command (!! stores output)"),
+            ("a", "always-approve a pending tool"),
+            ("/help", "list slash commands (+ TUI v2 extras)"),
         ]
         out = ["hotkeys:"]
         for k, desc in rows:
@@ -880,6 +933,34 @@ class ChatApp(TerminalAgent):
         state = "ON" if self._approval_enabled else "OFF"
         return (f"tool approval {state} · prompts before: "
                 f"{sorted(self._risky_tools)}")
+
+    def _cmd_notify(self, arg: str) -> str:
+        """Manage the in-TUI notification stack.
+
+        ``/notify`` — status.  ``/notify toasts|bel|sound on|off`` —
+        toggle a channel.  ``/notify test [kind]`` — fire a test toast.
+        """
+        a = arg.split()
+        sub = a[0].lower() if a else ""
+        val = a[1].lower() if len(a) > 1 else ""
+        n = self._notify
+        if sub in ("toasts", "bel", "sound"):
+            if val in ("on", "1", "true"):
+                setattr(n, sub, True)
+            elif val in ("off", "0", "false"):
+                setattr(n, sub, False)
+            else:
+                setattr(n, sub, not getattr(n, sub))
+            return f"{sub}: {getattr(n, sub)}"
+        if sub == "test":
+            kind = val if val in ("ok", "warn", "error", "info") else "ok"
+            n.push("test", f"toast ({kind})", kind, write=self._term_write)
+            self._ui_refresh()
+            return f"test {kind} toast fired"
+        if sub:
+            return "usage: /notify [toasts|bel|sound] [on|off] · /notify test [kind]"
+        return (f"notifications — toasts: {n.toasts} · bel: {n.bel} · "
+                f"sound: {n.sound}")
 
     def _goal_first_prompt(self, objective: str) -> str:
         return ("Work toward this goal: " + objective
@@ -1292,9 +1373,13 @@ class ChatApp(TerminalAgent):
         else:
             picker_rows = []
             bottom_h = 3
-        # Fixed chrome: 1 header + 1 rule + bottom_h + 1 status.
-        region = max(h - bottom_h - header_h - 2, 2)
-        log_rows = max(h - bottom_h - header_h - 4, 2)
+        # In-TUI toasts (transient; rendered just above the input box).
+        self._notify.prune()
+        toast_lines = self._notify.render_one(w)
+        toast_h = len(toast_lines)
+        # Fixed chrome: 1 header + toast_h + 1 rule + bottom_h + 1 status.
+        region = max(h - bottom_h - header_h - 2 - toast_h, 2)
+        log_rows = max(h - bottom_h - header_h - 4 - toast_h, 2)
         self.log.rows = log_rows
 
         body = self.log.render(w)
@@ -1304,6 +1389,7 @@ class ChatApp(TerminalAgent):
         rows: List[Line] = [_header(w, self.session_id, self.model_name)]
         rows.extend(combined)
         rows.extend(blank(w) for _ in range(max(region - len(combined), 0)))
+        rows.extend(toast_lines)
         rows.append(_rule(w))
 
         busy = self.busy
@@ -1343,9 +1429,25 @@ class ChatApp(TerminalAgent):
         lines: List[Line] = []
         lines.extend(_to_lines("\u25b8 " + tool, inner))
         lines.extend(_to_lines(args if args else "(no args)", inner))
-        lines.extend(_to_lines("y approve  ·  n / esc decline", inner))
+        lines.extend(_to_lines("y approve · n deny · a always", inner))
         lines = lines[:3]  # keep the prompt to 3 inner rows
         return Box(title="approve tool", lines=lines, clip=True).render(w)
+
+    def _approval_always(self) -> None:
+        """Approve now AND stop prompting for this tool this session."""
+        pend = self._approval
+        if pend is None:
+            return
+        self._risky_tools.discard(pend["tool"])
+        self._approval_answer(True)
+
+    def _term_write(self, data: str) -> None:
+        """Best-effort write to the terminal (used for the BEL)."""
+        try:
+            self.term.stdout.write(data)
+            self.term.stdout.flush()
+        except Exception:
+            pass
 
     def _editor_lines(self):
         return self.editor.render(width=self.term.width - 4) \
