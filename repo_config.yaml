@@ -26,7 +26,16 @@ DEFAULT_SYSTEM_PROMPT: |
 user_name: "ghghang2"
 repo_name: "v1.6"
 tail_len: 10
-max_tool_output_chars: 32768
+# Cap on how many characters of a single tool result survive into the
+# prompt.  32768 (the old value) let a single `run_command` dump 32KB of
+# stdout into every subsequent turn; with keep_recent_exchanges: 30 the
+# combined effect was ~980KB+ of context, which turned each turn's
+# prefill into a 10-30s serial bottleneck under 8-way multi-agent load
+# and collapsed the dashboard's total decode tok/s (see incident
+# 2026-09-10, "prefill thrash").  8192 keeps enough head/tail for the
+# agent to act on, while the compressor's _head_tail() already handles
+# truncation gracefully.
+max_tool_output_chars: 8192
 max_history_turns: 10
 # Max completion tokens per LLM call.  Must be a real token count (not a
 # char count) or llama.cpp silently truncates the output mid-tool-call,
@@ -71,7 +80,10 @@ SUMMARY_PROMPT: |
 # window_turns / max_window_rows / max_exchanges were removed when windowing
 # moved to a token budget; the window is now token-budget based. Do not re-add.
 # keep_recent_exchanges overrides the code default of 5 in _hard_trim.
-keep_recent_exchanges: 30
+# Lowered 30 -> 10: fewer uncompressed recent exchanges means a smaller
+# live context per request, so more concurrent agent requests fit in the
+# 240K KV pool at once.
+keep_recent_exchanges: 10
 
 # Conversation loop constants
 max_tool_turns: 500
@@ -100,7 +112,9 @@ prefix_token_reserve: 2000 # token budget reserved for L1+L2+prior context block
 persist_fraction: 0.40 # top 40% of exchanges by importance go to L2
 
 # Compression parameters
-lossless_window: 10
+ # Smaller lossless window -> more of history goes through the summariser,
+ # keeping the live context (and thus the KV footprint) smaller.
+lossless_window: 5
 
 # Retry parameters
 # Retries are cheap but wall-clock-expensive; keep the budget small and the
