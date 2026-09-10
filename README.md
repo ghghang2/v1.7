@@ -70,7 +70,8 @@ You:
 --supervisor   start the always-on supervisor watchdog (§4, 2nd slot)
 --voice        start the Alfred voice bridge on port 8765 (§13); reach it
                from your laptop via: ssh -L 8765:127.0.0.1:8765 user@server
---v2           use the TUI v2 engine (fullscreen raw-mode UI; Phase 1 demo)
+--v2           use the TUI v2 engine (prime-agent-style fullscreen raw-mode
+               UI; add --demo after it for the Phase 1 rendering demo)
 ```
 
 ### In-session commands
@@ -100,6 +101,38 @@ You:
 
 Sessions persist in `nbchat/chat_history.db`; the most recent one is resumed
 on the next start.
+
+### TUI v2 — the fullscreen engine
+
+```bash
+python -m nbchat.tui --v2        # or: python -m nbchat.tui2
+python -m nbchat.tui2 --demo     # Phase 1 rendering demo (no LLM needed)
+```
+
+A prime-agent-style fullscreen UI: a fixed layout
+(header, chat log, input box, status line) drawn in raw mode on the
+alternate screen with a differential renderer — the conversation streams
+in live (thinking blocks, tool panels and the answer text all update as
+they arrive) instead of being printed as the v1 REPL does.
+
+It drives the **same** agent stack, so sessions are shared with the v1
+REPL: the last session is resumed on start, `--new` forces a fresh one and
+`--session <id>` resumes a specific one. Slash commands (`/help`, `/new`,
+`/sessions`, `/load`, `/history`, `/effort`, `/quit`, …) work exactly as in
+v1 and their output renders inside the UI.
+
+Keys: `Enter` submits · `Esc` interrupts a running turn · `Ctrl+C`
+interrupts while a turn runs (quits when idle) · `Ctrl+D` submits when the
+input has text (quits when empty) · `Ctrl+Z/Ctrl+R` undo/redo ·
+`Ctrl+A/Ctrl+E/Ctrl+U/Ctrl+K/Ctrl+W/Ctrl+Y` line editing.  Typing a new
+message while a reply is streaming stops that reply and redirects the
+agent to the new text.
+
+The v1 print-based REPL is unchanged and remains the default; v2 is
+opt-in via the flag above.  Voice / email / supervisor / team surfaces
+start from the v1 entry point (their status output is print-based); the
+chat, sessions and commands work in v2.  See `docs/tui2_issues.md` for the
+2026-07-10 fix log and `docs/prime_tui_port_tracker.md` for the port plan.
 
 ---
 

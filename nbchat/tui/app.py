@@ -510,14 +510,16 @@ def run(argv: list[str] | None = None) -> int:
                              "user@server")
     parser.add_argument("--v2", action="store_true",
                         help="use the new TUI v2 engine (prime-agent-style "
-                             "fullscreen raw-mode UI; Phase 1 demo)")
+                             "fullscreen raw-mode UI; --demo for the Phase "
+                             "1 rendering demo)")
     args = parser.parse_args(argv)
 
     if args.v2:
-        # TUI v2 (Phase 1): self-contained demo; does not need llama-server.
-        from nbchat.tui2 import demo as _tui2_demo
+        # TUI v2: the prime-agent-style fullscreen raw-mode UI.  The full
+        # app is the default; pass --demo for the Phase 1 rendering demo.
+        from nbchat.tui2 import __main__ as _tui2_main
 
-        return _tui2_demo.run()
+        return _tui2_main.run()
 
     up = server_ok()
     if args.check:

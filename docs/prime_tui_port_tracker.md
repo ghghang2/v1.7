@@ -872,3 +872,93 @@ verify → integrate) as the skeleton; **port three prime-agent ideas**:
 3. Subagent registry + `/team` status (P2).
 4. V1 sim parity check → V2 real-server microbench → V3 end-to-end.
 5. Tracker + docs (`multi_agent.md`) updates; final email with evidence.
+
+
+---
+
+## 13. TUI v2 fix pass (2026-07-10)
+
+The Phase 2/3 wiring was shipped (2026-09-07/09) but the real app was
+**unusable**: submitting a message left a frozen spinner, keys appeared
+dead, and the model's answer never appeared on screen. A pty + unit-level
+investigation (documented in `docs/tui2_issues.md`) found 5 critical and
+7 major defects. All are fixed now; the fixes are covered by 13 new
+regression tests in `tests/test_tui2.py` (63 tui2 tests total) and a live
+pty end-to-end run against a real model.
+
+### Fixed (critical)
+- **C1 answer text dropped** — `ChatMessage.render` XOR'd blocks vs. text;
+  any turn with thinking/tool calls rendered *without* the reply. Now
+  blocks render first, then the answer text (same as v1 order).
+- **C2 thinking block explosion** — every reasoning token appended a new
+  full block (newest first). Now one block per LLM call, updated in place,
+  closed on first content / tool / stream complete; chronological order.
+- **C3 blank screen while streaming** — live content (thinking, tool
+  panels, streamed text) is not in the log until finalize, so frames were
+  static. The frame now composes log + live turn + loader + editor +
+  status, bottom-anchored, with a persistent spinner in the status line
+  and a ~1 Hz clock heartbeat (`clock_interval`) so it animates between
+  events.
+- **C4 space key dead** — `KeyReader` emits `Key("space")`, which
+  `_key_text` didn't map: every space a user typed was dropped. Now
+  mapped to `" "`.
+- **C5 Ctrl+C / Ctrl+D wrong** — Ctrl+C always quit (no interrupt),
+  Ctrl+D always quit (no submit). Now a three-way `_handle_input`
+  contract (`True` = exit, `None` = consumed, `False` = dispatch):
+  Ctrl+C interrupts a running turn, quits when idle; Ctrl+D submits when
+  the editor has text, quits when empty. Matches the v1 semantics and the
+  editor keymap.
+
+### Fixed (major)
+- **M1 no session continuity** — the app always started an empty session
+  and forgot it. Now: resume the last session by default (shared with v1),
+  `--new` / `--session <id>` flags, `remember_session` after every turn,
+  history re-rendered into the log on resume.
+- **M2 slash commands no-ops** — all of them silently discarded. Now routed
+  through the v1 `handle_command` with stdout captured and rendered as a
+  dim "note" message; `/new`/`/load` re-render the history.
+- **M3 no mid-stream interjection** — prime-agent's signature behaviour.
+  Typing a new message while a turn runs interrupts it and redirects the
+  agent to the new text (latest wins).
+- **M4 no header** — now `nbchat · <model> · session <id>`, updated on
+  session switch.
+- **M5 no context/tok/s in status** — now a context-budget bar (v1's
+  `_ctx_bar`) and a rolling 1 s tok/s, right-aligned.
+- **M6 `--v2` launched the demo** — `nbchat.tui.app.run` now routes `--v2`
+  to the real app (`nbchat.tui2.__main__.run`, which strips the flag);
+  the demo stays reachable via `python -m nbchat.tui2 --demo`.
+- **M7 stderr corruption in raw mode** — `sys.stderr` is redirected to
+  `~/.nbchat/tui2-stderr.log` for the session so `logging`/library noise
+  can't tear the alternate screen (mirrors prime-agent's Tty stderr trap).
+
+### Fixed (minor)
+- m1 empty editor drew only dim placeholder with no cursor — the cursor
+  block now overdraws the first placeholder character.
+- m2 tool results rendered as one truncated line — now split into real
+  lines, capped at 8, with "… N more line(s)".
+- m3 removed the global `st._enabled` monkeypatch in `app.run` (the v1
+  spinner module is no longer touched; the v1 REPL is byte-identical).
+- m6 worker exceptions were swallowed silently — now surfaced as an error
+  block in the log + the status line.
+
+### Verification
+- `tests/test_tui2.py`: 50 → **63 passing** (13 new regression tests for
+  C1–C5, M1/M2/M3, redirect-on-finalize, session resume).
+- Full suite: **all green** (run in two wall-clock chunks because of the
+  24 s session guard: 247 + 157 tests, zero failures).
+- Live pty end-to-end against a real model (`python3 -m nbchat.tui2`):
+  the full frame layout renders, a real turn streams thinking → tool →
+  answer, the answer text is visible, `/sessions` renders its note,
+  `/quit` exits and restores the terminal.
+
+### Still pending (intentionally deferred — see `docs/tui2_issues.md`)
+- Scrollback / log scrolling (the log is a `MessageLog`; adding a
+  scroll view + PageUp/PageDown is the next natural engine piece).
+- Full session-picker UI (the fuzzy `SelectList` exists; `/load` still
+  takes an id, `/sessions` lists).
+- Voice / email / supervisor / team surfaces in v2 — their v1 status
+  output is print-based; wiring them means re-plumbing those print paths
+  into structured hooks. v2 intentionally covers chat + sessions +
+  commands for now.
+- CJK / wide-glyph column math (`_clamp` counts code points, not cells).
+- `--no-color` / TERM=dumb degradation for v2 (v1 path unaffected).

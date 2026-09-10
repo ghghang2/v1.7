@@ -325,10 +325,17 @@ class LineEditor:
         for i, ln in enumerate(shown):
             is_cursor = self.focused and (start + i == self.cursor_line)
             if is_cursor:
-                col = min(self.cursor_col, len(ln))
-                segs = [Segment(ln[:col], text_style),
-                        Segment(" ", cursor_style),
-                        Segment(ln[col:], text_style)]
+                if empty and self.placeholder:
+                    # Buffer is empty: draw the placeholder dimmed and put
+                    # the cursor block over its first character (a focused,
+                    # empty editor must still show *something* to type in).
+                    segs = [Segment("█", cursor_style),
+                            Segment(self.placeholder[1:], DARK.muted)]
+                else:
+                    col = min(self.cursor_col, len(ln))
+                    segs = [Segment(ln[:col], text_style),
+                            Segment(" ", cursor_style),
+                            Segment(ln[col:], text_style)]
             elif empty and i == 0 and self.placeholder:
                 segs = [Segment(self.placeholder, DARK.muted)]
             else:
