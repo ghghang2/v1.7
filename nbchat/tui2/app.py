@@ -113,6 +113,14 @@ class ChatApp(TerminalAgent):
         # it interrupts the turn and runs as soon as it winds down.
         self._redirect: str | None = None
 
+        # Thinking blocks: Ctrl+T toggles whether reasoning is shown.
+        self._thinking_visible = True
+
+        # Session picker modal (Ctrl+L / no-arg /load): None when closed.
+        self._picker = None          # SelectList
+        self._picker_filter = ""     # fuzzy filter text
+        self._picker_sessions: list = []   # raw session rows
+
         # Turn worker bookkeeping.
         self._turn_thread: threading.Thread | None = None
 
@@ -274,6 +282,7 @@ class ChatApp(TerminalAgent):
     # ── turn worker ─────────────────────────────────────────────────────
 
     def _start_turn(self, text: str) -> None:
+        self.log.offset = 0  # the user just sent a message: follow the reply
         if self._turn_thread is not None and self._turn_thread.is_alive():
             # Mid-stream interjection (v1 semantics): stop the running turn
             # and send this message as soon as it winds down.  Latest
@@ -303,11 +312,16 @@ class ChatApp(TerminalAgent):
 
     def _finalize_turn(self) -> None:
         self._close_thinking()
+        self.log.offset = 0  # a new reply lands: snap back to the bottom
+        full_blocks = list(self._stream_blocks) or None
         msg = chatc.ChatMessage(
             role="assistant",
             text=_strip_markup(self._stream_text),
-            blocks=self._stream_blocks or None,
+            blocks=(self._stream_blocks if self._thinking_visible
+                    else [b for b in self._stream_blocks
+                          if b.kind != "thinking"] or None),
         )
+        msg._full_blocks = full_blocks
         if msg.text or msg.blocks:
             self.log.add(msg)
         self._stream_blocks = []
@@ -354,6 +368,9 @@ class ChatApp(TerminalAgent):
         the byte (``None``) instead of letting it reach the key reader.
         """
         if data == "\x03":  # Ctrl+C
+            if self._picker is not None:
+                self._close_picker()
+                return None
             if self.busy:
                 self._interrupt()
                 return None
@@ -371,6 +388,33 @@ class ChatApp(TerminalAgent):
         return False
 
     def _on_input(self, key: Key) -> None:
+        # The session-picker modal captures all keys while it is open.
+        if self._picker is not None:
+            self._picker_key(key)
+            return
+        if key.name == "ctrl+t":
+            self._toggle_thinking()
+            return
+        if key.name == "ctrl+l":
+            self._open_picker()
+            return
+        # Scrollback: page through the conversation log.
+        if key.name == "pageup":
+            self._scroll_log(max(5, (self.term.height - 8) // 2))
+            return
+        if key.name == "pagedown":
+            self._scroll_log(-max(5, (self.term.height - 8) // 2))
+            return
+        if key.name == "home":
+            w = self.term.width
+            total = len(self.log._all_rows(w))
+            self.log.offset = max(0, total - max(self.term.height - 8, 2))
+            self._ui_refresh()
+            return
+        if key.name == "end":
+            self.log.offset = 0
+            self._ui_refresh()
+            return
         if key.name == "ctrl+d" and not self.editor.text():
             self._tui.stop()
             return
@@ -398,14 +442,32 @@ class ChatApp(TerminalAgent):
             return
         self._start_turn(text)
 
-    def _run_command(self, line: str) -> None:
-        """Route a slash command through the shared v1 command handler.
+    # tui2-native slash commands: handled inside the TUI (they need the
+    # live frame / clipboard / side-turn state) rather than delegated to the
+    # v1 print REPL.  Everything else falls through to v1 ``handle_command``.
+    _TUI2_NATIVE = ("/context", "/hotkeys", "/copy", "/compact",
+                    "/refine", "/lessons", "/memory", "/btw")
 
-        ``handle_command`` prints its output; capturing ``sys.stdout`` keeps
-        the raw-mode screen intact and renders the output as a dim "system"
-        note in the log instead.
+    def _run_command(self, line: str) -> None:
+        """Route a slash command.
+
+        tui2-native commands are handled here; the rest go through the shared
+        v1 ``handle_command`` with stdout captured into the log as a dim note.
         """
         from nbchat.tui.app import handle_command
+
+        parts = line.strip().split(None, 1)
+        cmd = parts[0].lower()
+        arg = parts[1].strip() if len(parts) > 1 else ""
+
+        if cmd == "/load" and not arg:
+            self._open_picker()
+            return
+        if cmd == "/name":
+            line = "/title " + arg if arg else "/title"
+        elif cmd in self._TUI2_NATIVE:
+            self._run_tui2_command(cmd, arg)
+            return
 
         prev_sid = self.session_id
         buf = io.StringIO()
@@ -428,6 +490,207 @@ class ChatApp(TerminalAgent):
         if should_quit:
             self._tui.stop()
 
+    def _run_tui2_command(self, cmd: str, arg: str) -> None:
+        """Dispatch a tui2-native slash command to its handler."""
+        handlers = {
+            "/context": self._cmd_context,
+            "/hotkeys": self._cmd_hotkeys,
+            "/copy": self._cmd_copy,
+            "/compact": self._cmd_compact,
+            "/refine": self._cmd_refine,
+            "/lessons": self._cmd_lessons,
+            "/memory": self._cmd_memory,
+            "/btw": self._cmd_btw,
+        }
+        fn = handlers.get(cmd)
+        try:
+            out = fn(arg) if fn is not None else "unknown command"
+        except Exception as exc:
+            out = f"command error: {type(exc).__name__}: {exc}"
+        if out:
+            self._note(out)
+        self._ui_refresh()
+
+    def _note(self, text: str) -> None:
+        """Append a dim system note to the log."""
+        self.log.add(chatc.ChatMessage(role="system", text=text))
+        self._ui_refresh()
+
+    # ── tui2-native commands ────────────────────────────────────────────
+
+    def _cmd_context(self, arg: str) -> str:
+        from nbchat.tui.status import _ctx_bar, _humanise
+
+        lines = [f"model {self.model_name or '?'} · session {self.session_id}"]
+        if self._ctx_budget > 0:
+            bar, pct = _ctx_bar(self._ctx_used, self._ctx_budget)
+            lines.append(
+                f"context {bar} {pct}  "
+                f"({_humanise(self._ctx_used)} / {_humanise(self._ctx_budget)})")
+        else:
+            lines.append("context (no window reported yet)")
+        try:
+            from nbchat.core import compressor as comp
+            stats = comp.get_compression_stats()
+            if stats:
+                calls = sum(s["calls"] for s in stats.values())
+                compd = sum(s["compressed_calls"] for s in stats.values())
+                lines.append(
+                    f"tool-output compression {compd}/{calls} calls")
+        except Exception:
+            pass
+        lines.append(f"turns {self._turns}")
+        return "\n".join(lines)
+
+    def _cmd_hotkeys(self, arg: str) -> str:
+        rows = [
+            ("enter", "send message"),
+            ("ctrl+d", "send (quit when input empty)"),
+            ("esc", "interrupt turn / cancel modal"),
+            ("ctrl+c", "interrupt (busy) or quit (idle)"),
+            ("ctrl+t", "show / hide thinking blocks"),
+            ("ctrl+l", "session picker (or bare /load)"),
+            ("pgup/pgdn", "scroll the conversation up / down"),
+            ("home/end", "jump to the top / bottom of the log"),
+            ("/help", "list slash commands"),
+        ]
+        out = ["hotkeys:"]
+        for k, desc in rows:
+            out.append(f"  {k:<9} {desc}")
+        return "\n".join(out)
+
+    def _cmd_copy(self, arg: str) -> str:
+        last = None
+        for m in reversed(self.log.messages):
+            if m.role == "assistant" and (m.text or "").strip():
+                last = m
+                break
+        if last is None:
+            return "nothing to copy yet"
+        text = last.text.strip()
+        self._copy_to_clipboard(text)
+        return f"copied {len(text)} chars to clipboard"
+
+    def _copy_to_clipboard(self, text: str) -> None:
+        """Best-effort OSC 52 clipboard write (no-op if unsupported)."""
+        try:
+            import base64
+            payload = base64.b64encode(text.encode("utf-8")).decode("ascii")
+            stream = getattr(self.term, "stdout", None)
+            if stream is not None:
+                stream.write("\x1b]52;c;" + payload + "\x07")
+                stream.flush()
+        except Exception:
+            pass
+
+    def _cmd_btw(self, arg: str) -> None:
+        if not arg:
+            self._note("usage: /btw <question>  (kept out of this session)")
+            return
+        if self.busy:
+            self._note("btw: wait for the current turn to finish first")
+            return
+        self._note(f"btw: {arg}  (asking…)")
+        t = threading.Thread(target=self._btw_worker, args=(arg,),
+                             name="btw-side", daemon=True)
+        t.start()
+
+    def _btw_worker(self, arg: str) -> None:
+        try:
+            reply = self._send_side_question(arg)
+        except Exception as exc:
+            reply = f"(error: {type(exc).__name__}: {exc})"
+        self._note(f"btw reply: {reply}" if reply else "btw reply: (empty)")
+
+    def _send_side_question(self, arg: str) -> str:
+        """Answer a side question on an isolated throwaway agent.
+
+        It runs under a ``btw:``-prefixed session id (never listed by
+        ``/sessions``), so the question and answer stay out of this
+        session's history, context and picker.  All of its print/stream
+        output is captured so it cannot corrupt the raw-mode screen.
+        """
+        import uuid
+        from nbchat.tui.agent import TerminalAgent
+
+        side = TerminalAgent(color=False)
+        side.session_id = "btw:" + uuid.uuid4().hex[:12]
+        side._refine_hook_state = {"running": True}  # never auto-refine
+        cap = io.StringIO()
+        old = sys.stdout
+        sys.stdout = cap
+        try:
+            reply = side.send(arg)
+        finally:
+            sys.stdout = old
+        return (reply or "").strip()
+
+    def _cmd_compact(self, arg: str) -> str:
+        if self.busy:
+            return "compact: wait for the current turn to finish"
+        rep = self.force_compact(arg)
+        if not rep.get("compacted"):
+            return f"compact: {rep.get('reason', 'nothing to do')}"
+        from nbchat.tui.status import _humanise
+        return (
+            f"compact: {rep['before_rows']}\u2192{rep['window_rows']} rows "
+            f"\u00b7 ~{_humanise(rep['before_tokens'])}"
+            f"\u2192~{_humanise(rep['after_tokens'])} tok "
+            f"(budget {_humanise(rep['budget'])})"
+            + (f" \u00b7 focus: {rep['instructions']}"
+               if rep.get("instructions") else "")
+        )
+
+    def _cmd_refine(self, arg: str) -> str:
+        if arg.lower().startswith("rollback"):
+            from nbchat.core import refinement as _rf
+            rep = _rf.undo_last_round(self.session_id)
+            if rep.get("error"):
+                return f"refine rollback: {rep['error']}"
+            n = len(rep.get("reverted", []))
+            return (f"refine rollback: reverted round "
+                    f"{rep.get('round_id', '?')} ({n} change(s))")
+        from nbchat.core import refine_hook
+        if not refine_hook.schedule_manual_refine(self, arg):
+            return ("refine: engine disabled (refine_hook_enabled) "
+                    "or a round is already running")
+        return "refine: round scheduled — result appears when it finishes"
+
+    def _cmd_lessons(self, arg: str) -> str:
+        from nbchat.core import db
+        n = 20
+        if arg.isdigit():
+            n = max(1, int(arg))
+        lessons = db.load_lessons(self.session_id, limit=n)
+        if not lessons:
+            return "lessons: (none recorded yet)"
+        lines = [f"lessons ({len(lessons)}):"]
+        for les in lessons:
+            scope = "g" if les.get("scope") == "global" else "s"
+            tail = f"  (r{les['round_id']})" if les.get("round_id") else ""
+            lines.append(f"  [{scope}] {les.get('content', '')[:100]}{tail}")
+        return "\n".join(lines)
+
+    def _cmd_memory(self, arg: str) -> str:
+        from nbchat.core import db
+        cm = db.get_core_memory(self.session_id) or {}
+        lines = ["memory (L1 core):"]
+        if cm:
+            for key in ("goal", "constraints", "rationale", "recent_errors"):
+                v = cm.get(key)
+                if v:
+                    lines.append(f"  {key}: {str(v)[:140]}")
+        else:
+            lines.append("  (empty)")
+        try:
+            with db._connect() as conn:
+                ep = conn.execute(
+                    "SELECT COUNT(*) FROM episodic_store WHERE session_id=?",
+                    (self.session_id,)).fetchone()[0]
+            lines.append(f"memory (L2 episodic): {ep} row(s)")
+        except Exception:
+            pass
+        return "\n".join(lines)
     # ── UI ──────────────────────────────────────────────────────────────
 
     def _ui_refresh(self) -> None:
@@ -448,6 +711,8 @@ class ChatApp(TerminalAgent):
                     body=b.body, show_diff=b.diff,
                 ).render(w))
             elif b.kind == "thinking":
+                if not self._thinking_visible:
+                    continue
                 rows.extend(chatc.ThinkingBlock(
                     b.text, collapsed=False, title=b.title or "thinking",
                 ).render(w))
@@ -455,6 +720,139 @@ class ChatApp(TerminalAgent):
             rows.extend(chatc.Message(
                 "assistant", _strip_markup(self._stream_text)).render(w))
         return rows
+
+    def _toggle_thinking(self) -> None:
+        """Ctrl+T: show / hide reasoning blocks (live turn + logged turns)."""
+        self._thinking_visible = not self._thinking_visible
+        # Rebuild each logged assistant message's blocks from the full copy
+        # so the toggle is lossless (no thinking text is dropped).
+        for msg in self.log.messages:
+            full = getattr(msg, "_full_blocks", None)
+            if not full:
+                continue
+            if self._thinking_visible:
+                msg.blocks = list(full)
+            else:
+                msg.blocks = [b for b in full if b.kind != "thinking"] or None
+            msg.invalidate()
+        self._note("thinking " + ("shown" if self._thinking_visible else "hidden"))
+
+    # ── session picker modal ────────────────────────────────────────────
+
+    def _open_picker(self) -> None:
+        from nbchat.core import db
+        rows = db.list_sessions_with_title("tui:")
+        # Per-session message counts (one pass).
+        counts: dict = {}
+        try:
+            with db._connect() as conn:
+                for sid, n in conn.execute(
+                        "SELECT session_id, COUNT(*) FROM chat_log "
+                        "GROUP BY session_id"):
+                    counts[sid] = n
+        except Exception:
+            pass
+        self._picker_sessions = []
+        for r in rows:
+            sid = r["session_id"]
+            title = (r.get("title") or "").strip()
+            short = sid.rsplit(":", 1)[-1][:10]
+            label = (title or short)
+            tail = f" · {counts.get(sid, 0)} msg"
+            tail += f" · {_fmt_ts(r.get('last_ts'))}"
+            if sid == self.session_id:
+                tail += "  (current)"
+            self._picker_sessions.append((sid, label + tail))
+        self._picker_filter = ""
+        self._refresh_picker()
+        self._ui_refresh()
+
+    def _refresh_picker(self) -> None:
+        from .components import SelectList
+        from .fuzzy import fuzzy_rank
+        if not self._picker_sessions:
+            self._picker = SelectList(title="sessions", items=["(no sessions)"],
+                                      footer="enter/esc close")
+            return
+        needle = self._picker_filter.strip().lower()
+        if needle:
+            ranked = fuzzy_rank(needle,
+                                [lab for _sid, lab in self._picker_sessions])
+            keep = {item for item, _m in ranked}
+            ordered = [item for item, _m in ranked]
+            rows = [(sid, lab) for sid, lab in self._picker_sessions
+                    if lab in keep]
+            rows.sort(key=lambda _pair: ordered.index(_pair[1]))
+        else:
+            rows = list(self._picker_sessions)
+        labels = [lab for _sid, lab in rows]
+        # Keep the cursor on the current session when possible.
+        sel = 0
+        for i, (sid, _lab) in enumerate(rows):
+            if sid == self.session_id:
+                sel = i
+                break
+        self._picker_rows = rows
+        self._picker = SelectList(
+            title=f"sessions  ({len(rows)}/{len(self._picker_sessions)})",
+            items=labels, selected=sel,
+            footer="type to filter · ↑↓ move · enter load · esc cancel")
+
+    def _close_picker(self) -> None:
+        self._picker = None
+        self._picker_filter = ""
+        self._picker_rows = []
+        self._ui_refresh()
+
+    def _picker_key(self, key: Key) -> None:
+        if key.name in ("escape", "esc"):
+            self._close_picker()
+            return
+        if key.name == "enter":
+            self._picker_select()
+            return
+        if key.name == "up":
+            self._picker.select(self._picker.selected - 1)
+            self._ui_refresh()
+            return
+        if key.name == "down":
+            self._picker.select(self._picker.selected + 1)
+            self._ui_refresh()
+            return
+        if key.name == "backspace":
+            self._picker_filter = self._picker_filter[:-1]
+            self._refresh_picker()
+            self._ui_refresh()
+            return
+        ch = _key_text(key)
+        if ch:
+            self._picker_filter += ch
+            self._refresh_picker()
+            self._ui_refresh()
+
+    def _picker_select(self) -> None:
+        if not self._picker_rows:
+            self._close_picker()
+            return
+        sid, _label = self._picker_rows[self._picker.selected]
+        self._close_picker()
+        if sid == self.session_id:
+            return
+        self._switch_session(sid)
+        self._session_changed()
+        self.remember_session(self.session_id)
+        self._note(f"loaded session {self.session_id.rsplit(':', 1)[-1]}")
+        self._ui_refresh()
+
+    def _scroll_log(self, delta: int) -> None:
+        """PgUp/PgDn: page through the conversation log (lines up from the
+        bottom).  The offset is clamped to the current content height."""
+        w = self.term.width
+        log_rows = max(self.term.height - 3 - 1 - 4, 2)
+        total = len(self.log._all_rows(w))
+        max_off = max(0, total - log_rows)
+        self.log.offset = max(0, min(self.log.offset + delta, max_off))
+        self._ui_refresh()
 
     def _status_right(self) -> str:
         parts: list = []
@@ -473,11 +871,18 @@ class ChatApp(TerminalAgent):
 
     def _build_frame(self) -> Frame:
         w, h = self.term.width, self.term.height
-        # Fixed chrome: 1 header + 1 rule + 3 message-box rows + 1 status.
-        editor_h = 3
         header_h = 1
-        region = max(h - editor_h - header_h - 2, 2)
-        log_rows = max(h - editor_h - header_h - 4, 2)
+        # Bottom area: the 3-row message editor, or the session-picker modal
+        # while it is open (its rendered height, capped to the terminal).
+        if self._picker is not None:
+            picker_rows = self._picker.render(w)
+            bottom_h = min(len(picker_rows), max(5, h - 6))
+        else:
+            picker_rows = []
+            bottom_h = 3
+        # Fixed chrome: 1 header + 1 rule + bottom_h + 1 status.
+        region = max(h - bottom_h - header_h - 2, 2)
+        log_rows = max(h - bottom_h - header_h - 4, 2)
         self.log.rows = log_rows
 
         body = self.log.render(w)
@@ -498,12 +903,19 @@ class ChatApp(TerminalAgent):
                        else (self._status_detail or "ready"))
         status_right = self._status_right()
 
-        rows.extend(Box(
-            title="message", lines=self._editor_lines(),
-            clip=True,
-        ).render(w))
+        if self._picker is not None:
+            shown = picker_rows
+            if len(shown) > bottom_h:
+                shown = shown[:bottom_h - 1] + [shown[-1]]
+            rows.extend(shown)
+        else:
+            rows.extend(Box(
+                title="message", lines=self._editor_lines(),
+                clip=True,
+            ).render(w))
+        scroll_tag = f"\u2191{self.log.offset} " if self.log.offset else ""
         rows.append(StatusLine(
-            left=f"turns: {self._turns}   {status_left}",
+            left=f"turns: {self._turns}   {scroll_tag}{status_left}",
             right=status_right,
         ).render(w)[0])
         return Frame(lines=rows[:h], width=w, height=h)
@@ -547,6 +959,30 @@ class ChatApp(TerminalAgent):
             except Exception:
                 pass
         return 0
+
+
+def _fmt_ts(ts) -> str:
+    """Format a chat_log timestamp (ISO string or epoch) for the picker."""
+    if not ts:
+        return ""
+    try:
+        import datetime
+        if isinstance(ts, (int, float)):
+            dt = datetime.datetime.fromtimestamp(ts)
+        else:
+            dt = datetime.datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        now = datetime.datetime.now(dt.tzinfo) if dt.tzinfo else \
+            datetime.datetime.now()
+        delta = now - dt
+        if delta.total_seconds() < 90:
+            return "now"
+        if delta.total_seconds() < 3600:
+            return f"{int(delta.total_seconds() // 60)}m"
+        if delta.total_seconds() < 86400:
+            return f"{int(delta.total_seconds() // 3600)}h"
+        return dt.strftime("%b %d")
+    except Exception:
+        return ""
 
 
 def _key_text(key: Key) -> str:

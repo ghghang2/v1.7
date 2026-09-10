@@ -125,16 +125,21 @@ class KeyReader:
             return Key("paste", text), idx + len(_PASTE_END)
 
         if b.startswith("\x1b["):
-            # CSI: find the terminator (bytes 0x40-0x7E).
+            # CSI: after the "ESC[" introducer, the final byte is the first
+            # byte in 0x40-0x7E.  Params are 0x30-0x3F and intermediates
+            # 0x20-0x2F, so that first byte is unambiguous.  The matchable
+            # body is everything up to and including the final byte.  (The
+            # scan must start past the "[" introducer — "[" is itself in the
+            # 0x40-0x7E range and would otherwise terminate the sequence.)
             end = -1
-            for i in range(1, len(b)):
+            for i in range(2, len(b)):
                 if 0x40 <= ord(b[i]) <= 0x7E:
                     end = i
                     break
             if end < 0:
-                # Incomplete CSI (marker possibly split across chunks).
+                # Incomplete CSI (final byte not yet arrived).
                 return None, 0
-            body = b[2:end]
+            body = b[2:end + 1]
             if body == "200~":
                 self._pasting = True
                 self._paste_text = ""

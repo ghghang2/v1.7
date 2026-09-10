@@ -426,6 +426,44 @@ class ContextMixin:
         })
         return prefix + window, effective_cut
 
+    def force_compact(self, instructions: str = "") -> dict:
+        """Manual compaction: force the current window/summarisation pass now.
+
+        Recomputes the token-budget window (which rebuilds the prior-context
+        summary for evicted turns and prefetches their summaries), persists
+        the summary cache, and returns a before/after report.  Safe to call
+        from a slash command; never raises.
+        """
+        before_rows = len(self.history)
+        before_tok = _est_window_tokens(self.history)
+        try:
+            window, cut = self._window()
+        except Exception as exc:
+            return {"compacted": False,
+                    "reason": f"error: {type(exc).__name__}: {exc}"}
+        evicted = cut
+        window_rows = len(window)
+        after_tok = _est_window_tokens(window)
+        if evicted <= 0:
+            return {"compacted": False,
+                    "reason": f"nothing to evict ({before_rows} rows fit budget)"}
+        try:
+            self._persist_summary_cache()
+        except Exception:
+            pass
+        payload = {
+            "compacted": True,
+            "before_rows": before_rows,
+            "window_rows": window_rows,
+            "evicted_rows": evicted,
+            "before_tokens": before_tok,
+            "after_tokens": after_tok,
+            "budget": int(config.CONTEXT_BUDGET),
+            "instructions": instructions,
+        }
+        self._log_context_event("FORCE_COMPACT", payload)
+        return payload
+
     # ── Summarisation ─────────────────────────────────────────────────────────
 
     def _prefetch_summaries(self, prior_rows: List[_Row]) -> None:

@@ -915,3 +915,317 @@ def test_chatapp_resumes_last_session_into_log():
     assert app2.session_id != sid
     assert app2.log.messages == []
 
+
+# ── tui2-native slash commands (Batch 1) ──────────────────────────────────
+
+def test_cmd_context_reports_turns_and_session():
+    app, *_ = _make_chat_app()
+    out = app._cmd_context("")
+    assert "turns 0" in out
+    assert "session" in out
+    assert "model" in out
+
+
+def test_cmd_hotkeys_lists_keybindings():
+    app, *_ = _make_chat_app()
+    out = app._cmd_hotkeys("")
+    assert "enter" in out
+    assert "ctrl+l" in out
+    assert "ctrl+t" in out
+
+
+def test_cmd_copy_copies_last_assistant_message():
+    from nbchat.tui2 import chat as _chat
+    app, *_ = _make_chat_app()
+    app.log.add(_chat.ChatMessage(role="assistant", text="answer text"))
+    out = app._cmd_copy("")
+    assert "copied" in out and "11 chars" in out
+
+
+def test_cmd_copy_empty_log():
+    app, *_ = _make_chat_app()
+    assert "nothing to copy" in app._cmd_copy("")
+
+
+def test_run_command_rewrites_name_to_title(monkeypatch):
+    import nbchat.tui.app as tui_app
+    seen = {}
+
+    def fake_handle_command(agent, line):
+        seen["line"] = line
+        return False
+
+    monkeypatch.setattr(tui_app, "handle_command", fake_handle_command)
+    app, *_ = _make_chat_app()
+    app._run_command("/name my project")
+    assert seen["line"] == "/title my project"
+
+
+def test_run_command_routes_tui2_native_not_to_v1(monkeypatch):
+    import nbchat.tui.app as tui_app
+    called = {}
+
+    def fake_handle_command(agent, line):
+        called["line"] = line
+        return False
+
+    monkeypatch.setattr(tui_app, "handle_command", fake_handle_command)
+    app, *_ = _make_chat_app()
+    app._run_command("/hotkeys")
+    assert "line" not in called  # never delegated to v1
+    assert any("hotkeys:" in (m.text or "") for m in app.log.messages)
+
+
+def test_force_compact_nothing_to_evict():
+    app, *_ = _make_chat_app()
+    app.history = [("user", "hi", "", "", "", 0),
+                   ("assistant", "yo", "", "", "", 0)]
+    rep = app.force_compact("")
+    assert rep["compacted"] is False
+    assert "nothing to evict" in rep["reason"]
+
+
+def test_force_compact_evicts_when_over_budget(monkeypatch):
+    app, *_ = _make_chat_app()
+    big = "x" * 4000
+    rows = []
+    for i in range(40):
+        rows.append(("user", f"q{i} {big}", "", "", "", 0))
+        rows.append(("assistant", f"a{i} {big}", "", "", "", 0))
+    app.history = rows
+    app._prefetch_summaries = lambda r: None
+    app._build_prior_context = lambda r: "prior summary"
+    rep = app.force_compact("focus on X")
+    assert rep["compacted"] is True
+    assert rep["before_rows"] > rep["window_rows"]
+    assert rep["evicted_rows"] > 0
+    assert rep["instructions"] == "focus on X"
+
+
+def test_cmd_compact_renders_note():
+    app, *_ = _make_chat_app()
+    app.history = [("user", "hi", "", "", "", 0),
+                   ("assistant", "yo", "", "", "", 0)]
+    out = app._cmd_compact("")
+    assert "compact:" in out
+    # Routed through the dispatcher, the report becomes a logged note.
+    app._run_tui2_command("/compact", "")
+    assert any("compact:" in (m.text or "") for m in app.log.messages)
+
+
+def test_cmd_lessons_empty():
+    app, *_ = _make_chat_app()
+    out = app._cmd_lessons("")
+    assert "lessons" in out
+
+
+def test_cmd_memory_renders_l1_l2():
+    app, *_ = _make_chat_app()
+    out = app._cmd_memory("")
+    assert "L1 core" in out
+    assert "L2 episodic" in out
+
+
+def test_cmd_refine_rollback_reports():
+    app, *_ = _make_chat_app()
+    out = app._cmd_refine("rollback")
+    assert "refine rollback" in out
+
+
+def test_send_side_question_isolated(monkeypatch):
+    import nbchat.tui.agent as agent_mod
+
+    def fake_send(self, text):
+        # The side agent must run under a btw: session, not the main one.
+        assert self.session_id.startswith("btw:")
+        return "side answer"
+
+    monkeypatch.setattr(agent_mod.TerminalAgent, "send", fake_send)
+    app, *_ = _make_chat_app()
+    assert app._send_side_question("hello") == "side answer"
+    # The main session's log was not touched by the side answer.
+    assert not any("side answer" in (m.text or "") for m in app.log.messages)
+
+
+def test_cmd_btw_usage_note():
+    app, *_ = _make_chat_app()
+    app._cmd_btw("")
+    assert any("usage: /btw" in (m.text or "") for m in app.log.messages)
+
+
+# ── session picker modal ──────────────────────────────────────────────────
+
+def test_picker_open_and_render():
+    from nbchat.tui2 import Key
+    app, *_ = _make_chat_app()
+    assert app._picker is None
+    app._open_picker()
+    assert app._picker is not None
+    flat = "\n".join(
+        "".join(s.text for s in ln.segments)
+        for ln in app._build_frame().lines)
+    assert "sessions" in flat
+    # Esc cancels.
+    app._picker_key(Key("escape"))
+    assert app._picker is None
+
+
+def test_picker_filter_and_navigation():
+    from nbchat.tui2 import Key
+    app, *_ = _make_chat_app()
+    app._open_picker()
+    n_before = len(app._picker_rows)
+    app._picker_key(Key("a"))
+    assert app._picker_filter == "a"
+    # Backspace clears the filter.
+    app._picker_key(Key("backspace"))
+    assert app._picker_filter == ""
+    app._picker_key(Key("down"))
+    app._picker_key(Key("up"))
+    assert len(app._picker_rows) == n_before
+    app._close_picker()
+
+
+def test_picker_ctrl_l_opens_from_key():
+    from nbchat.tui2 import Key
+    app, *_ = _make_chat_app()
+    assert app._picker is None
+    app._on_input(Key("ctrl+l"))
+    assert app._picker is not None
+    app._close_picker()
+
+
+def test_picker_ctrl_c_closes_not_quit(monkeypatch):
+    from nbchat.tui2 import Key
+    app, *_ = _make_chat_app()
+    stopped = {}
+    monkeypatch.setattr(app._tui, "stop", lambda: stopped.update(x=1))
+    app._open_picker()
+    # Ctrl+C while the picker is open must close it, not stop the app.
+    assert app._handle_input("\x03") is None
+    assert app._picker is None
+    assert "x" not in stopped
+
+
+# ── thinking toggle (Ctrl+T) ──────────────────────────────────────────────
+
+def test_toggle_thinking_hides_and_restores():
+    from nbchat.tui2 import Key, chat as _chat
+    app, *_ = _make_chat_app()
+    blk = _chat.ChatBlock(kind="thinking", text="some reasoning")
+    tool = _chat.ChatBlock(kind="tool", name="x", title="x")
+    msg = _chat.ChatMessage(role="assistant", text="ans", blocks=[blk, tool])
+    msg._full_blocks = [blk, tool]
+    app.log.add(msg)
+
+    app._on_input(Key("ctrl+t"))  # hide
+    assert app._thinking_visible is False
+    assert all(b.kind != "thinking" for b in (msg.blocks or []))
+
+    app._on_input(Key("ctrl+t"))  # show
+    assert app._thinking_visible is True
+    assert any(b.kind == "thinking" for b in msg.blocks)
+
+
+def test_live_rows_hide_thinking_when_toggled():
+    from nbchat.tui2 import chat as _chat
+    app, *_ = _make_chat_app()
+    app._stream_blocks = [
+        _chat.ChatBlock(kind="thinking", text="reasoning"),
+        _chat.ChatBlock(kind="tool", name="run_command", title="run"),
+    ]
+    app._stream_text = ""
+    shown = "\n".join(
+        "".join(s.text for s in ln.segments) for ln in app._live_rows(80))
+    assert "reasoning" in shown
+    app._thinking_visible = False
+    hidden = "\n".join(
+        "".join(s.text for s in ln.segments) for ln in app._live_rows(80))
+    assert "reasoning" not in hidden
+
+
+def test_finalize_turn_stores_full_blocks():
+    app, *_ = _make_chat_app()
+    from nbchat.tui2 import chat as _chat
+    app._stream_blocks = [_chat.ChatBlock(kind="thinking", text="r")]
+    app._stream_text = "final answer"
+    app._finalize_turn()
+    msg = app.log.messages[-1]
+    assert getattr(msg, "_full_blocks", None) is not None
+    assert any(b.kind == "thinking" for b in msg._full_blocks)
+
+
+def test_scroll_log_pages_and_clamps():
+    from nbchat.tui2 import chat as _chat
+    app, *_ = _make_chat_app()
+    # Seed enough history to be taller than the log region.
+    for i in range(30):
+        app.log.add(_chat.ChatMessage(role="assistant", text=f"line {i} " + "x" * 60))
+    app._scroll_log(1000)  # clamp to max
+    total = len(app.log._all_rows(80))
+    log_rows = max(app.term.height - 8, 2)  # same formula as _scroll_log
+    assert app.log.offset == max(0, total - log_rows)
+    app._scroll_log(-1000)  # clamp to 0
+    assert app.log.offset == 0
+
+
+def test_new_content_snaps_to_bottom():
+    app, *_ = _make_chat_app()
+    app.log.offset = 5
+    app._finalize_turn()  # commits an empty-but-present assistant msg
+    assert app.log.offset == 0
+
+
+
+# ── KeyReader CSI parsing (regression: the "[" introducer is itself in the
+#    0x40-0x7E final-byte range, so the terminator scan must start past it) ──
+
+def _feed_keys(seq):
+    from nbchat.tui2.keys import KeyReader
+    return [k.name for k in KeyReader().feed(seq)]
+
+
+def test_keyreader_csi_arrows():
+    assert _feed_keys("\x1b[A") == ["up"]
+    assert _feed_keys("\x1b[B") == ["down"]
+    assert _feed_keys("\x1b[C") == ["right"]
+    assert _feed_keys("\x1b[D") == ["left"]
+
+
+def test_keyreader_csi_paging_and_home_end():
+    assert _feed_keys("\x1b[5~") == ["pageup"]
+    assert _feed_keys("\x1b[6~") == ["pagedown"]
+    assert _feed_keys("\x1b[1~") == ["home"]
+    assert _feed_keys("\x1b[4~") == ["end"]
+    assert _feed_keys("\x1b[7~") == ["home"]
+    assert _feed_keys("\x1b[8~") == ["end"]
+
+
+def test_keyreader_csi_function_keys():
+    assert _feed_keys("\x1b[11~") == ["f1"]
+    assert _feed_keys("\x1b[12~") == ["f2"]
+    assert _feed_keys("\x1b[13~") == ["f3"]
+    assert _feed_keys("\x1b[14~") == ["f4"]
+
+
+def test_keyreader_csi_split_across_chunks():
+    from nbchat.tui2.keys import KeyReader
+    r = KeyReader()
+    k1 = [k.name for k in r.feed("\x1b[5")]   # final byte not yet arrived
+    assert k1 == []                            # held, not mis-parsed
+    k2 = [k.name for k in r.feed("~")]
+    assert k2 == ["pageup"]                    # completed on the next chunk
+
+
+def test_keyreader_lone_esc_and_legacy():
+    assert _feed_keys("\x1b") == ["escape"]
+    assert _feed_keys("\x1ba") == ["escape", "a"]
+    assert _feed_keys("\x1bOA") == ["up"]
+
+
+def test_keyreader_unknown_csi_swallowed():
+    # A mouse report (unknown CSI) must be swallowed whole, not corrupted.
+    from nbchat.tui2.keys import KeyReader
+    r = KeyReader()
+    ks = [k.name for k in r.feed("\x1b[<0;10;5M")]
+    assert ks == ["unknown"]

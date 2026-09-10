@@ -83,6 +83,25 @@ the in-flight turn when busy, quits when idle; Ctrl+D submits when the
 editor has text, quits when empty — same on both the raw-byte path and the
 key path.
 
+### C6. Every CSI key (arrows, PgUp/PgDn, Home/End, F-keys, paste) mis-parsed
+`tui2/keys.py` `KeyReader._take_one` found the CSI *final byte* by scanning
+`for i in range(1, len(b))` for the first byte in `0x40-0x7E`. But the very
+first byte checked is the `[` introducer itself (`0x5B`), which lies inside
+that range — so every `ESC[...` sequence was "terminated" immediately after
+the `[`, eaten as an *unknown* key, and the remainder leaked into the editor
+as literal text. Result: **no** arrow key, PgUp/PgDn, Home/End, F1–F4, or
+bracketed-paste sequence ever parsed; `ESC[A` produced `Key("unknown",
+"ESC[")` + a stray `A`. The basic E2E (typing + Enter) never exercised a CSI
+key, so it slipped through.
+
+**Fix:** the terminator scan now starts *past* the `[` introducer
+(`range(2, len(b))`) and the matchable body includes the final byte
+(`b[2:end+1]`). Params (`0x30-0x3F`) and intermediates (`0x20-0x2F`) can
+never be mistaken for the final byte, so the first `0x40-0x7E` byte after
+the `[` is unambiguous. All CSI keys now parse, and a sequence split across
+read chunks is held until the final byte arrives. Covered by six new
+KeyReader regression tests.
+
 ---
 
 ## Major (functional gaps vs. the v1 REPL)
@@ -177,6 +196,50 @@ exit); errors still surface in the status line via the hooks.
 * **m6. `Turn worker swallows exceptions silently`** in the normal (no-UI)
   path — now also surfaced as an error block + status.
 
+## Features added in this pass (2026-07-11)
+
+A second wave of prime-agent / herdr-inspired features, all additive and
+built on the existing engine (no new subsystems; v1 REPL untouched).
+
+**tui2-native slash commands** (handled in `ChatApp._run_command` before v1
+delegation, so v1's `handle_command` is never reached for these):
+
+* `/context` — model, session, context bar, tool-output compression, turns.
+* `/hotkeys` — the keybinding reference (generated, so it can't desync).
+* `/copy` — last assistant message → clipboard (OSC 52; no-op elsewhere).
+* `/compact [focus]` — a manual one-shot compaction via the new
+  `ContextMixin.force_compact()`, with a before/after report. The per-turn
+  auto-windowing is left untouched.
+* `/refine [instructions]` / `/refine rollback` — schedule a manual
+  refinement round (`refine_hook.schedule_manual_refine`) / revert the last.
+* `/lessons` — applied refinement lessons.
+* `/memory` — L1 core memory + L2 episodic stats.
+* `/btw <question>` — a throwaway side question on an isolated agent
+  (separate `btw:` session) so the current history is not touched.
+* `/name <title>` — alias for v1's `/title`.
+
+**Session picker modal** (herdr's navigator overlay): bare `/load` or
+`Ctrl+L` opens a fuzzy-filterable `SelectList` over the `tui:` sessions
+(type to filter, `↑/↓` move, `Enter` loads, `Esc`/`Ctrl+C` cancel). Reuses
+the existing `SelectList` + `fuzzy_rank` and the v1 `_switch_session` path.
+
+**Thinking toggle** (`Ctrl+T`): shows/hides reasoning blocks in the live
+turn *and* committed turns, losslessly (full blocks are kept and restored).
+
+**Scrollback** (herdr's copy-mode precursor): `PgUp`/`PgDn` page the log,
+`Home`/`End` jump to top/bottom, a `↑N` indicator shows how far up you are,
+and new content snaps back to the bottom. Built on `ChatLog.offset` — and
+only works because of the C6 KeyReader fix (PgUp/PgDn are CSI keys).
+
+**`ContextMixin.force_compact()`** (`core/context_manager.py`): recomputes
+the token-budget window, persists the summary cache, logs a `FORCE_COMPACT`
+context event, and returns a before/after report (rows, estimated tokens,
+budget). **`refine_hook.schedule_manual_refine()`** (`core/refine_hook.py`):
+bypasses the automatic predicate, still honors the `REFINE_HOOK_ENABLED`
+kill switch, runs a background round, and reports via `_on_agent_message`.
+
+---
+
 ## Not addressed (out of scope for this pass, tracked in the port tracker)
 
 * **Voice / email / supervisor / team surfaces.** These start in
@@ -184,9 +247,10 @@ exit); errors still surface in the status line via the hooks.
   inbound loops; tui2 doesn't start them (their prints would corrupt raw
   mode). Chat + sessions + commands work; the other surfaces need a
   dedicated UI pass (see `docs/prime_tui_port_tracker.md`).
-* **Scrollback / log scrolling** (`ChatLog.scroll`, PgUp/PgDn keys).
-* **Full session picker UI** (fuzzy `SelectList` exists but is not wired to
-  `/sessions`; the command renders the plain list instead).
+* **Mouse support, scroll *search* + visual copy mode, in-app theming /
+  settings, JSON socket API, detachable background agent** — the larger
+  herdr items (ranked 1–7, 9–10 in `herdr` research) that need new
+  machinery rather than a surface; tracked in the port tracker.
 * **CJK/wide-glyph column math** (`_clamp` counts codepoints, not cells).
 
 ---

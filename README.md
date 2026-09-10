@@ -121,12 +121,33 @@ REPL: the last session is resumed on start, `--new` forces a fresh one and
 `/sessions`, `/load`, `/history`, `/effort`, `/quit`, …) work exactly as in
 v1 and their output renders inside the UI.
 
-Keys: `Enter` submits · `Esc` interrupts a running turn · `Ctrl+C`
-interrupts while a turn runs (quits when idle) · `Ctrl+D` submits when the
-input has text (quits when empty) · `Ctrl+Z/Ctrl+R` undo/redo ·
-`Ctrl+A/Ctrl+E/Ctrl+U/Ctrl+K/Ctrl+W/Ctrl+Y` line editing.  Typing a new
-message while a reply is streaming stops that reply and redirects the
+Keys: `Enter` submits · `Esc` interrupts a running turn / cancels a modal ·
+`Ctrl+C` interrupts while a turn runs (quits when idle, cancels an open
+modal) · `Ctrl+D` submits when the input has text (quits when empty) ·
+`Ctrl+L` opens the session picker · `Ctrl+T` shows / hides thinking blocks ·
+`Ctrl+Z/Ctrl+A/Ctrl+E/Ctrl+U/Ctrl+K/Ctrl+W/Ctrl+Y` line editing.  Typing a
+new message while a reply is streaming stops that reply and redirects the
 agent to the new text.
+
+**tui2-native commands** (handled inside the UI, not the v1 REPL):
+
+- `/context` — model, session, context bar, tool-output compression and
+  turn count.
+- `/hotkeys` — the keybinding reference.
+- `/copy` — copies the last assistant message to the clipboard (OSC 52;
+  silent no-op where the terminal lacks clipboard support).
+- `/compact [focus]` — a manual, one-shot compaction of the context window
+  (reuses the engine's summarization) with a before/after report; the
+  per-turn auto-windowing is left untouched.
+- `/refine [instructions]` — schedule a manual refinement round over the
+  last task; `/refine rollback` reverts the most recent round.
+- `/lessons` — the applied refinement lessons.
+- `/memory` — the L1 core memory block plus L2 episodic stats.
+- `/btw <question>` — a throwaway side question on an isolated agent so
+  the current session/history is not touched.
+- `/name <title>` — alias for v1's `/title`.
+- Bare `/load` (no id) opens the **session picker**: type to fuzzy-filter,
+  `↑/↓` move, `Enter` loads, `Esc`/`Ctrl+C` cancel.
 
 The v1 print-based REPL is unchanged and remains the default; v2 is
 opt-in via the flag above.  Voice / email / supervisor / team surfaces
