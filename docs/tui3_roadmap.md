@@ -612,3 +612,14 @@ a note to the team that the coordinator weighs in its **final synthesis**.
 - **Tests** - 7 new (core: add_note/notes/strip/empty/cap; tui2: no run; add + list;
   usage when empty; dispatch).  tui2 suite 354 passed; full suite 728 green
   (354+79+295); core team suite 54 green (no regression).
+
+## tui3: window title prefers the session title (polish)
+
+**Window title now shows the session title** — a small polish on the window
+title feature.  _refresh_window_title() now reads the session title via
+db.load_session_title(sid) and prefers it over the raw session id (falling
+back to the short id when no title is set, or if the DB read fails).  So a
+titled session shows `nbchat <title>` in the tab; an untitled one shows
+`nbchat <short-id>`.  Best-effort (a DB failure just means the id is shown).
++2 tests (title shown when set; fallback to id when unset). tui2 suite 356
+passed; full suite 730 green (356+79+295).

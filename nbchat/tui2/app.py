@@ -3107,9 +3107,19 @@ class ChatApp(TerminalAgent):
         if term is None or getattr(term, "_passthrough", False):
             return
         sid = self.session_id or ""
-        short = sid.rsplit(":", 1)[-1][:8] if sid else ""
+        # Prefer a user-set session title (more readable in a tab) over the
+        # raw id; fall back to the short id when no title is set.  Best-effort
+        # DB read - a failure just means the id is shown.
+        label = ""
+        try:
+            from nbchat.core import db as _db
+            label = (_db.load_session_title(sid) or "").strip() if sid else ""
+        except Exception:
+            label = ""
+        if not label:
+            label = sid.rsplit(":", 1)[-1][:8] if sid else ""
         working = self._turn_thread is not None and self._turn_thread.is_alive()
-        title = "nbchat" + ((" " + short) if short else "")
+        title = "nbchat" + ((" " + label[:32]) if label else "")
         if working:
             title += " [working]"
         try:

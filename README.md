@@ -349,8 +349,9 @@ shell command (`!ls`); `!!` also stores the output for later.
   light/dark appearance (DECSTERA) and picks the matching theme at each start,
   so a light terminal gets the light theme with no fuss.
 - **Window title** — the terminal window/tab title is set to
-  ``nbchat <session-id>`` and updated to ``nbchat <session-id> [working]``
-  while a turn is running (a side-channel OSC escape written straight to the
+  ``nbchat <session-title>`` (or ``nbchat <session-id>`` when no title is
+  set via /title) and updated to ``nbchat <session-title> [working]`` while
+  a turn is running (a side-channel OSC escape written straight to the
   terminal, never part of the diffed frame, so it cannot disturb rendering).
   Handy for spotting an active agent at a glance in a tabbed terminal.
   `NBCHAT_TUI3_WINDOW_TITLE=0` disables it.

@@ -2585,6 +2585,31 @@ def test_cmd_msg_dispatched():
     app._run_command("/msg")  # must not raise; routes to _cmd_msg
 
 
+def test_window_title_uses_session_title(monkeypatch):
+    import nbchat.core.db as db
+    app, *_ = _make_chat_app()
+    term = _CapTerm()
+    app._tui.term = term
+    app._turn_thread = None
+    monkeypatch.setattr(db, "load_session_title", lambda sid: "my project", raising=False)
+    app._refresh_window_title()
+    seq = term.written[-1]
+    assert "my project" in seq
+    assert "[working]" not in seq
+
+def test_window_title_falls_back_to_id(monkeypatch):
+    import nbchat.core.db as db
+    app, *_ = _make_chat_app()
+    term = _CapTerm()
+    app._tui.term = term
+    app._turn_thread = None
+    monkeypatch.setattr(db, "load_session_title", lambda sid: "", raising=False)
+    app._refresh_window_title()
+    seq = term.written[-1]
+    # no title -> falls back to the short session id (or just "nbchat")
+    assert "nbchat" in seq
+
+
 
 
 
