@@ -2487,3 +2487,78 @@ def test_cmd_search_builds_duckduckgo_url(monkeypatch):
     _drain_calls(app, events)
     assert "duckduckgo.com" in seen["url"]
     assert "hello+world" in seen["url"]
+
+
+# ── /sup (supervisor state query + watchdog wiring) ──────────────────
+
+class _FakeSupervisor:
+    def __init__(self, answer="all good"):
+        self._answer = answer
+        self.running = True
+        self.interjection_count = 3
+        self._interval = 30
+        self._cooldown = 60
+        self.started = False
+        self.stopped = False
+    def ask(self, question):
+        return f"{self._answer}: {question}"
+    def start(self):
+        self.started = True
+    def stop(self, timeout=5.0):
+        self.stopped = True
+
+def test_sup_not_running_note():
+    app, _, _, _ = _make_chat_app()
+    assert app._supervisor is None
+    assert "not running" in app._cmd_sup("")
+
+
+def test_sup_status_text():
+    app, _, _, _ = _make_chat_app()
+    app._supervisor = _FakeSupervisor()
+    out = app._cmd_sup("")
+    assert "running" in out
+    assert "3" in out  # interjection count
+
+
+def test_sup_query_off_thread_delivers(monkeypatch):
+    app, term, events, _ = _make_chat_app()
+    app._supervisor = _FakeSupervisor(answer="ok")
+    ack = app._cmd_sup("is it working?")
+    assert "asking" in ack
+    _drain_calls(app, events)
+    joined = "\n".join(m.text for m in app.log.messages)
+    assert "ok: is it working?" in joined
+    assert "sup:" in joined
+
+
+def test_start_supervisor_disabled_is_noop():
+    app, _, _, _ = _make_chat_app()
+    app._supervisor_enabled = False
+    app._start_supervisor()
+    assert app._supervisor is None
+
+
+def test_start_supervisor_creates_and_starts(monkeypatch):
+    import nbchat.core.supervisor as S
+    fake = _FakeSupervisor()
+    created = {}
+    def factory(agent, **kw):
+        created["agent"] = agent
+        return fake
+    monkeypatch.setattr(S, "create_supervisor", factory)
+    app, _, _, _ = _make_chat_app()
+    app._supervisor_enabled = True
+    app._start_supervisor()
+    assert app._supervisor is fake
+    assert fake.started is True
+    assert created["agent"] is app
+
+
+def test_stop_supervisor_stops():
+    app, _, _, _ = _make_chat_app()
+    fake = _FakeSupervisor()
+    app._supervisor = fake
+    app._stop_supervisor()
+    assert fake.stopped is True
+    assert app._supervisor is None

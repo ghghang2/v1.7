@@ -453,16 +453,15 @@ bot-blocked) render as a friendly note rather than a crash.
 
 ## Not addressed (out of scope for this pass, tracked in the port tracker)
 
-* **Voice / email / supervisor / team surfaces.** These start in
-  `nbchat.tui.app.run()` with print-based status output and print-based
-  inbound loops; tui2 doesn't start them (their prints would corrupt raw
-  mode). Chat + sessions + commands work; the other surfaces need a
-  dedicated UI pass (see `docs/prime_tui_port_tracker.md`).
-* **Mouse support, scroll *search* + visual copy mode, in-app theming /
-  settings, JSON socket API, detachable background agent** — the larger
-  herdr items (ranked 1–7, 9–10 in `herdr` research) that need new
-  machinery rather than a surface; tracked in the port tracker.
+* **Voice bridge.** The Alfred voice bridge (`--voice`) still starts only in
+  v1 `nbchat.tui.app.run()`; tui2 doesn't start it yet (it has its own
+  inbound loop + print-based status).  (The email and supervisor surfaces
+  were since added as tui2-native `/inbox` and `/sup` + `--supervisor`.)
 * **CJK/wide-glyph column math** (`_clamp` counts codepoints, not cells).
+
+(Already resolved since the original list: mouse wheel + drag-to-copy,
+in-log search + visual copy, in-app theming/settings, the JSON control
+socket, and the detachable background agent — see the wave notes above.)
 
 ---
 

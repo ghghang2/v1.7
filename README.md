@@ -107,6 +107,7 @@ on the next start.
 ```bash
 python -m nbchat.tui --v2        # or: python -m nbchat.tui2
 python -m nbchat.tui2 --demo     # Phase 1 rendering demo (no LLM needed)
+python -m nbchat.tui2 --supervisor   # + the always-on watchdog (§ /sup)
 ```
 
 A prime-agent-style fullscreen UI: a fixed layout
@@ -160,6 +161,14 @@ shell command (`!ls`); `!!` also stores the output for later.
   thread (the Chromium launch + fetch never freezes the interface); a missing
   scheme is auto-corrected to `https://`.  `/search <query>` is a convenience
   wrapper that browses a DuckDuckGo search for the query.
+- `/sup [question]` — supervisor state query.  `/sup` shows whether the
+  always-on watchdog is running, its review/cooldown cadence and how many
+  corrective interjections it has pushed; `/sup <question>` asks the
+  supervisor about the live system state (server, git, tasks, the
+  assistant's current progress).  The answer is an LLM call on the
+  supervisor's own slot, so it runs off the UI thread and is delivered into
+  the log.  Requires the supervisor to be started (`--supervisor` /
+  `NBCHAT_SUPERVISOR=1`).
 - `/hotkeys` — the keybinding reference.
 - `/copy` — copies the last assistant message to the clipboard (OSC 52;
   silent no-op where the terminal lacks clipboard support).

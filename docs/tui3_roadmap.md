@@ -52,6 +52,13 @@ undoable; and **`/browse <url>` / `/search <query>`** — a web surface over the
 fetch runs off the UI thread (the Chromium launch never freezes the
 interface); `/browse` shows the page title + truncated text, and `/search`
 is a convenience wrapper that browses a DuckDuckGo search for the query.
+  Also shipped: **`/sup [question]` + `--supervisor`** — the always-on
+  supervisor watchdog (v1 `--supervisor` parity).  `ChatApp` already exposes
+  the hooks the `Supervisor` needs (`_turn_active`, `interject()`, the
+  interjection queue the conversation loop drains), so it binds directly:
+  `--supervisor` starts the watchdog (it reviews in-flight work on a timer and
+  pushes corrective interjections), and `/sup` shows status while
+  `/sup <q>` asks the supervisor about live system state (off the UI thread).
 
 ## tui3 wave 1 (this pass)
 

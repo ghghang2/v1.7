@@ -159,10 +159,15 @@ class ChatApp(TerminalAgent):
     def __init__(self, term: RawTerminal, events: EventQueue,
                  resume_last: bool = True,
                  session_id: str | None = None,
-                 bg: bool = False) -> None:
+                 bg: bool = False,
+                 supervisor: bool = False) -> None:
         super().__init__(color=False)
         self.term = term
         self.events = events
+        # Always-on supervisor watchdog (v1 --supervisor parity).  Bound to
+        # this agent; started/stopped by run().  ``None`` when disabled.
+        self._supervisor_enabled = supervisor
+        self._supervisor = None
 
         # Session continuity (v1 parity): resume the last session by
         # default, a specific one when given, or a fresh one on request.
@@ -951,7 +956,7 @@ class ChatApp(TerminalAgent):
     _TUI2_NATIVE = ("/context", "/hotkeys", "/copy", "/compact",
                     "/refine", "/lessons", "/memory", "/btw", "/approve",
                     "/goal", "/notify", "/theme", "/monitor", "/inbox",
-                    "/team", "/browse", "/search")
+                    "/team", "/browse", "/search", "/sup")
 
     def _run_command(self, line: str) -> None:
         """Route a slash command.
@@ -1008,6 +1013,9 @@ class ChatApp(TerminalAgent):
             "  /monitor    live session metrics (cache / tools / warnings)",
             "  /inbox [n]  list / read unseen email (read-only, off-thread)",
             "  /team [g]   run a goal as parallel agent team (stop / status)",
+            "  /browse <u> fetch a web page's text (headless Chromium)",
+            "  /search <q> web search (DuckDuckGo) via /browse",
+            "  /sup [q]    supervisor state query / watchdog status",
             "  /compact    force a context summarisation now",
             "  /copy       copy last reply to the clipboard",
             "  /btw <q>    side question, kept out of this session",
@@ -1045,6 +1053,7 @@ class ChatApp(TerminalAgent):
             "/team": self._cmd_team,
             "/browse": self._cmd_browse,
             "/search": self._cmd_search,
+            "/sup": self._cmd_sup,
         }
         fn = handlers.get(cmd)
         try:
@@ -1204,6 +1213,35 @@ class ChatApp(TerminalAgent):
         url = "https://duckduckgo.com/html/?q=" + quote_plus(query)
         self._cmd_browse(url)
         return f"search: {query}"
+
+    # ── /sup (supervisor state query; v1 --supervisor parity) ───────────
+
+    def _cmd_sup(self, arg: str) -> str:
+        """``/sup`` status · ``/sup <question>`` ask the supervisor about the
+        live system state (server, git, tasks, assistant progress).
+
+        The answer is a synchronous LLM call on the supervisor's own slot, so
+        it runs off the UI thread (daemon) and is delivered via the ``"call"``
+        event — the render loop is never blocked.
+        """
+        sup = self._supervisor
+        if sup is None:
+            return ("sup: supervisor not running "
+                    "(start with --supervisor, or set NBCHAT_SUPERVISOR=1)")
+        question = (arg or "").strip()
+        if not question:
+            return (f"sup: {'running' if sup.running else 'stopped'}  ·  "
+                    f"interjections: {sup.interjection_count}  ·  "
+                    f"review every {sup._interval}s, cooldown {sup._cooldown}s")
+        def work() -> None:
+            try:
+                answer = sup.ask(question)
+            except Exception as exc:
+                answer = f"sup: {type(exc).__name__}: {exc}"
+            note = "sup: " + answer
+            self.events.put("call", lambda n=note: self._note(n))
+        threading.Thread(target=work, daemon=True).start()
+        return "sup: asking…"
 
     # ── /team (tui3: multi-agent team runs, output relayed off-thread) ──
 
@@ -2247,6 +2285,39 @@ class ChatApp(TerminalAgent):
         )
         return server if server.start() else None
 
+    # ── Supervisor watchdog (v1 --supervisor parity) ────────────────────
+
+    def _start_supervisor(self) -> None:
+        """Create + start the always-on supervisor bound to this agent.
+
+        Best-effort: a failure to start (e.g. missing config) is noted, not
+        fatal.  The watchdog reviews the assistant's in-flight work on a
+        timer and pushes corrective instructions onto the interjection queue,
+        which the conversation loop drains at the top of each tool-turn.
+        """
+        if not self._supervisor_enabled:
+            return
+        try:
+            from nbchat.core.supervisor import create_supervisor
+            self._supervisor = create_supervisor(self)
+            self._supervisor.start()
+            self._note(
+                f"supervisor: ACTIVE (review every "
+                f"{self._supervisor._interval}s, cooldown "
+                f"{self._supervisor._cooldown}s)"
+            )
+        except Exception as exc:
+            self._supervisor = None
+            self._note(f"supervisor: failed to start ({type(exc).__name__}: {exc})")
+
+    def _stop_supervisor(self) -> None:
+        if self._supervisor is not None:
+            try:
+                self._supervisor.stop()
+            except Exception:
+                pass
+            self._supervisor = None
+
     def run(self) -> int:
         # Redirect stderr to a log file for the session: the conversation
         # loop\'s logging warnings (mid-stream retries, …) would otherwise
@@ -2264,6 +2335,7 @@ class ChatApp(TerminalAgent):
         # Optional external control socket (tui3 wave 6): lets an external
         # process / nbchat-ctl drive this TUI.  Best-effort; never blocks.
         control = self._start_control()
+        self._start_supervisor()
         try:
             with self.term:
                 self._install_approval_gate()
@@ -2271,6 +2343,7 @@ class ChatApp(TerminalAgent):
         except KeyboardInterrupt:
             pass
         finally:
+            self._stop_supervisor()
             if control is not None:
                 try:
                     control.stop()
@@ -2399,15 +2472,20 @@ def run(argv: list | None = None) -> int:
                         help="headless / background mode: stdin EOF does not "
                              "quit; the app stays alive and is driven through "
                              "the control socket (see nbchat-ctl)")
+    parser.add_argument("--supervisor", action="store_true",
+                        help="start the always-on supervisor watchdog that "
+                             "reviews in-flight work and answers /sup queries")
     args = parser.parse_args(argv)
-    # NBCHAT_BG=1 is an environment escape hatch for the same mode.
+    # NBCHAT_BG=1 / NBCHAT_SUPERVISOR=1 are env escape hatches.
     bg = args.bg or os.environ.get("NBCHAT_BG") == "1"
+    supervisor = args.supervisor or os.environ.get("NBCHAT_SUPERVISOR") == "1"
 
     term = RawTerminal(sys.stdin, sys.stdout)
     events = EventQueue()
     try:
         app = ChatApp(term, events, resume_last=not args.new,
-                      session_id=args.session, bg=bg)
+                      session_id=args.session, bg=bg,
+                      supervisor=supervisor)
     except ValueError as exc:
         # Only reachable on a real terminal before raw mode is entered;
         # print to the main screen and exit.
