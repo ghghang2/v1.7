@@ -25,6 +25,7 @@ captured into the log.
 from __future__ import annotations
 
 import io
+import json
 import os
 import re
 import subprocess
@@ -1251,7 +1252,7 @@ class ChatApp(TerminalAgent):
                     "/goal", "/notify", "/theme", "/monitor", "/inbox",
                     "/team", "/browse", "/search", "/sup", "/voice",
                     "/fork", "/checkpoint", "/undo", "/find", "/diff",
-                    "/export", "/plan", "/retry", "/queue", "/tpl", "/editor", "/gstatus")
+                    "/export", "/plan", "/retry", "/queue", "/tpl", "/editor", "/gstatus", "/stash")
 
     def _run_command(self, line: str) -> None:
         """Route a slash command.
@@ -1324,6 +1325,7 @@ class ChatApp(TerminalAgent):
             "  /tpl [name [args]] prompt templates from prompts/*.md",
             "  /editor [ctrl+e]  compose the draft in $EDITOR",
             "  /gstatus  git working-tree overview (branch/staged/unstaged/untracked)",
+            "  /stash [push|pop [n]|clear]  stash/pop drafts (git-stash for input)",
             "  @<path>      file completion (type @ + a filename, pick a match)",
             "  /compact    force a context summarisation now",
             "  /copy       copy last reply to the clipboard",
@@ -1377,6 +1379,7 @@ class ChatApp(TerminalAgent):
             "/tpl": self._cmd_tpl,
             "/editor": self._cmd_editor,
             "/gstatus": self._cmd_gstatus,
+            "/stash": self._cmd_stash,
         }
         fn = handlers.get(cmd)
         try:
@@ -1844,6 +1847,109 @@ class ChatApp(TerminalAgent):
         ))
         return (f"gstatus: {len(staged)} staged, {len(unstaged)} unstaged, "
                 f"{len(untracked)} untracked on {branch}")
+
+    # ── /stash (tui3: prompt stash — git-stash for the input buffer) ──
+    _STASH_MAX = 50
+
+    def _stash_file(self) -> str:
+        p = os.environ.get("NBCHAT_STASH_FILE")
+        if p:
+            return p
+        return os.path.join(os.path.expanduser("~/.nbchat"), "tui3-stash.jsonl")
+
+    def _stash_load(self) -> list:
+        p = self._stash_file()
+        try:
+            if not os.path.exists(p):
+                return []
+            items = []
+            with open(p, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        items.append(json.loads(line))
+                    except Exception:
+                        pass
+            return items[-self._STASH_MAX:]
+        except Exception:
+            return []
+
+    def _stash_save(self, items: list) -> None:
+        p = self._stash_file()
+        try:
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "w", encoding="utf-8") as f:
+                for it in items[-self._STASH_MAX:]:
+                    f.write(json.dumps(it, ensure_ascii=False) + chr(10))
+        except Exception:
+            pass
+
+    def _cmd_stash(self, arg: str) -> str:
+        """``/stash [push|pop [n]|clear]`` — git-stash for the input buffer.
+
+        Push the draft you are composing (persists it, up to 50 entries),
+        compose something else, then pop the stashed draft back.  Complements
+        the Ctrl+Q steering queue (which queues messages to *send*); the stash
+        holds *drafts to compose later* and survives restarts.
+        """
+        a = (arg or "").strip()
+        toks = a.split()
+        if not toks:
+            items = self._stash_load()
+            if not items:
+                return "stash: empty (use /stash push to save the current draft)"
+            rows = []
+            for i, it in enumerate(items, 1):
+                txt = (it.get("text") or "").replace(chr(10), " ")
+                label = (it.get("label") or "").strip()
+                shown = (label + " — " if label else "") + txt[:40]
+                if len(txt) > 40:
+                    shown += "…"
+                rows.append(f"  {i}. {shown}")
+            body = [f"stash: {len(items)} draft(s) — most recent last"] + rows
+            self.log.add(chatc.ChatMessage(
+                role="assistant",
+                blocks=[chatc.ChatBlock(kind="tool", name="stash",
+                                        title="prompt stash", status="done",
+                                        body=body, diff=False)],
+            ))
+            return f"stash: {len(items)} draft(s); /stash pop [n] to load one"
+        cmd = toks[0].lower()
+        if cmd in ("push", "p", "+"):
+            draft = self.editor.text()
+            if not draft.strip():
+                return "stash: nothing to stash (the editor is empty)"
+            label = " ".join(toks[1:]) if len(toks) > 1 else ""
+            items = self._stash_load()
+            items.append({"text": draft, "label": label, "ts": time.time()})
+            self._stash_save(items)
+            self.editor.clear()
+            self._note(f"stash: pushed draft (now {len(items)}) — /stash pop to load it back")
+            return f"stash: pushed draft (now {len(items)})"
+        if cmd in ("pop", "get"):
+            items = self._stash_load()
+            if not items:
+                return "stash: empty (nothing to pop)"
+            n = len(items)
+            idx = n
+            if len(toks) > 1:
+                if not toks[1].isdigit():
+                    return f"stash: entry must be a number (1..{n})"
+                idx = int(toks[1])
+                if idx < 1 or idx > n:
+                    return f"stash: no entry {idx} (1..{n})"
+            entry = items[idx - 1]
+            self.editor.set_text(entry.get("text") or "")
+            self._note(f"stash: loaded draft #{idx} of {n} into the editor")
+            return f"stash: loaded draft #{idx} of {n}"
+        if cmd in ("clear", "c", "x", "reset"):
+            cnt = len(self._stash_load())
+            self._stash_save([])
+            self._note(f"stash: cleared {cnt} draft(s)")
+            return f"stash: cleared {cnt} draft(s)"
+        return f"stash: unknown subcommand '{cmd}' (use push / pop [n] / clear)"
 
     # ── /plan (tui3: read-only research mode) ───────────────────────────
 

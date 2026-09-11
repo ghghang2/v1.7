@@ -234,6 +234,12 @@ shell command (`!ls`); `!!` also stores the output for later.
 - **Git overview** — `/gstatus` shows the working-tree state at a glance
   (branch, staged / unstaged / untracked), complementing `/diff` and
   `/checkpoint`.  Read-only.
+- **Prompt stash** — `/stash push [label]` saves the draft you are
+  composing (persists to `~/.nbchat/tui3-stash.jsonl`, up to 50 entries);
+  `/stash pop [n]` loads a stashed draft back into the input; `/stash`
+  lists them and `/stash clear` empties them.  Complements the Ctrl+Q
+  steering queue (which queues messages to *send*; the stash holds
+  *drafts to compose later* and survives restarts).
 - `/hotkeys` — the keybinding reference.
 - `/copy` — copies the last assistant message to the clipboard (OSC 52;
   silent no-op where the terminal lacks clipboard support).

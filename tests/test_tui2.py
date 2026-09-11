@@ -3591,3 +3591,70 @@ def test_gstatus_not_git(tmp_path, monkeypatch):
     app, _, _, _ = _make_chat_app()
     out = app._cmd_gstatus("")
     assert "not a git work tree" in out
+
+
+# ── /stash (prompt stash — git-stash for the input buffer) ───────
+def _stash_app(monkeypatch, tmp_path):
+    import tempfile
+    sf = str(tmp_path / "stash.jsonl")
+    monkeypatch.setenv("NBCHAT_STASH_FILE", sf)
+    app, _, _, _ = _make_chat_app()
+    notes = []
+    monkeypatch.setattr(app, "_note", lambda t: notes.append(t))
+    return app, sf, notes
+
+def test_stash_push_empty_rejected(monkeypatch, tmp_path):
+    app, sf, notes = _stash_app(monkeypatch, tmp_path)
+    out = app._cmd_stash("")
+    assert "empty" in out
+
+def test_stash_push_and_pop_roundtrip(monkeypatch, tmp_path):
+    app, sf, notes = _stash_app(monkeypatch, tmp_path)
+    app.editor.set_text("my long draft about refactoring")
+    out = app._cmd_stash("push")
+    assert "pushed" in out
+    assert app.editor.text() == ""          # cleared after push
+    assert os.path.exists(sf)
+    out2 = app._cmd_stash("pop")
+    assert "loaded" in out2
+    assert app.editor.text() == "my long draft about refactoring"
+
+def test_stash_push_with_label_and_list(monkeypatch, tmp_path):
+    app, sf, notes = _stash_app(monkeypatch, tmp_path)
+    app.editor.set_text("first draft")
+    app._cmd_stash("push first")
+    app.editor.set_text("second draft")
+    app._cmd_stash("push second")
+    out = app._cmd_stash("")
+    assert "2 draft(s)" in out
+    blk = app.log.messages[-1].blocks[0]
+    joined = chr(10).join(blk.body)
+    assert "first draft" in joined and "second draft" in joined
+
+def test_stash_pop_by_index(monkeypatch, tmp_path):
+    app, sf, notes = _stash_app(monkeypatch, tmp_path)
+    app.editor.set_text("A"); app._cmd_stash("push")
+    app.editor.set_text("B"); app._cmd_stash("push")
+    app._cmd_stash("pop 1")
+    assert app.editor.text() == "A"
+    app._cmd_stash("pop 2")
+    assert app.editor.text() == "B"
+    assert "no entry 3" in app._cmd_stash("pop 3")
+
+def test_stash_clear(monkeypatch, tmp_path):
+    app, sf, notes = _stash_app(monkeypatch, tmp_path)
+    app.editor.set_text("x"); app._cmd_stash("push")
+    out = app._cmd_stash("clear")
+    assert "cleared 1" in out
+    assert "empty" in app._cmd_stash("")
+
+def test_stash_persists_across_instances(monkeypatch, tmp_path):
+    import tempfile
+    sf = str(tmp_path / "stash.jsonl")
+    monkeypatch.setenv("NBCHAT_STASH_FILE", sf)
+    a1, _, _, _ = _make_chat_app()
+    a1.editor.set_text("persisted draft")
+    a1._cmd_stash("push")
+    a2, _, _, _ = _make_chat_app()
+    a2._cmd_stash("pop")
+    assert a2.editor.text() == "persisted draft"
