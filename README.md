@@ -136,6 +136,9 @@ shell command (`!ls`); `!!` also stores the output for later.
 
 - `/context` — model, session, context bar, tool-output compression and
   turn count.
+- `/monitor` — live per-session metrics from the monitoring engine
+  (cache similarity / invalidation, per-tool call counts and error rates,
+  any detected warnings).
 - `/hotkeys` — the keybinding reference.
 - `/copy` — copies the last assistant message to the clipboard (OSC 52;
   silent no-op where the terminal lacks clipboard support).

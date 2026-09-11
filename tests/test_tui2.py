@@ -2122,3 +2122,28 @@ def test_bg_mode_quit_via_control_socket(tmp_path):
             proc.wait(timeout=5)
         except Exception:
             pass
+
+
+# ── tui3: /monitor (live per-session observability) ──────────────────
+
+def test_cmd_monitor_reports_session_metrics():
+    app, term, events, _ = _make_chat_app()
+    from nbchat.core import monitoring as mon
+    m = mon.get_session_monitor(app.session_id)
+    m.record_llm_call(volatile_len=1234)
+    m.record_tool_call("read_file", was_compressed=False, had_error=False,
+                       input_chars=100, output_chars=50)
+    out = app._cmd_monitor("")
+    assert "Session:" in out
+    assert app.session_id in out
+    assert "read_file" in out
+
+
+def test_cmd_monitor_is_native_and_safe():
+    app, term, events, _ = _make_chat_app()
+    # /monitor is a tui2-native command (intercepted before v1).
+    assert "/monitor" in app._TUI2_NATIVE
+    # With no metrics recorded it still returns a friendly note, not a crash.
+    fresh = _make_chat_app()[0]
+    out = fresh._cmd_monitor("")
+    assert isinstance(out, str) and out

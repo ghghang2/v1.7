@@ -393,6 +393,14 @@ its own session (survives the launcher / an SSH drop), with its socket at
 optionally submitting a first task.  This completes the "detach without
 stopping work" roadmap item (row 7).
 
+**`/monitor` (live per-session observability):** a tui2-native slash command
+surfacing the existing `nbchat.core.monitoring` engine's per-session metrics
+— cache similarity / invalidation rate, per-tool call counts, reread and
+error-after-compression rates, and any detected warnings.  Read-only (no new
+subsystem); the data is accumulated by the conversation loop as the session
+runs, so it is live.  Returns a friendly note when nothing has been recorded
+yet (e.g. a fresh session before the first turn).
+
 ---
 
 ## Not addressed (out of scope for this pass, tracked in the port tracker)

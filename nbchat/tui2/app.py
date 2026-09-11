@@ -863,7 +863,7 @@ class ChatApp(TerminalAgent):
     # v1 print REPL.  Everything else falls through to v1 ``handle_command``.
     _TUI2_NATIVE = ("/context", "/hotkeys", "/copy", "/compact",
                     "/refine", "/lessons", "/memory", "/btw", "/approve",
-                    "/goal", "/notify", "/theme")
+                    "/goal", "/notify", "/theme", "/monitor")
 
     def _run_command(self, line: str) -> None:
         """Route a slash command.
@@ -917,6 +917,7 @@ class ChatApp(TerminalAgent):
         rows = [
             "TUI v2 extras (not in v1):",
             "  /context    model + context window + compression stats",
+            "  /monitor    live session metrics (cache / tools / warnings)",
             "  /compact    force a context summarisation now",
             "  /copy       copy last reply to the clipboard",
             "  /btw <q>    side question, kept out of this session",
@@ -949,6 +950,7 @@ class ChatApp(TerminalAgent):
             "/goal": self._cmd_goal,
             "/notify": self._cmd_notify,
             "/theme": self._cmd_theme,
+            "/monitor": self._cmd_monitor,
         }
         fn = handlers.get(cmd)
         try:
@@ -989,6 +991,22 @@ class ChatApp(TerminalAgent):
             pass
         lines.append(f"turns {self._turns}")
         return "\n".join(lines)
+
+    def _cmd_monitor(self, arg: str) -> str:
+        """Live per-session observability (tui3): cache similarity, tool
+        call counts / errors, and any warnings the monitoring engine has
+        detected.  Read-only — the data is accumulated by the conversation
+        loop via ``nbchat.core.monitoring`` as the session runs."""
+        from nbchat.core import monitoring as mon
+
+        try:
+            report = mon.get_session_monitor(self.session_id).get_session_report()
+        except Exception as exc:
+            return f"monitor error: {type(exc).__name__}: {exc}"
+        text = mon.format_report(report).strip()
+        if not text:
+            return "monitor: no metrics recorded yet this session"
+        return text
 
     def _cmd_hotkeys(self, arg: str) -> str:
         """Generated from the single ``KEYMAP`` source of truth."""
