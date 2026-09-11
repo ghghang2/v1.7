@@ -108,6 +108,7 @@ on the next start.
 python -m nbchat.tui --v2        # or: python -m nbchat.tui2
 python -m nbchat.tui2 --demo     # Phase 1 rendering demo (no LLM needed)
 python -m nbchat.tui2 --supervisor   # + the always-on watchdog (§ /sup)
+python -m nbchat.tui2 --voice        # + the Alfred voice bridge (§ /voice)
 ```
 
 A prime-agent-style fullscreen UI: a fixed layout
@@ -169,6 +170,12 @@ shell command (`!ls`); `!!` also stores the output for later.
   supervisor's own slot, so it runs off the UI thread and is delivered into
   the log.  Requires the supervisor to be started (`--supervisor` /
   `NBCHAT_SUPERVISOR=1`).
+- `/voice` — status of the Alfred voice bridge.  `--voice` (or
+  `NBCHAT_VOICE=1`) starts the bridge on `localhost:8765`; a laptop Alfred
+  client reaches it over an SSH tunnel (`ssh -L 8765:127.0.0.1:8765
+  user@server`) and POSTs transcripts, which are auto-submitted as user
+  turns exactly like keyboard input (off the UI thread, so the raw screen
+  is never touched from a background thread).
 - `/hotkeys` — the keybinding reference.
 - `/copy` — copies the last assistant message to the clipboard (OSC 52;
   silent no-op where the terminal lacks clipboard support).

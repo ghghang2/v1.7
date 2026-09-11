@@ -2562,3 +2562,56 @@ def test_stop_supervisor_stops():
     app._stop_supervisor()
     assert fake.stopped is True
     assert app._supervisor is None
+
+
+# ── /voice (Alfred voice bridge wiring) ───────────────────────────────
+
+def test_voice_not_running_note():
+    app, _, _, _ = _make_chat_app()
+    assert app._voice_bridge is None
+    assert "not running" in app._cmd_voice("")
+
+
+def test_start_voice_disabled_is_noop():
+    app, _, _, _ = _make_chat_app()
+    app._voice_enabled = False
+    app._start_voice()
+    assert app._voice_bridge is None
+
+
+class _FakeVoiceBridge:
+    def __init__(self):
+        self.port = 8765
+        self.stopped = False
+        self.started = False
+    def start(self):
+        self.started = True
+        return True
+    def stop(self):
+        self.stopped = True
+
+def test_cmd_voice_active_status():
+    app, _, _, _ = _make_chat_app()
+    app._voice_bridge = _FakeVoiceBridge()
+    out = app._cmd_voice("")
+    assert "ACTIVE" in out
+
+
+def test_voice_submit_records_history_notes_and_starts_turn(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    seen = {}
+    monkeypatch.setattr(app, "_start_turn", lambda t: seen.setdefault("turn", t))
+    monkeypatch.setattr(app, "_note", lambda s: seen.setdefault("note", s))
+    app._voice_submit("hello from mic")
+    assert "hello from mic" in app._history
+    assert seen.get("turn") == "hello from mic"
+    assert "[voice]" in seen.get("note", "")
+
+
+def test_stop_voice_stops_bridge():
+    app, _, _, _ = _make_chat_app()
+    fake = _FakeVoiceBridge()
+    app._voice_bridge = fake
+    app._stop_voice()
+    assert fake.stopped is True
+    assert app._voice_bridge is None

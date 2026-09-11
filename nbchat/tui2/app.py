@@ -160,7 +160,8 @@ class ChatApp(TerminalAgent):
                  resume_last: bool = True,
                  session_id: str | None = None,
                  bg: bool = False,
-                 supervisor: bool = False) -> None:
+                 supervisor: bool = False,
+                 voice: bool = False) -> None:
         super().__init__(color=False)
         self.term = term
         self.events = events
@@ -168,6 +169,11 @@ class ChatApp(TerminalAgent):
         # this agent; started/stopped by run().  ``None`` when disabled.
         self._supervisor_enabled = supervisor
         self._supervisor = None
+        # Alfred voice bridge (v1 --voice parity).  The laptop client reaches
+        # the bridge over an SSH tunnel; inbound transcripts are auto-submitted
+        # as user turns.  ``_voice_bridge`` is ``None`` when disabled.
+        self._voice_enabled = voice
+        self._voice_bridge = None
 
         # Session continuity (v1 parity): resume the last session by
         # default, a specific one when given, or a fresh one on request.
@@ -956,7 +962,7 @@ class ChatApp(TerminalAgent):
     _TUI2_NATIVE = ("/context", "/hotkeys", "/copy", "/compact",
                     "/refine", "/lessons", "/memory", "/btw", "/approve",
                     "/goal", "/notify", "/theme", "/monitor", "/inbox",
-                    "/team", "/browse", "/search", "/sup")
+                    "/team", "/browse", "/search", "/sup", "/voice")
 
     def _run_command(self, line: str) -> None:
         """Route a slash command.
@@ -1016,6 +1022,7 @@ class ChatApp(TerminalAgent):
             "  /browse <u> fetch a web page's text (headless Chromium)",
             "  /search <q> web search (DuckDuckGo) via /browse",
             "  /sup [q]    supervisor state query / watchdog status",
+            "  /voice      Alfred voice-bridge status (--voice)",
             "  /compact    force a context summarisation now",
             "  /copy       copy last reply to the clipboard",
             "  /btw <q>    side question, kept out of this session",
@@ -1054,6 +1061,7 @@ class ChatApp(TerminalAgent):
             "/browse": self._cmd_browse,
             "/search": self._cmd_search,
             "/sup": self._cmd_sup,
+            "/voice": self._cmd_voice,
         }
         fn = handlers.get(cmd)
         try:
@@ -1242,6 +1250,19 @@ class ChatApp(TerminalAgent):
             self.events.put("call", lambda n=note: self._note(n))
         threading.Thread(target=work, daemon=True).start()
         return "sup: asking…"
+
+    def _cmd_voice(self, arg: str) -> str:
+        """``/voice`` — status of the Alfred voice bridge (if started)."""
+        if self._voice_bridge is None:
+            return ("voice: bridge not running "
+                    "(start with --voice, or set NBCHAT_VOICE=1)")
+        try:
+            import nbchat.core.config as _cfg
+            port = _cfg.VOICE_PORT
+        except Exception:
+            port = "?"
+        return (f"voice: ACTIVE on localhost:{port}  ·  "
+                f"ssh -L {port}:127.0.0.1:{port} user@server")
 
     # ── /team (tui3: multi-agent team runs, output relayed off-thread) ──
 
@@ -2318,6 +2339,87 @@ class ChatApp(TerminalAgent):
                 pass
             self._supervisor = None
 
+    # ── Alfred voice bridge (v1 --voice parity) ─────────────────────────
+
+    def _start_voice(self) -> None:
+        """Create + start the Alfred voice bridge (localhost, SSH-tunnelled).
+
+        Best-effort: a failed bind (port in use, no fastapi) is noted, not
+        fatal.  A daemon thread blocks on the bridge's inbound queue and, for
+        each transcript, dispatches a tui2-native submit onto the UI thread
+        (via the "call" event) — so the voice path reuses the exact same
+        turn-launch / interjection machinery as keyboard input, and the raw
+        screen is never touched from a background thread.
+        """
+        if not self._voice_enabled:
+            return
+        try:
+            from nbchat.voice.events import ALFRED_VOICE_PROMPT, VoiceEventBus
+            from nbchat.voice.server import VoiceBridge
+            import nbchat.core.config as _cfg
+        except Exception as exc:
+            self._note(f"voice: unavailable ({type(exc).__name__}: {exc})")
+            return
+        try:
+            bus = VoiceEventBus()
+            self._voice_bus = bus
+            self.system_prompt += ALFRED_VOICE_PROMPT
+            port = _cfg.VOICE_PORT
+            bridge = VoiceBridge(bus, port=port)
+            if not bridge.start():
+                self._note(f"voice: bridge FAILED to start on port {port}")
+                self._voice_bus = None
+                return
+            self._voice_bridge = bridge
+            threading.Thread(target=self._voice_inbound_loop,
+                             daemon=True, name="nbchat-voice-in").start()
+            self._note(
+                f"voice: ACTIVE on localhost:{port}  (ssh -L "
+                f"{port}:127.0.0.1:{port} user@server)"
+            )
+        except Exception as exc:
+            self._note(f"voice: failed to start ({type(exc).__name__}: {exc})")
+            self._voice_bridge = None
+
+    def _stop_voice(self) -> None:
+        if self._voice_bridge is not None:
+            try:
+                self._voice_bridge.stop()
+            except Exception:
+                pass
+            self._voice_bridge = None
+
+    def _voice_inbound_loop(self) -> None:
+        """Daemon: block on the bridge's inbound queue and auto-submit.
+
+        Runs OFF the UI thread.  When a transcript arrives it fires the
+        "received" ack (back to the laptop client) and hands the text to
+        ``_voice_submit`` on the UI thread.
+        """
+        bridge = self._voice_bridge
+        if bridge is None:
+            return
+        while True:
+            transcript = bridge.get_inbound(timeout=1.0)
+            if transcript is None:
+                if self._voice_bridge is None:  # stopped
+                    return
+                continue
+            try:
+                self._voice_fire("received")
+            except Exception:
+                pass
+            self.events.put("call",
+                            lambda t=transcript: self._voice_submit(t))
+
+    def _voice_submit(self, text: str) -> None:
+        """UI-thread submit of a voice transcript (mirrors a typed line)."""
+        self._history.append(text)
+        if len(self._history) > 200:
+            self._history = self._history[-200:]
+        self._note(f"♪ [voice] {text}")
+        self._start_turn(text)
+
     def run(self) -> int:
         # Redirect stderr to a log file for the session: the conversation
         # loop\'s logging warnings (mid-stream retries, …) would otherwise
@@ -2336,6 +2438,7 @@ class ChatApp(TerminalAgent):
         # process / nbchat-ctl drive this TUI.  Best-effort; never blocks.
         control = self._start_control()
         self._start_supervisor()
+        self._start_voice()
         try:
             with self.term:
                 self._install_approval_gate()
@@ -2343,6 +2446,7 @@ class ChatApp(TerminalAgent):
         except KeyboardInterrupt:
             pass
         finally:
+            self._stop_voice()
             self._stop_supervisor()
             if control is not None:
                 try:
@@ -2475,17 +2579,21 @@ def run(argv: list | None = None) -> int:
     parser.add_argument("--supervisor", action="store_true",
                         help="start the always-on supervisor watchdog that "
                              "reviews in-flight work and answers /sup queries")
+    parser.add_argument("--voice", action="store_true",
+                        help="start the Alfred voice bridge (localhost; reach "
+                             "it via an SSH tunnel) and auto-submit transcripts")
     args = parser.parse_args(argv)
-    # NBCHAT_BG=1 / NBCHAT_SUPERVISOR=1 are env escape hatches.
+    # NBCHAT_BG=1 / NBCHAT_SUPERVISOR=1 / NBCHAT_VOICE=1 are env escape hatches.
     bg = args.bg or os.environ.get("NBCHAT_BG") == "1"
     supervisor = args.supervisor or os.environ.get("NBCHAT_SUPERVISOR") == "1"
+    voice = args.voice or os.environ.get("NBCHAT_VOICE") == "1"
 
     term = RawTerminal(sys.stdin, sys.stdout)
     events = EventQueue()
     try:
         app = ChatApp(term, events, resume_last=not args.new,
                       session_id=args.session, bg=bg,
-                      supervisor=supervisor)
+                      supervisor=supervisor, voice=voice)
     except ValueError as exc:
         # Only reachable on a real terminal before raw mode is entered;
         # print to the main screen and exit.

@@ -453,13 +453,13 @@ bot-blocked) render as a friendly note rather than a crash.
 
 ## Not addressed (out of scope for this pass, tracked in the port tracker)
 
-* **Voice bridge.** The Alfred voice bridge (`--voice`) still starts only in
-  v1 `nbchat.tui.app.run()`; tui2 doesn't start it yet (it has its own
-  inbound loop + print-based status).  (The email and supervisor surfaces
-  were since added as tui2-native `/inbox` and `/sup` + `--supervisor`.)
 * **CJK/wide-glyph column math** (`_clamp` counts codepoints, not cells).
 
-(Already resolved since the original list: mouse wheel + drag-to-copy,
+(All of the original v1-only surfaces are now tui2-native: email (`/inbox`),
+supervisor (`/sup` + `--supervisor`), team (`/team`), and the Alfred voice
+bridge (`/voice` + `--voice`, whose v1 print-based inbound loop was replaced
+by an off-thread daemon that dispatches a tui2-native submit onto the UI
+thread).  Also resolved since the original list: mouse wheel + drag-to-copy,
 in-log search + visual copy, in-app theming/settings, the JSON control
 socket, and the detachable background agent — see the wave notes above.)
 

@@ -59,6 +59,15 @@ is a convenience wrapper that browses a DuckDuckGo search for the query.
   `--supervisor` starts the watchdog (it reviews in-flight work on a timer and
   pushes corrective interjections), and `/sup` shows status while
   `/sup <q>` asks the supervisor about live system state (off the UI thread).
+  Also shipped: **`/voice` + `--voice`** — the Alfred voice bridge (v1
+  `--voice` parity).  `--voice` starts the `nbchat.voice` bridge on
+  `localhost:8765`; an off-thread daemon blocks on its inbound queue and, for
+  each transcript, dispatches a tui2-native submit onto the UI thread (via the
+  `"call"` event), so a voice turn reuses the exact same turn-launch /
+  interjection machinery as keyboard input and the raw screen is never touched
+  from a background thread.  `/voice` shows the bridge status.  (This closes
+  the last of the v1-only surfaces — chat, sessions, commands, email,
+  supervisor, team, and voice are all now tui2-native.)
 
 ## tui3 wave 1 (this pass)
 
