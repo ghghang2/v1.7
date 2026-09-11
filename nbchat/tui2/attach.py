@@ -41,11 +41,17 @@ def run(argv: list[str] | None = None) -> int:
                     help="control-socket path (default: the standard path)")
     ap.add_argument("--interval", type=float, default=1.0,
                     help="poll interval in seconds (default 1.0)")
+    ap.add_argument("--frame", action="store_true",
+                    help="render the full frame (log + editor + status) live, "
+                         "instead of tailing the conversation")
     ns = ap.parse_args(parsed)
     from . import ctl
     path = ns.socket if ns.socket else ctl.socket_path()
+    # The initial probe uses the `frame` command in --frame mode and `log`
+    # otherwise; both are read-only.
+    probe_cmd = "frame" if ns.frame else "log"
     try:
-        resp = ctl.call(path, "log", timeout=5.0)
+        resp = ctl.call(path, probe_cmd, timeout=5.0)
     except Exception as exc:
         print(f"cannot connect to {path}: {type(exc).__name__}: {exc}")
         print("(is the TUI running with NBCHAT_CTL_SOCKET pointed there?)")
@@ -54,9 +60,38 @@ def run(argv: list[str] | None = None) -> int:
         print(f"error: {resp.get('error')}")
         return 1
     data = resp.get("data", {})
-    sid = data.get("session", "")
-    print(f"# attached to {path} (session {sid}); Ctrl+C to detach")
+    if ns.frame:
+        print(f"# attached to {path} (frame mode); Ctrl+C to detach")
+    else:
+        sid = data.get("session", "")
+        print(f"# attached to {path} (session {sid}); Ctrl+C to detach")
     sys.stdout.flush()
+    if ns.frame:
+        # Full-frame reattach view: clear the screen and redraw the frame
+        # (log + editor + status) on every poll.  A simple "mirror" of the
+        # remote TUI (no mouse / keys forwarded; use `send` for input).
+        try:
+            while True:
+                time.sleep(max(0.1, ns.interval))
+                resp = ctl.call(path, "frame", timeout=5.0)
+                if not resp.get("ok"):
+                    print(f"\n[detached: {resp.get('error')}]")
+                    return 1
+                lines = resp.get("data", {}).get("lines", [])
+                # Clear + redraw (CSI 2J + cursor home); no flicker guard
+                # needed for a remote mirror (the local terminal redraws
+                # from scratch each poll).
+                sys.stdout.write("\033[2J\033[H")
+                for ln in lines:
+                    sys.stdout.write(ln + "\n")
+                sys.stdout.flush()
+        except KeyboardInterrupt:
+            sys.stdout.write("\033[?1049l\033[0m")
+            sys.stdout.flush()
+            return 0
+        except Exception as exc:
+            print(f"\n[detached: {type(exc).__name__}: {exc}]")
+            return 1
     seen = 0
     last_count = len(data.get("messages", []))
     try:

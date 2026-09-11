@@ -55,13 +55,15 @@ class ControlServer:
                  send_fn: Optional[Callable] = None,
                  quit_fn: Optional[Callable] = None,
                  result_fn: Optional[Callable] = None,
-                 log_fn: Optional[Callable] = None) -> None:
+                 log_fn: Optional[Callable] = None,
+                 frame_fn: Optional[Callable] = None) -> None:
         self.path = path
         self.dispatch = dispatch          # fn(closure) -> enqueue on UI thread
         self.status_fn = status_fn        # fn() -> dict   (read-only)
         self.sessions_fn = sessions_fn    # fn() -> list   (read-only)
         self.result_fn = result_fn        # fn() -> dict   (read-only)
         self.log_fn = log_fn              # fn(limit) -> list  (read-only)
+        self.frame_fn = frame_fn          # fn() -> dict      (read-only)
         self.theme_fn = theme_fn          # fn(name) on UI thread
         self.send_fn = send_fn            # fn(text) on UI thread
         self.quit_fn = quit_fn            # fn() on UI thread
@@ -171,6 +173,13 @@ class ControlServer:
                 except ValueError:
                     limit = 0
                 return {"ok": True, "data": self.log_fn(limit)}
+            if cmd == "frame":
+                if self.frame_fn is None:
+                    return {"ok": False, "error": "frame unsupported"}
+                data = self.frame_fn()
+                if isinstance(data, dict) and data.get("ok") is False:
+                    return data
+                return {"ok": True, "data": data}
             if cmd == "theme":
                 if self.theme_fn is None:
                     return {"ok": False, "error": "theme unsupported"}
@@ -306,7 +315,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     import sys
     argv = list(argv if argv is not None else sys.argv[1:])
     if not argv or argv[0] in ("-h", "--help", "help"):
-        print("usage: python -m nbchat.tui2.ctl <status|sessions|result|log|theme|send|quit> [arg]")
+        print("usage: python -m nbchat.tui2.ctl <status|sessions|result|log|frame|theme|send|quit> [arg]")
         print("       log [N] -> the recent conversation for the session (N = max messages)")
         print("       python -m nbchat.tui2.ctl bg [--session ID] [initial prompt...]")
         return 0 if argv else 2

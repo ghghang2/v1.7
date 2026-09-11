@@ -438,6 +438,14 @@ shell command (`!ls`); `!!` also stores the output for later.
   ```
   python -m nbchat.tui2 --attach ~/.nbchat/tui2-bg.sock --interval 0.5
   ```
+
+  `--attach --frame` is the full "reattach" view: it mirrors the remote
+  TUI's rendered frame (log + editor + status) live, clearing and redrawing
+  each poll (a read-only mirror; use `send` for input):
+
+  ```
+  python -m nbchat.tui2 --attach ~/.nbchat/tui2-bg.sock --frame --interval 0.3
+  ```
 - **Graceful terminal disconnect.**  When the terminal drops (SSH drop /
   terminal closed -> `SIGHUP`) during a running turn, the TUI flags the
   disconnect and, on exit, gives the in-flight turn a bounded chance (default

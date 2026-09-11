@@ -4293,6 +4293,18 @@ class ChatApp(TerminalAgent):
             except Exception:
                 return {"session": sid, "messages": []}
 
+        def _frame() -> dict:
+            # Read-only: the current rendered frame as plain text (one line
+            # per frame row).  Feeds the "full reattach" view (see the exact
+            # UI: log + editor + status), not just the conversation.
+            try:
+                fr = self._build_frame()
+                return {"lines": [l.text for l in fr.lines],
+                        "width": int(fr.width), "height": int(fr.height)}
+            except Exception as exc:
+                return {"ok": False,
+                        "error": f"{type(exc).__name__}: {exc}"}
+
         def _theme(name: str) -> None:
             out = self._cmd_theme(name)
             if out:
@@ -4312,6 +4324,7 @@ class ChatApp(TerminalAgent):
             sessions_fn=_sessions,
             result_fn=_result,
             log_fn=_log,
+            frame_fn=_frame,
             theme_fn=_theme,
             send_fn=_send,
             quit_fn=_quit,

@@ -2135,6 +2135,53 @@ def test_attach_main_dispatch(monkeypatch):
     assert rc == 0
     assert called.get("argv") == ["--attach", "/tmp/foo.sock"]
 
+def test_ctl_frame_command(tmp_path):
+    import os
+    from nbchat.tui2 import ctl
+    path = str(tmp_path / "ctl.sock")
+    srv = ctl.ControlServer(
+        path,
+        dispatch=lambda fn: None,
+        status_fn=lambda: {"busy": False},
+        sessions_fn=lambda: [],
+        frame_fn=lambda: {"lines": ["header", "log line", "status"],
+                            "width": 40, "height": 3},
+    )
+    assert srv.start()
+    try:
+        r = ctl.call(path, "frame")
+        assert r["ok"] and len(r["data"]["lines"]) == 3
+        assert r["data"]["lines"][0] == "header"
+        assert r["data"]["width"] == 40 and r["data"]["height"] == 3
+    finally:
+        srv.stop()
+
+def test_ctl_frame_unsupported(tmp_path):
+    from nbchat.tui2 import ctl
+    srv, path = _ctl_server(tmp_path)  # no frame_fn -> unsupported
+    try:
+        r = ctl.call(path, "frame")
+        assert not r["ok"] and "unsupported" in r["error"]
+    finally:
+        srv.stop()
+
+def test_ctl_frame_error_propagates(tmp_path):
+    from nbchat.tui2 import ctl
+    path = str(tmp_path / "ctl.sock")
+    srv = ctl.ControlServer(
+        path,
+        dispatch=lambda fn: None,
+        status_fn=lambda: {"busy": False},
+        sessions_fn=lambda: [],
+        frame_fn=lambda: {"ok": False, "error": "boom"},
+    )
+    assert srv.start()
+    try:
+        r = ctl.call(path, "frame")
+        assert not r["ok"] and r["error"] == "boom"
+    finally:
+        srv.stop()
+
 
 
 # ── tui3 wave 6: headless / background agent (--bg + nbchat-ctl bg) ────

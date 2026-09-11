@@ -718,3 +718,30 @@ ends the tail).
   exits 1. Verified E2E (a fake ControlServer with a log_fn -> the attach
   tail printed the conversation). 3 tests (role prefix; connection error; main
   dispatch). tui2 suite 373 passed; full suite 747 green (373+79+295).
+
+## tui3: frame command + --attach --frame (full reattach view, herdr #10)
+
+**`frame` command + `--attach --frame`** - the full "reattach" view of the
+background-agent workflow (a safe, scoped slice of herdr #10). The `frame`
+command returns the current rendered frame as plain text (one line per frame
+row); `--attach --frame` mirrors that frame live (clears and redraws each
+poll). Together with the `log`/`--attach` tail, `send`, and graceful
+disconnect, the background-agent workflow now has: launch + tail + full-frame
+mirror + read + send + safety.
+
+- nbchat/tui2/ctl.py: ControlServer.__init__ gains an optional frame_fn
+  (read-only); _process handles "frame" (returns {"lines", "width", "height"};
+  a frame_fn returning {"ok": False, ...} propagates the error); CLI usage
+  updated.
+- nbchat/tui2/app.py: _frame() closure in _start_control calls _build_frame()
+  and returns the plain-text lines (one per frame row); wired as frame_fn.
+- nbchat/tui2/attach.py: --frame flag - the initial probe and the poll loop
+  use the frame command (instead of log); the loop clears the screen (CSI
+  2J + home) and redraws the frame each poll; Ctrl+C leaves the alt-screen/
+  styling (rc 0).
+- Safe: purely additive, read-only (a _build_frame() call + a render); never
+  touches the UI thread or mutates the TUI; a socket error just ends the
+  mirror. Verified E2E (a fake ControlServer with a frame_fn -> the attach
+  --frame view rendered the frame lines). 3 tests (command dispatch; unsupported
+  when no frame_fn; error propagation). tui2 suite 376 passed; full suite 750
+  green (376+79+295).
