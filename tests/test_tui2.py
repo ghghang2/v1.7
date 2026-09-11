@@ -2337,6 +2337,55 @@ def test_team_capture_batches_and_flushes(monkeypatch):
     assert "hello world more" in joined
 
 
+def test_team_roster_no_run():
+    app, *_ = _make_chat_app()
+    out = app._team_roster()
+    assert "no team run yet" in out
+
+def test_team_roster_no_queue():
+    import types
+    app, *_ = _make_chat_app()
+    app._team_state["coordinator"] = types.SimpleNamespace(_pool_queue=None, _run_id="abc1234")
+    out = app._team_roster()
+    assert "no live task queue" in out
+
+def test_team_roster_shows_tasks():
+    import types
+    from nbchat.core.team import Task, TaskQueue
+    app, *_ = _make_chat_app()
+    t1 = Task("T1", "fix the login bug", title="Fix login")
+    t1.status = "claimed"
+    t2 = Task("T2", "write tests for the parser")
+    t2.status = "done"
+    s1 = Task("T1.s1", "reproduce the login bug", title="Repro login", parent_id="T1")
+    s1.status = "done"
+    s2 = Task("T1.s2", "patch the auth handler", parent_id="T1")
+    s2.status = "claimed"
+    q = TaskQueue([t1, t2])
+    q.add(s1)
+    q.add(s2)
+    app._team_state["coordinator"] = types.SimpleNamespace(_pool_queue=q, _run_id="run1")
+    app._team_state["status"] = "running"
+    out = app._team_roster()
+    assert "run1" in out
+    assert "T1" in out and "T2" in out
+    assert "claimed:2" in out and "done:2" in out
+    assert "4 tasks" in out
+    # subtask indented under its parent (subtask line has more leading
+    # whitespace than the top-level line)
+    lines = out.split(chr(10))
+    t1_line = next(l for l in lines if l.strip().startswith("T1") and "[claimed" in l)
+    s1_line = next(l for l in lines if "T1.s1" in l)
+    ind_t1 = len(t1_line) - len(t1_line.lstrip())
+    ind_s1 = len(s1_line) - len(s1_line.lstrip())
+    assert ind_s1 > ind_t1
+
+def test_team_roster_command():
+    app, *_ = _make_chat_app()
+    out = app._cmd_team("roster")
+    assert "no team run yet" in out  # idle, no coordinator
+
+
 
 
 # ── Arrow-key history recall (Up/Down) ───────────────────────────────

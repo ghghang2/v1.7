@@ -473,3 +473,30 @@ inside the TUI.  `/log` (or `/log [N]`, default 30 lines) tails it.
   N-line limit; missing file; bad args; the path helper honors
   `NBCHAT_TUI2_LOG` and falls back to `tui2-stderr.log`).  tui2 suite 332
   passed; full suite 706 green (332+79+295).
+
+## tui3: /team roster (live team-registry view, tui2-only)
+
+**`/team roster`** — a live, read-only view of a team run task-queue.  `nbchat`
+already runs multi-agent teams (`/team <goal>` spawns a `TeamCoordinator` that
+plans the goal into tasks and fans them out to worker agents), but there was no
+way to see the per-task state while a run was in flight - only the final
+report.  `/team roster` renders the live `TaskQueue`.
+
+- **`_team_roster()`** (tui2/app.py) - pure/read-only.  Reads
+  `self._team_state["coordinator"]` (the live `TeamCoordinator`) and its
+  `_pool_queue` (`TaskQueue`) + `_run_id`.  Groups tasks: top-level planner
+  tasks first, then the subtasks each one delegated (indented with `+`).
+  Each row shows `task_id [status] title`.  A header line shows the run id,
+  current status, per-status counts (`claimed:2  done:2`), and total.  Safe
+  at any time: no coordinator -> "no team run yet"; no queue (run not at its
+  pool, or finished) -> "no live task queue"; queue read guarded against
+  exceptions.  Never mutates the run.
+- **Wiring** - `/team roster` branch in `_cmd_team` (before `stop`); the
+  `_cmd_team` docstring and the `/help` list now document `/team` + the
+  `roster` subcommand.  The no-arg `/team` path is unchanged (existing team
+  tests still pass).
+- **Tests** - 4 new (no run; no queue; a real `TaskQueue` with 2 top-level
+  tasks + 2 delegated subtasks shows counts + per-status + parent/child
+  indentation; the `/team roster` command path).  Tested with a real
+  `Task`/`TaskQueue` from `nbchat.core.team` (no live team run exercised).
+  tui2 suite 336 passed; full suite 710 green (336+79+295).

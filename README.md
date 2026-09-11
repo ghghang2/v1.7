@@ -156,7 +156,11 @@ shell command (`!ls`); `!!` also stores the output for later.
   output is relayed into the log off the UI thread (never to the raw
   screen), so the interface stays live and intact.  `/team` shows the
   current/last status and final report; `/team stop` interrupts a running
-  team.
+  team; `/team roster` shows the **live task-queue view** — every planner
+  task and the subtasks it delegated, each with its current status
+  (`pending`/`claimed`/`done`/`failed`/`interrupted`), so you can poll
+  progress while a run is in flight.  Pure/read-only (reads the live
+  `TaskQueue`; never mutates the run).
 - `/browse <url>` — fetch a web page with the `nbchat.tools.browser` engine
   (headless Chromium) and show its title + text in the log.  Runs off the UI
   thread (the Chromium launch + fetch never freezes the interface); a missing
@@ -569,6 +573,7 @@ their output is prefixed `[Wn]` so interleaved streams stay readable.
 /team <goal>       start a coordinated run (background; live [Wn] output)
 /team              status of the last run
 /team stop         stop the current run (tasks wind down gracefully)
+/team roster       live task-queue view (per-task status + subtasks)
 ```
 
 ### Configuration (`repo_config.yaml`)

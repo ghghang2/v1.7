@@ -1454,6 +1454,7 @@ class ChatApp(TerminalAgent):
             "  /heartbeat every <dur> <instruction>   fire a recurring turn when idle",
             "  /autonomous <objective> [--auto]   auto-continue with an approval gate",
             "  /log [N]   tail of the TUI2 stderr log (debugging)",
+            "  /team <goal> [stop|roster]   parallel-agent team run (bg) + live task roster",
             "  @<path>      file completion (type @ + a filename, pick a match)",
             "  /compact    force a context summarisation now",
             "  /copy       copy last reply to the clipboard",
@@ -2438,6 +2439,60 @@ class ChatApp(TerminalAgent):
             lines.append(st["report"].strip())
         return "\n".join(lines)
 
+    def _team_roster(self) -> str:
+        """``/team roster`` - the live team-registry (task-queue) view.
+
+        Reads the current/last run's coordinator ``TaskQueue`` (task id,
+        title, status, parent links) and renders it as a per-task roster:
+        top-level planner tasks first, then the subtasks each one delegated
+        (indented).  Pure and read-only - no I/O, safe to call at any time
+        (a running run shows live task progress; a finished run shows the
+        final state).
+        """
+        st = self._team_state
+        coord = st["coordinator"]
+        if coord is None:
+            return "team roster: no team run yet (usage: /team <goal>)"
+        queue = getattr(coord, "_pool_queue", None)
+        if queue is None:
+            return ("team roster: no live task queue (the run has not "
+                    "reached its task pool, or it already finished and "
+                    "released it)")
+        try:
+            tasks = list(queue._tasks.values())
+        except Exception as exc:
+            return "team roster: could not read the task queue (" + type(exc).__name__ + ": " + str(exc) + ")"
+        if not tasks:
+            return "team roster: task queue is empty"
+        top = [t for t in tasks if t.parent_id is None]
+        sub = [t for t in tasks if t.parent_id is not None]
+        run_id = getattr(coord, "_run_id", "") or "-"
+        counts: dict = {}
+        for t in tasks:
+            counts[t.status] = counts.get(t.status, 0) + 1
+        counts_txt = "  ".join(str(k) + ":" + str(v) for k, v in sorted(counts.items()))
+        head = ("team roster - run " + str(run_id) + " (" + str(st["status"]) + "): "
+                + counts_txt + " (" + str(len(tasks)) + " tasks)")
+        lines = [head]
+
+        def fmt(t):
+            title = (t.title or t.objective or "").strip()
+            if len(title) > 44:
+                title = title[:42] + "..."
+            return str(t.task_id).ljust(6) + "[" + str(t.status).ljust(11) + "] " + title
+
+        for t in top:
+            lines.append("  " + fmt(t))
+            for s in [x for x in sub if x.parent_id == t.task_id]:
+                lines.append("    + " + fmt(s))
+        known_parents = set(t.task_id for t in top)
+        orphans = [s for s in sub if s.parent_id not in known_parents]
+        if orphans:
+            lines.append("  (delegated by a non-top-level parent)")
+            for s in orphans:
+                lines.append("    + " + fmt(s))
+        return "\n".join(lines)
+
     def _start_team_run(self, goal: str) -> None:
         from nbchat.core.team import TeamAgent, TeamCoordinator, ToolArbiter
 
@@ -2488,11 +2543,14 @@ class ChatApp(TerminalAgent):
         ``/team <goal>`` starts a coordinated multi-agent run in the
         background; its output is relayed into the log (never to the raw
         screen).  ``/team`` shows the current/last status and report;
-        ``/team stop`` interrupts a running team."""
+        ``/team stop`` interrupts a running team; ``/team roster`` shows the
+        live task-queue view (per-task status)."""
         arg = arg.strip()
         st = self._team_state
         if not arg:
             return self._team_status_text()
+        if arg == "roster":
+            return self._team_roster()
         if arg == "stop":
             coordinator = st["coordinator"]
             if st["status"] == "running" and coordinator is not None:
