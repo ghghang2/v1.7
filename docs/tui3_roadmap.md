@@ -452,3 +452,24 @@ retyping the objective.
   when gated (no chain, note shown, budget NOT advanced); `_goal_finish` chains
   when silent; `_goal_finish` stops on `GOAL COMPLETE`).  tui2 suite 327 passed;
   full suite 701 green (327+79+295).
+
+## tui3: /log (debug stderr tail, tui2-only)
+
+**`/log [N]`** — a small, read-only debugging aid.  The TUI2 redirects
+stderr (mid-stream retries, logging warnings, noise) to a log file so it never
+corrupts the raw-mode screen; before this there was no way to see that log from
+inside the TUI.  `/log` (or `/log [N]`, default 30 lines) tails it.
+
+- **`_tui2_log_path()`** (module-level) — the single source of truth for the
+  log path: `~/.nbchat/tui2-stderr.log`, overridable with `NBCHAT_TUI2_LOG`
+  (used by tests).  `ChatApp.run()` now uses it to open the stderr redirect, so
+  the command and the redirect can never point at different files.
+- **`/log [N]`** — reads the file, shows the last N lines plus a header with the
+  path, byte size, and `tail/total` line count.  Bad/missing args are rejected
+  with a usage hint; a missing file is reported helpfully (created on start,
+  nothing logged yet).  Pure/read-only — one file read, no I/O in the frame
+  path, no render impact.
+- **Tests** — 5 new (tail shows last line / truncates first with default 30;
+  N-line limit; missing file; bad args; the path helper honors
+  `NBCHAT_TUI2_LOG` and falls back to `tui2-stderr.log`).  tui2 suite 332
+  passed; full suite 706 green (332+79+295).

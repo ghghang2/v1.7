@@ -3689,6 +3689,46 @@ def test_goal_finish_declared_done():
 
 
 
+def test_log_shows_tail(monkeypatch, tmp_path):
+    logf = tmp_path / "test-tui2.log"
+    logf.write_text("\n".join("line-%d" % i for i in range(50)) + chr(10))
+    monkeypatch.setenv("NBCHAT_TUI2_LOG", str(logf))
+    app, *_ = _make_chat_app()
+    out = app._cmd_log("")
+    assert "line-49" in out  # last line
+    assert "line-0" not in out  # first line truncated (default 30)
+    assert "50 lines" in out or "of 50" in out
+
+def test_log_n_lines(monkeypatch, tmp_path):
+    logf = tmp_path / "test-tui2.log"
+    logf.write_text("\n".join("l-%d" % i for i in range(50)) + chr(10))
+    monkeypatch.setenv("NBCHAT_TUI2_LOG", str(logf))
+    app, *_ = _make_chat_app()
+    out = app._cmd_log("5")
+    assert "l-49" in out and "l-45" in out
+    assert "l-44" not in out  # only last 5
+
+def test_log_missing(monkeypatch, tmp_path):
+    monkeypatch.setenv("NBCHAT_TUI2_LOG", str(tmp_path / "nope.log"))
+    app, *_ = _make_chat_app()
+    out = app._cmd_log("")
+    assert "no TUI2 stderr log yet" in out
+
+def test_log_bad_arg(monkeypatch, tmp_path):
+    monkeypatch.setenv("NBCHAT_TUI2_LOG", str(tmp_path / "nope.log"))
+    app, *_ = _make_chat_app()
+    assert "usage" in app._cmd_log("abc")
+    assert "usage" in app._cmd_log("0")
+
+def test_tui2_log_path_env(monkeypatch):
+    from nbchat.tui2.app import _tui2_log_path
+    monkeypatch.setenv("NBCHAT_TUI2_LOG", "/tmp/xyz.log")
+    assert _tui2_log_path() == "/tmp/xyz.log"
+    monkeypatch.delenv("NBCHAT_TUI2_LOG", raising=False)
+    assert _tui2_log_path().endswith("tui2-stderr.log")
+
+
+
 def test_export_tool_block_fenced(monkeypatch, tmp_path):
     app, _, _, _ = _make_chat_app()
     _patch_history(monkeypatch, [

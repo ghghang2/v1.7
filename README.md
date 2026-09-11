@@ -348,6 +348,10 @@ shell command (`!ls`); `!!` also stores the output for later.
   session is idle — poll CI, watch a build, nudge a long-running task. It never
   interrupts a running turn (defers to the next idle moment). `/heartbeat` shows
   the current heartbeat; `/heartbeat clear` stops it.
+- **Debug log (`/log [N]`)** — the TUI2 redirects stderr (mid-stream retries,
+  warnings, logging noise) to `~/.nbchat/tui2-stderr.log` so it never corrupts
+  the raw screen. `/log` (or `/log [N]`, default 30 lines) tails that file in
+  the TUI for debugging. Read-only.
 - **External control socket (`nbchat-ctl`)** — a running TUI listens on a
   local Unix socket (`~/.nbchat/tui2-ctl.sock`; override `NBCHAT_CTL_SOCKET`,
   disable `NBCHAT_NO_CTL=1`) that a script or another process can drive:

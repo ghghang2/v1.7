@@ -65,6 +65,20 @@ _PROJECT_INSTR_NAMES = ("AGENTS.md", "agents.md", "CLAUDE.md", "claude.md")
 _PROJECT_INSTR_CAP = 16384
 
 
+def _tui2_log_path() -> str:
+    """The TUI2 stderr log file path.
+
+    The TUI2 redirects stderr (mid-stream retries, warnings, logging noise)
+    to this file so it never corrupts the raw-mode screen.  Honors the
+    ``NBCHAT_TUI2_LOG`` env var (used by tests); otherwise
+    ``~/.nbchat/tui2-stderr.log``.
+    """
+    env = os.environ.get("NBCHAT_TUI2_LOG")
+    if env:
+        return env
+    return os.path.join(os.path.expanduser("~/.nbchat"), "tui2-stderr.log")
+
+
 def _find_project_instructions(cwd: str | None = None) -> str:
     """Return the path to the first project-instruction file (AGENTS.md /
     CLAUDE.md) in the working directory, then the git repo root, or '' if
@@ -1358,7 +1372,7 @@ class ChatApp(TerminalAgent):
                     "/team", "/browse", "/search", "/sup", "/voice",
                     "/fork", "/checkpoint", "/undo", "/find", "/diff",
                     "/export", "/plan", "/retry", "/queue", "/tpl", "/editor", "/gstatus", "/stash",
-                    "/rewind", "/pin", "/unpin", "/settings", "/todos", "/project", "/heartbeat", "/autonomous")
+                    "/rewind", "/pin", "/unpin", "/settings", "/todos", "/project", "/heartbeat", "/autonomous", "/log")
 
     def _run_command(self, line: str) -> None:
         """Route a slash command.
@@ -1439,6 +1453,7 @@ class ChatApp(TerminalAgent):
             "  /project        show the AGENTS.md / CLAUDE.md auto-loaded at start",
             "  /heartbeat every <dur> <instruction>   fire a recurring turn when idle",
             "  /autonomous <objective> [--auto]   auto-continue with an approval gate",
+            "  /log [N]   tail of the TUI2 stderr log (debugging)",
             "  @<path>      file completion (type @ + a filename, pick a match)",
             "  /compact    force a context summarisation now",
             "  /copy       copy last reply to the clipboard",
@@ -1501,6 +1516,7 @@ class ChatApp(TerminalAgent):
             "/project": self._cmd_project,
             "/heartbeat": self._cmd_heartbeat,
             "/autonomous": self._cmd_autonomous,
+            "/log": self._cmd_log,
         }
         fn = handlers.get(cmd)
         try:
@@ -3193,6 +3209,39 @@ class ChatApp(TerminalAgent):
         return ("heartbeat: usage: /heartbeat every <dur> <instruction>, "
                 "/heartbeat clear, or /heartbeat (status)")
 
+    def _cmd_log(self, arg: str) -> str:
+        """``/log [N]`` - show the tail of the TUI2 stderr log.
+
+        The TUI2 redirects stderr (mid-stream retries, warnings, logging
+        noise) to a log file so it never corrupts the raw screen.  This shows
+        the last N lines (default 30) for debugging.  Read-only.
+        """
+        n = 30
+        a = (arg or "").strip()
+        if a:
+            if not a.isdigit() or int(a) < 1:
+                return "usage: /log [N]  (N = lines, default 30)"
+            n = int(a)
+        path = _tui2_log_path()
+        if not os.path.exists(path):
+            return ("no TUI2 stderr log yet (created on start; nothing has "
+                    "been logged to stderr so far) - " + path)
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                lines = fh.readlines()
+        except Exception as exc:
+            return "could not read log: " + path + " (" + type(exc).__name__ + ": " + str(exc) + ")"
+        total = len(lines)
+        tail = lines[-n:]
+        if not tail:
+            return "log is empty: " + path
+        try:
+            size = os.path.getsize(path)
+        except Exception:
+            size = -1
+        head = "TUI2 stderr log: " + path + " (" + str(size) + " bytes, " + str(len(tail)) + " of " + str(total) + " lines)\n"
+        return head + "".join(tail).rstrip()
+
     def _open_picker(self) -> None:
         from nbchat.core import db
         self._modal_kind = "session"
@@ -4113,10 +4162,11 @@ class ChatApp(TerminalAgent):
         saved_stderr = sys.stderr
         stderr_file = None
         try:
-            log_dir = os.path.expanduser("~/.nbchat")
-            os.makedirs(log_dir, exist_ok=True)
-            stderr_file = open(os.path.join(log_dir, "tui2-stderr.log"),
-                               "a", buffering=1)
+            _log_path = _tui2_log_path()
+            _log_dir = os.path.dirname(_log_path)
+            if _log_dir:
+                os.makedirs(_log_dir, exist_ok=True)
+            stderr_file = open(_log_path, "a", buffering=1)
             sys.stderr = stderr_file
         except Exception:
             stderr_file = None
