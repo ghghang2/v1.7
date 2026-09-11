@@ -224,6 +224,10 @@ shell command (`!ls`); `!!` also stores the output for later.
   turn finishes.  `/queue` lists them, `/queue clear` empties the queue.
   (Pressing `Enter` while a turn runs still interjects/interrupts, as
   before — queueing is a separate, opt-in path.)
+- **Prompt templates** — drop `*.md` files in `~/.nbchat/prompts/` (or
+  `NBCHAT_PROMPTS_DIR`); `/tpl` lists them, `/tpl <name> [args...]` renders
+  and sends one (`$1` `$2` … are positional args, `$0`/`$ARG` = all of
+  them).  While a turn runs the rendered prompt is queued, not sent.
 - `/hotkeys` — the keybinding reference.
 - `/copy` — copies the last assistant message to the clipboard (OSC 52;
   silent no-op where the terminal lacks clipboard support).

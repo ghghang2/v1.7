@@ -3435,3 +3435,69 @@ def test_cmd_queue_list_and_clear():
 def test_queue_listed_in_help():
     app, _, _, _ = _make_chat_app()
     assert "/queue" in app._tui2_help_addendum()
+
+
+# ── prompt templates (/tpl) ──────────────────────────────────────
+def test_tpl_render_positional():
+    app, _, _, _ = _make_chat_app()
+    assert app._render_template("Fix $1 and test $2", "parser bug") == "Fix parser and test bug"
+
+def test_tpl_render_all_and_flatten():
+    app, _, _, _ = _make_chat_app()
+    assert app._render_template("Do $0 now", "a b c") == "Do a b c now"
+    assert app._render_template("Do $ARG now", "a b c") == "Do a b c now"
+    assert app._render_template("Line1" + chr(10) + "Line2 $1", "x") == "Line1 Line2 x"
+
+def test_tpl_render_short_args_left():
+    app, _, _, _ = _make_chat_app()
+    assert app._render_template("$1 $3", "only") == "only $3"
+
+def test_cmd_tpl_list_empty(monkeypatch, tmp_path):
+    app, _, _, _ = _make_chat_app()
+    monkeypatch.setenv("NBCHAT_PROMPTS_DIR", str(tmp_path))
+    out = app._cmd_tpl("")
+    assert "no templates found" in out
+
+def test_cmd_tpl_list_shows_names(monkeypatch, tmp_path):
+    app, _, _, _ = _make_chat_app()
+    (tmp_path / "review.md").write_text("Review $1", encoding="utf-8")
+    (tmp_path / "notes.md").write_text("Summarize $0", encoding="utf-8")
+    (tmp_path / "ignore.txt").write_text("not a template", encoding="utf-8")
+    monkeypatch.setenv("NBCHAT_PROMPTS_DIR", str(tmp_path))
+    out = app._cmd_tpl("")
+    assert "review" in out and "notes" in out and "ignore" not in out
+
+def test_cmd_tpl_send(monkeypatch, tmp_path):
+    app, _, _, _ = _make_chat_app()
+    (tmp_path / "review.md").write_text("Review $1 for bugs", encoding="utf-8")
+    (tmp_path / "all.md").write_text("Summarize $0", encoding="utf-8")
+    monkeypatch.setenv("NBCHAT_PROMPTS_DIR", str(tmp_path))
+    sent = []
+    monkeypatch.setattr(app, "_start_turn", lambda t: sent.append(t))
+    out = app._cmd_tpl("review parser")
+    app._cmd_tpl("all my whole parser")
+    assert sent == ["Review parser for bugs", "Summarize my whole parser"]
+    assert "sent template 'review'" in out
+
+def test_cmd_tpl_queues_when_busy(monkeypatch, tmp_path):
+    app, _, _, _ = _make_chat_app()
+    app._turn_active = True  # a turn is running
+    (tmp_path / "review.md").write_text("Review $1", encoding="utf-8")
+    monkeypatch.setenv("NBCHAT_PROMPTS_DIR", str(tmp_path))
+    def _boom(t):
+        raise AssertionError("_start_turn must not be called while busy")
+    monkeypatch.setattr(app, "_start_turn", _boom)
+    out = app._cmd_tpl("review code")
+    assert app._queue == ["Review code"]
+    assert "queued template 'review'" in out
+
+def test_cmd_tpl_unknown(monkeypatch, tmp_path):
+    app, _, _, _ = _make_chat_app()
+    (tmp_path / "review.md").write_text("Review $1", encoding="utf-8")
+    monkeypatch.setenv("NBCHAT_PROMPTS_DIR", str(tmp_path))
+    out = app._cmd_tpl("nope")
+    assert "no template 'nope'" in out and "review" in out
+
+def test_tpl_listed_in_help():
+    app, _, _, _ = _make_chat_app()
+    assert "/tpl" in app._tui2_help_addendum()

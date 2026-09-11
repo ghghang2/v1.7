@@ -509,6 +509,66 @@ class ChatApp(TerminalAgent):
         rows = [f"  {i + 1}. {t[:60]}" for i, t in enumerate(self._queue)]
         return f"queue: {len(self._queue)} pending" + chr(10) + chr(10).join(rows)
 
+    def _tpl_dir(self) -> str:
+        """Where prompt-template *.md files live."""
+        env = os.environ.get("NBCHAT_PROMPTS_DIR")
+        if env:
+            return env
+        return os.path.join(os.path.expanduser("~"), ".nbchat", "prompts")
+
+    def _prompt_templates(self) -> dict:
+        """Load prompt templates (one per *.md file; name = filename stem)."""
+        d = self._tpl_dir()
+        out: dict = {}
+        if os.path.isdir(d):
+            for fn in sorted(os.listdir(d)):
+                if not fn.endswith(".md"):
+                    continue
+                try:
+                    with open(os.path.join(d, fn), encoding="utf-8") as f:
+                        out[fn[:-3]] = f.read()
+                except OSError:
+                    continue
+        return out
+
+    def _render_template(self, body: str, args: str) -> str:
+        """Substitute $1/$2/... args, $0 or $ARG = all args; flatten to one line."""
+        toks = args.split()
+
+        def _sub(m):
+            n = m.group(1)
+            if n == "0":
+                return " ".join(toks)
+            idx = int(n)
+            return toks[idx - 1] if 1 <= idx <= len(toks) else m.group(0)
+
+        out = re.sub(r"\$(\d)", _sub, body).replace("$ARG", " ".join(toks))
+        return " ".join(out.split())
+
+    def _cmd_tpl(self, arg: str) -> str:
+        """Prompt templates: /tpl lists them; /tpl <name> [args] sends one."""
+        parts = arg.strip().split(None, 1) if arg.strip() else []
+        tpls = self._prompt_templates()
+        if not parts:
+            if not tpls:
+                return (f"no templates found (drop *.md files in "
+                        f"{self._tpl_dir()}; NBCHAT_PROMPTS_DIR to override)")
+            rows = [f"  /tpl {n}" for n in sorted(tpls)]
+            return ("templates:" + chr(10) + chr(10).join(rows)
+                    + chr(10) + "usage: /tpl <name> [args...]  ($1 $2 … $0/all)")
+        name = parts[0]
+        rest = parts[1] if len(parts) > 1 else ""
+        if name not in tpls:
+            have = ", ".join(sorted(tpls)) or "none"
+            return f"no template '{name}' (available: {have})"
+        body = self._render_template(tpls[name], rest)
+        if self.busy:
+            self._queue.append(body)
+            return f"queued template '{name}' (now {len(self._queue)} pending)"
+        self._start_turn(body)
+        shown = body[:60] + ("…" if len(body) > 60 else "")
+        return f"sent template '{name}': {shown}"
+
     def _print_user(self, text: str) -> None:
         self.log.add(chatc.ChatMessage(role="user", text=text))
         self._ui_refresh()
@@ -1137,7 +1197,7 @@ class ChatApp(TerminalAgent):
                     "/goal", "/notify", "/theme", "/monitor", "/inbox",
                     "/team", "/browse", "/search", "/sup", "/voice",
                     "/fork", "/checkpoint", "/undo", "/find", "/diff",
-                    "/export", "/plan", "/retry", "/queue")
+                    "/export", "/plan", "/retry", "/queue", "/tpl")
 
     def _run_command(self, line: str) -> None:
         """Route a slash command.
@@ -1207,6 +1267,7 @@ class ChatApp(TerminalAgent):
             "  /plan [on|off]  read-only research mode (blocks file edits)",
             "  /retry [text] re-run your last message (or run a new one)",
             "  /queue [clear]  view/clear the Ctrl+Q follow-up queue",
+            "  /tpl [name [args]] prompt templates from prompts/*.md",
             "  @<path>      file completion (type @ + a filename, pick a match)",
             "  /compact    force a context summarisation now",
             "  /copy       copy last reply to the clipboard",
@@ -1257,6 +1318,7 @@ class ChatApp(TerminalAgent):
             "/plan": self._cmd_plan,
             "/retry": self._cmd_retry,
             "/queue": self._cmd_queue,
+            "/tpl": self._cmd_tpl,
         }
         fn = handlers.get(cmd)
         try:
