@@ -2875,6 +2875,40 @@ def test_pin_listed_in_help():
     from nbchat.tui2.app import ChatApp
     assert "/pin" in ChatApp._TUI2_NATIVE
     assert "/unpin" in ChatApp._TUI2_NATIVE
+
+
+# ── @-completion frecency (recently-used files rank higher) ────────────
+
+
+def test_filecomp_note_accept_and_recency(monkeypatch, tmp_path):
+    app, *_ = _make_chat_app()
+    recfile = tmp_path / "rec.json"
+    monkeypatch.setenv("NBCHAT_FILECOMP_RECENCY", str(recfile))
+    app._filecomp_note_accept("b.py")
+    app._filecomp_note_accept("a.py")
+    rec = app._filecomp_recency()
+    assert rec[0] == "a.py"  # most recent first
+    assert rec[1] == "b.py"
+    assert recfile.exists()  # persisted to disk
+
+
+def test_filecomp_recency_boosts_recent_matches(monkeypatch, tmp_path):
+    app, *_ = _make_chat_app()
+    recfile = tmp_path / "rec.json"
+    monkeypatch.setenv("NBCHAT_FILECOMP_RECENCY", str(recfile))
+    recfile.write_text('["beta.py"]')
+    monkeypatch.setattr(app, "_file_list", lambda: ["alpha.py", "beta.py", "gamma.py"])
+    monkeypatch.setattr(app, "_filecomp_cap", lambda: 6)
+    # natural fuzzy order for "a" is [alpha, gamma, beta]; the recency boost
+    # moves beta.py (recently used) to the front.
+    matches = app._file_matches("a")
+    assert matches[0] == "beta.py"
+
+
+def test_filecomp_recency_missing_file_is_empty(monkeypatch, tmp_path):
+    app, *_ = _make_chat_app()
+    monkeypatch.setenv("NBCHAT_FILECOMP_RECENCY", str(tmp_path / "nope.json"))
+    assert app._filecomp_recency() == []
 def _gitrepo(tmp_path):
     import subprocess as _sp
     d = tmp_path / "repo"

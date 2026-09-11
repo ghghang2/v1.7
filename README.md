@@ -212,6 +212,9 @@ shell command (`!ls`); `!!` also stores the output for later.
   box appears above the editor: `↑`/`↓` pick, `Enter`/`Tab` inserts the path
   in place of the `@`-token (undoable), `Esc` cancels.  The `@` inside an
   email address is ignored; directories carry a trailing `/`.
+  Recently-used `@`-files jump to the top of the match list (frecency;
+  best-effort `~/.nbchat/tui3-filecomp-recency.json`, override
+  `NBCHAT_FILECOMP_RECENCY`).
 - **Auto-compact** — when the context window crosses a threshold (default
   80% of the budget), the session is compacted automatically right after the
   turn finishes (off the render path; a dim note confirms it).  Toggle/tune with

@@ -2959,14 +2959,58 @@ class ChatApp(TerminalAgent):
         h = self.term.height
         return max(3, min(6, h - 12))
 
+    # @-completion frecency (survey #8): recently-used @-files rank higher.
+    _FILECOMP_RECENCY_MAX = 50
+
+    def _filecomp_recency_file(self) -> str:
+        env = os.environ.get("NBCHAT_FILECOMP_RECENCY")
+        if env:
+            return env
+        return os.path.join(os.path.expanduser("~/.nbchat"),
+                              "tui3-filecomp-recency.json")
+
+    def _filecomp_recency(self):
+        try:
+            with open(self._filecomp_recency_file()) as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                return [p for p in data if isinstance(p, str)][:self._FILECOMP_RECENCY_MAX]
+        except Exception:
+            pass
+        return []
+
+    def _filecomp_note_accept(self, path):
+        try:
+            rec = self._filecomp_recency()
+            rec = [p for p in rec if p != path]
+            rec.insert(0, path)
+            rec = rec[:self._FILECOMP_RECENCY_MAX]
+            fpath = self._filecomp_recency_file()
+            d = os.path.dirname(fpath)
+            if d:
+                os.makedirs(d, exist_ok=True)
+            with open(fpath, "w", encoding="utf-8") as f:
+                json.dump(rec, f)
+        except Exception:
+            pass
+
     def _file_matches(self, query):
         paths = self._file_list()
         cap = self._filecomp_cap()
         q = (query or "").strip()
         if q:
             ranked = fuzzy_rank(q, paths, limit=cap)
-            return [p for p, _m in ranked][:cap]
-        return paths[:cap]
+            matches = [p for p, _m in ranked][:cap]
+        else:
+            matches = paths[:cap]
+        # Frecency boost (survey #8): recently-used files that are already in
+        # the fuzzy top jump to the front.  Best-effort; a hiccup never blocks
+        # completion.
+        rec = self._filecomp_recency()
+        if rec:
+            order = {p: i for i, p in enumerate(rec)}
+            matches.sort(key=lambda p: (0, order[p]) if p in order else (1, 0))
+        return matches[:cap]
 
     def _maybe_open_filecomp(self):
         tok = self._active_at_token()
@@ -3012,6 +3056,7 @@ class ChatApp(TerminalAgent):
             return
         idx = min(fc["idx"], len(fc["matches"]) - 1)
         chosen = fc["matches"][idx]
+        self._filecomp_note_accept(chosen)  # frecency: remember this choice
         ed = self.editor
         tok = self._active_at_token()
         if tok is None:
