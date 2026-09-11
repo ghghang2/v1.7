@@ -56,6 +56,64 @@ _TOOL_TEXT_RE = re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL)
 # Cap on visible tool-result lines inside a panel (v1 shows ~the same).
 _TOOL_RESULT_LINES = 8
 
+# ── Project instructions (AGENTS.md / CLAUDE.md auto-load) ────────────
+# Auto-load repo convention files into the tui2 system prompt so the agent
+# follows project-specific rules without the user pasting them.  Best-effort
+# and opt-out via NBCHAT_NO_PROJECT_INSTRUCTIONS=1.  Looks in the working
+# directory first, then the git repo root.
+_PROJECT_INSTR_NAMES = ("AGENTS.md", "agents.md", "CLAUDE.md", "claude.md")
+_PROJECT_INSTR_CAP = 16384
+
+
+def _find_project_instructions(cwd: str | None = None) -> str:
+    """Return the path to the first project-instruction file (AGENTS.md /
+    CLAUDE.md) in the working directory, then the git repo root, or '' if
+    none is found.  Best-effort: never raises."""
+    if os.environ.get("NBCHAT_NO_PROJECT_INSTRUCTIONS"):
+        return ""
+    try:
+        base = cwd or os.getcwd()
+    except Exception:
+        base = os.getcwd()
+    roots = [base]
+    try:
+        r = subprocess.run(["git", "rev-parse", "--show-toplevel"],
+                           cwd=base, capture_output=True, text=True, timeout=2)
+        if r.returncode == 0:
+            toplevel = r.stdout.strip()
+            if toplevel and toplevel not in roots:
+                roots.append(toplevel)
+    except Exception:
+        pass
+    for root in roots:
+        for name in _PROJECT_INSTR_NAMES:
+            p = os.path.join(root, name)
+            if os.path.isfile(p):
+                return p
+    return ""
+
+
+def _load_project_instructions(path: str) -> str:
+    """Read a project-instruction file (capped, best-effort) and wrap it in a
+    system-prompt marker.  Returns '' on any problem."""
+    if not path:
+        return ""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except Exception:
+        return ""
+    if not text.strip():
+        return ""
+    if len(text) > _PROJECT_INSTR_CAP:
+        text = text[:_PROJECT_INSTR_CAP] + "\n\u2026 (truncated)"
+    try:
+        rel = os.path.relpath(path)
+    except Exception:
+        rel = path
+    return ("\n\n[PROJECT INSTRUCTIONS \u2014 " + rel + "] (auto-loaded, obey these)\n"
+            + text + "\n[/PROJECT INSTRUCTIONS]")
+
 # ── Keymap substrate (tui3 wave 1) ────────────────────────────────────
 # Single source of truth for the keybindings.  It generates BOTH the
 # ``/hotkeys`` reference and the on-screen **mode bar**, so the two can
@@ -174,6 +232,15 @@ class ChatApp(TerminalAgent):
         _tn = self._TODO_NOTE
         if _tn and _tn not in self.system_prompt:
             self.system_prompt += _tn
+        # Project instructions (AGENTS.md / CLAUDE.md): auto-load repo
+        # conventions into the system prompt (best-effort, tui2-only,
+        # opt-out via NBCHAT_NO_PROJECT_INSTRUCTIONS=1).
+        _pi_path = _find_project_instructions()
+        self._project_instr_path = _pi_path
+        if _pi_path:
+            _pi = _load_project_instructions(_pi_path)
+            if _pi:
+                self.system_prompt += _pi
         # Always-on supervisor watchdog (v1 --supervisor parity).  Bound to
         # this agent; started/stopped by run().  ``None`` when disabled.
         self._supervisor_enabled = supervisor
@@ -1258,7 +1325,7 @@ class ChatApp(TerminalAgent):
                     "/team", "/browse", "/search", "/sup", "/voice",
                     "/fork", "/checkpoint", "/undo", "/find", "/diff",
                     "/export", "/plan", "/retry", "/queue", "/tpl", "/editor", "/gstatus", "/stash",
-                    "/rewind", "/pin", "/unpin", "/settings", "/todos")
+                    "/rewind", "/pin", "/unpin", "/settings", "/todos", "/project")
 
     def _run_command(self, line: str) -> None:
         """Route a slash command.
@@ -1336,6 +1403,7 @@ class ChatApp(TerminalAgent):
             "  /pin /unpin  pin/unpin this session (top of the picker)",
             "  /settings [k v]  view / live-tune TUI settings (theme, scroll, toasts) ",
             "  /todos          show the live agent task list (progress pill)",
+            "  /project        show the AGENTS.md / CLAUDE.md auto-loaded at start",
             "  @<path>      file completion (type @ + a filename, pick a match)",
             "  /compact    force a context summarisation now",
             "  /copy       copy last reply to the clipboard",
@@ -1395,6 +1463,7 @@ class ChatApp(TerminalAgent):
             "/unpin": self._cmd_unpin,
             "/settings": self._cmd_settings,
             "/todos": self._cmd_todos,
+            "/project": self._cmd_project,
         }
         fn = handlers.get(cmd)
         try:
@@ -2858,6 +2927,30 @@ class ChatApp(TerminalAgent):
             mark = "x" if t.get("done") else " "
             lines.append(f"  [{mark}] {t.get('text', '')}")
         return "\n".join(lines)
+
+    def _cmd_project(self, arg: str) -> str:
+        """``/project`` - show the project-instruction file auto-loaded at
+        start (AGENTS.md / CLAUDE.md in the cwd or git root)."""
+        path = getattr(self, "_project_instr_path", "") or _find_project_instructions()
+        if not path:
+            return ("no project instructions found (looking for AGENTS.md / "
+                    "CLAUDE.md in the working dir and git root; "
+                    "NBCHAT_NO_PROJECT_INSTRUCTIONS=1 disables auto-load)")
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                text = fh.read()
+        except Exception:
+            return "project file not readable: " + path
+        lines = text.splitlines()
+        head = lines[:10]
+        more = len(lines) - len(head)
+        out = ["project instructions: " + path + " (" + str(len(text)) + " bytes, "
+               + str(len(lines)) + " lines, auto-loaded into the system prompt)"]
+        out.append("-" * 40)
+        out.extend(head)
+        if more > 0:
+            out.append("\u2026 +" + str(more) + " more lines (use a tool to read the full file)")
+        return "\n".join(out)
 
     def _open_picker(self) -> None:
         from nbchat.core import db

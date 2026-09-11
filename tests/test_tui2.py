@@ -3077,6 +3077,57 @@ def test_settings_theme_auto(monkeypatch, tmp_path):
     out = app._cmd_settings("theme auto")
     assert "auto" in out and app._cfg["theme"] == "auto"
 
+def test_find_project_instructions(tmp_path, monkeypatch):
+    from nbchat.tui2.app import _find_project_instructions as F
+    # no file -> empty
+    assert F(cwd=str(tmp_path)) == ""
+    # AGENTS.md found
+    (tmp_path / "AGENTS.md").write_text("be nice\n")
+    assert os.path.basename(F(cwd=str(tmp_path))) == "AGENTS.md"
+    # priority: AGENTS.md wins over CLAUDE.md
+    (tmp_path / "CLAUDE.md").write_text("other\n")
+    assert os.path.basename(F(cwd=str(tmp_path))) == "AGENTS.md"
+    # opt-out env disables it
+    monkeypatch.setenv("NBCHAT_NO_PROJECT_INSTRUCTIONS", "1")
+    assert F(cwd=str(tmp_path)) == ""
+
+
+def test_project_instructions_in_system_prompt(tmp_path, monkeypatch):
+    monkeypatch.setenv("NBCHAT_TUI3_CONFIG", str(tmp_path / "c.json"))
+    (tmp_path / "AGENTS.md").write_text("ALWAYS USE PYTHON 3\n")
+    monkeypatch.chdir(tmp_path)
+    app, *_ = _make_chat_app()
+    assert "[PROJECT INSTRUCTIONS" in app.system_prompt
+    assert "ALWAYS USE PYTHON 3" in app.system_prompt
+    assert app._project_instr_path.endswith("AGENTS.md")
+
+
+def test_project_command(tmp_path, monkeypatch):
+    monkeypatch.setenv("NBCHAT_TUI3_CONFIG", str(tmp_path / "c.json"))
+    (tmp_path / "AGENTS.md").write_text("rule one\nrule two\n")
+    monkeypatch.chdir(tmp_path)
+    app, *_ = _make_chat_app()
+    out = app._cmd_project("")
+    assert "AGENTS.md" in out and "rule one" in out
+
+
+def test_project_no_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("NBCHAT_TUI3_CONFIG", str(tmp_path / "c.json"))
+    monkeypatch.chdir(tmp_path)
+    app, *_ = _make_chat_app()
+    out = app._cmd_project("")
+    assert "no project instructions found" in out
+
+
+def test_project_opt_out(tmp_path, monkeypatch):
+    monkeypatch.setenv("NBCHAT_TUI3_CONFIG", str(tmp_path / "c.json"))
+    (tmp_path / "AGENTS.md").write_text("SHOULD NOT LOAD\n")
+    monkeypatch.setenv("NBCHAT_NO_PROJECT_INSTRUCTIONS", "1")
+    monkeypatch.chdir(tmp_path)
+    app, *_ = _make_chat_app()
+    assert "SHOULD NOT LOAD" not in app.system_prompt
+    assert app._project_instr_path == ""
+
 def _gitrepo(tmp_path):
     import subprocess as _sp
     d = tmp_path / "repo"

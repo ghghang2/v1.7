@@ -331,6 +331,11 @@ shell command (`!ls`); `!!` also stores the output for later.
   (`/notify`), the tool-approval gate and its risky-tool list (`/approve`),
   the mouse-wheel scroll tick, and the active theme (`/theme`).  They load
   at startup and save on each toggle and on exit.
+- **Project instructions auto-load** — at start, nbchat looks for an
+  `AGENTS.md` / `CLAUDE.md` (or the lowercase variants) in the working
+  directory and the git repo root and loads it into the system prompt so the
+  agent follows repo conventions (capped at 16 KB).  `/project` shows what
+  was loaded; `NBCHAT_NO_PROJECT_INSTRUCTIONS=1` disables it.
 - **External control socket (`nbchat-ctl`)** — a running TUI listens on a
   local Unix socket (`~/.nbchat/tui2-ctl.sock`; override `NBCHAT_CTL_SOCKET`,
   disable `NBCHAT_NO_CTL=1`) that a script or another process can drive:

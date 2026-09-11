@@ -338,3 +338,32 @@ terminal's light/dark appearance and picking the matching *existing* theme.
   synthetic report; `_apply_auto_theme` picks light and persists the preference;
   `/theme auto` and `/settings theme auto` persist `'auto'`; the no-arg `/theme`
   lists `auto`).  tui2 suite 304 passed; full suite 678 green (304+79+295).
+
+## tui3: project instructions auto-load (AGENTS.md / CLAUDE.md)
+
+**Project instructions** (prime-agent runner-up "AGENTS.md/CLAUDE.md
+auto-load"): standard agentic-harness behaviour (Claude Code, goose, aider
+and friends all do it) — repo convention files are loaded into the system
+prompt so the agent follows project rules without the user pasting them.
+
+- **Discovery** — `_find_project_instructions(cwd)` looks in the working
+  directory first, then the git repo root (`git rev-parse --show-toplevel`),
+  for `AGENTS.md`, `agents.md`, `CLAUDE.md`, `claude.md` (in that priority).
+  Best-effort, never raises.  `_load_project_instructions(path)` reads the
+  file, caps it at 16 KB, and wraps it in a `[PROJECT INSTRUCTIONS — …]`
+  marker telling the model to obey it.
+- **Wiring** (all in `nbchat/tui2/app.py`, so the v1 REPL is untouched) —
+  `ChatApp.__init__` finds the file, stores it as `self._project_instr_path`,
+  and appends the marker to `self.system_prompt` (alongside the todo/plan
+  nudges).  Opt-out: `NBCHAT_NO_PROJECT_INSTRUCTIONS=1`.
+- **`/project`** — shows the loaded file (path, byte/line count, first 10
+  lines, "+N more" note) or a hint when none is found.  Additive tui2 command;
+  the v1 REPL does not auto-load (kept byte-for-byte unchanged).
+- **Default behaviour unchanged** — with no `AGENTS.md`/`CLAUDE.md` present
+  nothing is loaded, so existing sessions are byte-identical.  Only repos
+  that opt in by adding a convention file gain the behaviour.
+- **Tests** — 5 new (discovery: no-file/AGENTS.md/priority/opt-out; system
+  prompt contains the marker + content; `/project` shows the file; no-file
+  hint; opt-out leaves the system prompt clean).  tui2 suite 309 passed;
+  full suite 683 green (309+79+295).  E2E pty verified (boot in a dir with an
+  AGENTS.md, `/project` shows the file + content, clean exit).
