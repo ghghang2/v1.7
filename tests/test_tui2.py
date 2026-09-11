@@ -2610,6 +2610,53 @@ def test_window_title_falls_back_to_id(monkeypatch):
     assert "nbchat" in seq
 
 
+def test_leader_enter_with_ctrl_x():
+    app, *_ = _make_chat_app()
+    assert app._leader is False
+    app._on_input(Key(name="ctrl+x"))
+    assert app._leader is True  # entered leader mode
+
+def test_leader_p_opens_palette():
+    app, *_ = _make_chat_app()
+    app._on_input(Key(name="ctrl+x"))  # enter leader mode
+    assert app._leader is True
+    app._on_input(Key(name="p"))  # palette shortcut
+    assert app._leader is False  # exited after one key
+    assert app._modal_kind == "palette"  # palette is open
+    assert app._picker is not None
+
+def test_leader_l_opens_picker():
+    app, *_ = _make_chat_app()
+    app._on_input(Key(name="ctrl+x"))  # enter leader mode
+    app._on_input(Key(name="l"))  # load/picker shortcut
+    assert app._leader is False
+    assert app._picker is not None
+
+def test_leader_escape_cancels():
+    app, *_ = _make_chat_app()
+    app._on_input(Key(name="ctrl+x"))  # enter leader mode
+    assert app._leader is True
+    app._on_input(Key(name="escape"))  # cancel
+    assert app._leader is False
+    assert app._picker is None
+    assert app._modal_kind is None or app._modal_kind != "palette"
+
+def test_leader_key_not_typed_to_editor():
+    app, *_ = _make_chat_app()
+    app.editor.handle("a", "a")  # seed an "a" in the editor
+    app._on_input(Key(name="ctrl+x"))  # enter leader mode
+    app._on_input(Key(name="t"))  # thinking shortcut (consumed, not typed)
+    assert app._leader is False
+    # "t" was consumed by leader mode, not typed into the editor
+    assert app.editor.text() == "a"
+
+def test_mode_bar_shows_leader():
+    app, *_ = _make_chat_app()
+    app._on_input(Key(name="ctrl+x"))  # enter leader mode
+    line = app._mode_bar(80)
+    assert "leader" in line.text
+
+
 
 
 

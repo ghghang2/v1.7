@@ -143,6 +143,7 @@ KEYMAP = {
         ("ctrl+l", "session picker (or bare /load)"),
         ("ctrl+p", "command palette"),
         ("ctrl+r", "reverse search input history"),
+        ("ctrl+x", "leader key (l load · p palette · e edit · o browse)"),
         ("up/down", "recall the previous / next input"),
         ("pgup/pgdn", "scroll the log up / down"),
         ("wheel", "scroll the log (mouse)"),
@@ -157,6 +158,16 @@ KEYMAP = {
         ("/", "search the log (n / N next / prev)"),
         ("v", "copy the visible log to clipboard"),
         ("esc / ctrl+o", "leave browse mode"),
+    ),
+    "leader": (
+        ("l", "session picker (load)"),
+        ("p", "command palette"),
+        ("e", "external editor (Ctrl+E)"),
+        ("o", "toggle browse mode"),
+        ("t", "show / hide thinking blocks"),
+        ("r", "reverse-search input history"),
+        ("q", "quit"),
+        ("esc", "cancel"),
     ),
 }
 
@@ -363,6 +374,12 @@ class ChatApp(TerminalAgent):
         # Browse mode (tui3): a key-capturing mode for reading/scrolling the
         # log without typing into the editor.  Toggled with Ctrl+O.
         self._browse = False
+        # Leader/prefix key mode (tui3, opencode-style): Ctrl+X enters it; the
+        # next key is a one-char command shortcut (l=load, p=palette,
+        # e=editor, o=browse, t=thinking, r=search, q=quit).  The contextual
+        # mode bar shows the available shortcuts while active.  Additive: a
+        # plain Ctrl+X + key never reaches the editor (it is consumed).
+        self._leader = False
         # In-log search (tui3 wave 2): active while a query is being typed
         # (``input`` True) or matches are being cycled through (``input``
         # False).  ``_search_matches`` = [(line_idx, snippet), ...].
@@ -1041,6 +1058,16 @@ class ChatApp(TerminalAgent):
         # The session-picker modal captures all keys while it is open.
         if self._picker is not None:
             self._picker_key(key)
+            return
+        # Leader/prefix key mode (tui3, opencode-style): while active it
+        # captures the next key as a one-char command shortcut (never reaches
+        # the editor).  Ctrl+X enters it when no modal is open.
+        if self._leader:
+            self._leader_key(key)
+            return
+        if key.name == "ctrl+x":
+            self._leader = True
+            self._ui_refresh()
             return
         # Mouse (tui3 wave 3): wheel scrolls the log in any mode; button
         # press/release are consumed for now (click-select is a follow-up).
@@ -3505,6 +3532,36 @@ class ChatApp(TerminalAgent):
         self._refresh_picker()
         self._ui_refresh()
 
+    def _leader_key(self, key: "Key") -> None:
+        """Handle a key while in leader/prefix mode (one-char shortcut).
+
+        The next key is a one-character command shortcut (see the ``leader``
+        KEYMAP); it is consumed (never reaches the editor) and leader mode
+        exits after one key.  Escape / Ctrl+X cancel without action.
+        """
+        n = key.name
+        self._leader = False  # exit after one key (even if unmapped)
+        if n in ("escape", "esc", "ctrl+x"):
+            self._ui_refresh()
+            return
+        if n == "l":
+            self._open_picker()
+        elif n == "p":
+            self._open_palette()
+        elif n == "e":
+            self._launch_external_editor()
+        elif n == "o":
+            self._browse = not self._browse
+            if not self._browse:
+                self.log.offset = 0
+        elif n == "t":
+            self._toggle_thinking()
+        elif n == "r":
+            self._open_search()
+        elif n == "q":
+            self._tui.stop()
+        self._ui_refresh()
+
     # ── Arrow-key history recall (Up/Down) ────────────────────────────
 
     def _history_recall(self, direction: int) -> None:
@@ -4132,9 +4189,13 @@ class ChatApp(TerminalAgent):
         """The contextual mode bar (tui3): active mode + its key hints,
         generated from the single ``KEYMAP`` source of truth."""
         mode = "browse" if self._browse else "normal"
+        if self._leader:
+            mode = "leader"
+            label = "leader"
+        else:
+            label = ("plan" if self._plan_mode
+                     else ("browse" if self._browse else "normal"))
         hints = " · ".join(f"{k} {d}" for k, d in KEYMAP[mode][: _MODEBAR_HINTS])
-        label = ("plan" if self._plan_mode
-                 else ("browse" if self._browse else "normal"))
         text = f" mode: {label}   {hints}"
         # In-log search overrides the hints with the live query / match pos.
         if self._logsearch is not None:

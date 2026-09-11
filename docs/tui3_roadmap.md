@@ -623,3 +623,27 @@ titled session shows `nbchat <title>` in the tab; an untitled one shows
 `nbchat <short-id>`.  Best-effort (a DB failure just means the id is shown).
 +2 tests (title shown when set; fallback to id when unset). tui2 suite 356
 passed; full suite 730 green (356+79+295).
+
+## tui3: leader key / prefix command mode (herdr #5 completion)
+
+**Leader key** — the last piece of herdr #5 (prefix key mode + contextual
+mode bar + generated keybind help). The mode bar and generated KEYMAP were
+already in place; this adds the opencode-style **leader key** (Ctrl+X) for
+one-character command shortcuts.
+
+- tui2/app.py:
+  - `self._leader` flag (init).
+  - `KEYMAP["leader"]` - the leader-mode key hints (l load, p palette, e editor,
+    o browse, t thinking, r history search, q quit, esc cancel).
+  - Ctrl+X added to the normal-mode KEYMAP (discoverable in the mode bar).
+  - `_on_input`: while `_leader` is active, the next key is captured by
+    `_leader_key` (never reaches the editor); Ctrl+X enters leader mode.
+  - `_leader_key(key)` - maps the one-char shortcut to the command, exits
+    leader mode after one key; Esc/Ctrl+X cancel without action.
+  - `_mode_bar` - shows the leader key hints while active (reuses the existing
+    KEYMAP-generated bar; no new row, so the frame height invariant holds).
+- Safe: purely additive; the leader key is a Ctrl key (no typing conflict); the
+  mode bar row already exists; the next key is always consumed (never typed to
+  the editor). 6 tests (enter, p->palette, l->picker, esc cancels, key not
+  typed to editor, mode bar shows leader). tui2 suite 362 passed; full suite
+  736 green (362+79+295).

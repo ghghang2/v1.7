@@ -127,7 +127,9 @@ Keys: `Enter` submits · `Esc` interrupts a running turn / cancels a modal ·
 `Ctrl+C` interrupts while a turn runs (quits when idle, cancels an open
 modal) · `Ctrl+D` submits when the input has text (quits when empty) ·
 `Ctrl+L` opens the session picker · `Ctrl+P` opens the command palette ·
-`Ctrl+R` reverse-searches the input history · `Up`/`Down` arrows recall the
+`Ctrl+X` enters leader key mode (`l` load · `p` palette · `e` edit ·
+`o` browse · `q` quit) · `Ctrl+R` reverse-searches the input history ·
+`Up`/`Down` arrows recall the
 previous / next input (typing again returns to the in-progress draft) ·
 `Ctrl+T` shows / hides thinking
 blocks · `PgUp`/`PgDn` page the log, `Home`/`End` jump to top/bottom (a `↑N`
@@ -328,6 +330,12 @@ shell command (`!ls`); `!!` also stores the output for later.
 - A **mode bar** (one line above the status line) shows the active mode and
   its key hints.  Both the mode bar and `/hotkeys` are generated from a
   single data-driven `KEYMAP`, so they can never desync.
+- **Leader key** — press `Ctrl+X` to enter leader/prefix mode (opencode-style);
+  the mode bar flips to the leader key hints and the next key is a one-character
+  command shortcut: `l` load/picker · `p` palette · `e` external editor ·
+  `o` browse mode · `t` thinking · `r` history search · `q` quit (Esc cancels).
+  The shortcut is consumed (never typed into the editor), so it is a fast path
+  to the common commands without reaching for the palette.
 - **Browse mode** — press `Ctrl+O` to read/scroll the log without typing:
   `j`/`k` step down/up, `PgUp`/`PgDn` page, `Home`/`End` jump; `Esc` (or
   `Ctrl+O`) leaves and snaps back to the bottom.  Inside browse mode,
