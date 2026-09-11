@@ -27,7 +27,9 @@ from __future__ import annotations
 import io
 import os
 import re
+import subprocess
 import sys
+import tempfile
 import threading
 import time
 from typing import List
@@ -569,6 +571,55 @@ class ChatApp(TerminalAgent):
         shown = body[:60] + ("…" if len(body) > 60 else "")
         return f"sent template '{name}': {shown}"
 
+    def _launch_external_editor(self) -> None:
+        """Open the current draft in $EDITOR, then load the result back.
+
+        The tui2 editor is single-line, so composing a long prompt in it is
+        awkward.  This pauses the raw terminal (restore -> normal mode), runs
+        $EDITOR on a temp file seeded with the draft, reads the result back
+        (flattened to one line), and re-enters raw mode.  Ctrl+E or /editor.
+        """
+        editor = (os.environ.get("EDITOR") or os.environ.get("VISUAL") or "").strip()
+        if not editor:
+            self._note("no $EDITOR/$VISUAL set — cannot open an external editor")
+            self._ui_refresh()
+            return
+        was_raw = getattr(self.term, "_saved", None) is not None
+        draft = self.editor.text()
+        path = None
+        try:
+            fd, path = tempfile.mkstemp(prefix="nbchat_edit_", suffix=".txt")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(draft or "")
+            if was_raw:
+                self.term._restored = False
+                self.term.restore()
+            try:
+                subprocess.run(editor.split() + [path])
+            finally:
+                if was_raw:
+                    self.term._restored = False  # so the final with-exit restore works
+                    self.term.enter()
+            with open(path, encoding="utf-8") as f:
+                newtext = f.read()
+            flat = " ".join(newtext.split())
+            self.editor.set_text(flat)
+            self._note("editor: loaded draft ({0} chars)".format(len(flat)) if flat
+                       else "editor: (empty draft — Enter to send, Esc to discard)")
+        except Exception as exc:
+            self._note("editor error: {0}: {1}".format(type(exc).__name__, exc))
+        finally:
+            if path:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+        self._ui_refresh()
+
+    def _cmd_editor(self, arg: str) -> str:
+        self._launch_external_editor()
+        return ""
+
     def _print_user(self, text: str) -> None:
         self.log.add(chatc.ChatMessage(role="user", text=text))
         self._ui_refresh()
@@ -953,6 +1004,9 @@ class ChatApp(TerminalAgent):
         if key.name == "ctrl+q":
             self._queue_key()
             return
+        if key.name == "ctrl+e":
+            self._launch_external_editor()
+            return
         # @-file completion modal (tui3): while open it captures the
         # nav/accept keys (up/down/enter/tab/esc); printable chars and
         # backspace fall through to the editor (which grows/shrinks the
@@ -1197,7 +1251,7 @@ class ChatApp(TerminalAgent):
                     "/goal", "/notify", "/theme", "/monitor", "/inbox",
                     "/team", "/browse", "/search", "/sup", "/voice",
                     "/fork", "/checkpoint", "/undo", "/find", "/diff",
-                    "/export", "/plan", "/retry", "/queue", "/tpl")
+                    "/export", "/plan", "/retry", "/queue", "/tpl", "/editor")
 
     def _run_command(self, line: str) -> None:
         """Route a slash command.
@@ -1268,6 +1322,7 @@ class ChatApp(TerminalAgent):
             "  /retry [text] re-run your last message (or run a new one)",
             "  /queue [clear]  view/clear the Ctrl+Q follow-up queue",
             "  /tpl [name [args]] prompt templates from prompts/*.md",
+            "  /editor [ctrl+e]  compose the draft in $EDITOR",
             "  @<path>      file completion (type @ + a filename, pick a match)",
             "  /compact    force a context summarisation now",
             "  /copy       copy last reply to the clipboard",
@@ -1319,6 +1374,7 @@ class ChatApp(TerminalAgent):
             "/retry": self._cmd_retry,
             "/queue": self._cmd_queue,
             "/tpl": self._cmd_tpl,
+            "/editor": self._cmd_editor,
         }
         fn = handlers.get(cmd)
         try:

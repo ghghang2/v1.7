@@ -3501,3 +3501,57 @@ def test_cmd_tpl_unknown(monkeypatch, tmp_path):
 def test_tpl_listed_in_help():
     app, _, _, _ = _make_chat_app()
     assert "/tpl" in app._tui2_help_addendum()
+
+
+# ── external editor ($EDITOR) ────────────────────────────────────
+def test_launch_editor_no_editor(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    monkeypatch.delenv("EDITOR", raising=False)
+    monkeypatch.delenv("VISUAL", raising=False)
+    notes = []
+    monkeypatch.setattr(app, "_note", lambda t: notes.append(t))
+    app.editor.set_text("existing draft")
+    app._launch_external_editor()
+    assert any("no $EDITOR" in n for n in notes)
+    assert app.editor.text() == "existing draft"  # unchanged
+
+def test_launch_editor_loads_back_and_flattens(monkeypatch):
+    import subprocess as _sp
+    app, _, _, _ = _make_chat_app()
+    monkeypatch.setenv("EDITOR", "myeditor")
+    def _fake_run(cmd, *a, **k):
+        path = cmd[-1]
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("line one\nline two\nline three")
+        return _sp.CompletedProcess(cmd, 0)
+    monkeypatch.setattr(_sp, "run", _fake_run)
+    notes = []
+    monkeypatch.setattr(app, "_note", lambda t: notes.append(t))
+    app._launch_external_editor()
+    assert app.editor.text() == "line one line two line three"
+    assert any("loaded draft" in n for n in notes)
+
+def test_launch_editor_error_is_reported(monkeypatch):
+    import subprocess as _sp
+    app, _, _, _ = _make_chat_app()
+    monkeypatch.setenv("EDITOR", "myeditor")
+    def _boom(cmd, *a, **k):
+        raise _sp.SubprocessError("editor blew up")
+    monkeypatch.setattr(_sp, "run", _boom)
+    notes = []
+    monkeypatch.setattr(app, "_note", lambda t: notes.append(t))
+    app.editor.set_text("keep me")
+    app._launch_external_editor()  # must not raise
+    assert any("editor error" in n for n in notes)
+    assert app.editor.text() == "keep me"
+
+def test_ctrl_e_triggers_external_editor(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    calls = []
+    monkeypatch.setattr(app, "_launch_external_editor", lambda: calls.append(1))
+    app._on_input(_mk_key("ctrl+e"))
+    assert calls == [1]
+
+def test_editor_listed_in_help():
+    app, _, _, _ = _make_chat_app()
+    assert "/editor" in app._tui2_help_addendum()

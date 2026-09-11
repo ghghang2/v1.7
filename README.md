@@ -228,6 +228,9 @@ shell command (`!ls`); `!!` also stores the output for later.
   `NBCHAT_PROMPTS_DIR`); `/tpl` lists them, `/tpl <name> [args...]` renders
   and sends one (`$1` `$2` … are positional args, `$0`/`$ARG` = all of
   them).  While a turn runs the rendered prompt is queued, not sent.
+- **External editor** — `/editor` or `Ctrl+E` opens the current draft in
+  `$EDITOR` (`$VISUAL` fallback) to compose a long prompt; the result is
+  loaded back into the input.  Requires `$EDITOR`/`$VISUAL` to be set.
 - `/hotkeys` — the keybinding reference.
 - `/copy` — copies the last assistant message to the clipboard (OSC 52;
   silent no-op where the terminal lacks clipboard support).
