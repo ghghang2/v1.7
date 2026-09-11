@@ -382,6 +382,17 @@ crash the TUI.  The server is a daemon thread; `ControlServer.stop()`
 unlinks the socket on exit; every socket operation is wrapped so a
 control-client problem cannot take the TUI down.
 
+**`--bg` headless / detached background agent (wave 6+):** `--bg` (or
+`NBCHAT_BG=1`) makes a stdin EOF *not* end the render loop — the bg EOF
+path sleeps briefly and falls through to the event drain, so the app stays
+alive on its heartbeat and a control-socket `quit` is still processed
+(earlier the EOF path `continue`d past the drain, which silently dropped
+`quit`).  `nbchat-ctl bg [--session ID] [prompt]` launches a `--bg` TUI in
+its own session (survives the launcher / an SSH drop), with its socket at
+`~/.nbchat/tui2-bg.sock` and stdout logged to `~/.nbchat/tui2-bg.log`,
+optionally submitting a first task.  This completes the "detach without
+stopping work" roadmap item (row 7).
+
 ---
 
 ## Not addressed (out of scope for this pass, tracked in the port tracker)

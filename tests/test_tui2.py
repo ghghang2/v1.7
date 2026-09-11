@@ -2054,3 +2054,71 @@ def test_ctl_result(tmp_path):
         assert r["data"]["session"] == "s1"
     finally:
         srv.stop()
+
+
+# ── tui3 wave 6: headless / background agent (--bg + nbchat-ctl bg) ────
+
+def test_chatapp_bg_flag_propagates_to_tuiapp():
+    import io
+    from nbchat.tui2.app import ChatApp
+    term = RawTerminal(io.StringIO(""), io.StringIO())
+    term._saved = None
+    term._passthrough = True
+    term.width, term.height = 80, 24
+    events = EventQueue()
+    app = ChatApp(term, events, resume_last=False, bg=True)
+    assert app._tui._bg is True
+    app2 = ChatApp(term, events, resume_last=False)
+    assert app2._tui._bg is False
+
+
+def test_tuiapp_constructor_bg_default_false():
+    import io
+    from nbchat.tui2.raw import TUIApp
+    term = RawTerminal(io.StringIO(""), io.StringIO())
+    tui = TUIApp(term)
+    assert tui._bg is False
+    tui2 = TUIApp(term, EventQueue(), bg=True)
+    assert tui2._bg is True
+
+
+def test_bg_mode_quit_via_control_socket(tmp_path):
+    """A --bg TUI (stdin=/dev/null, always EOF) stays alive on its heartbeat
+    and exits cleanly when a control-socket 'quit' is delivered — proving
+    the stdin-EOF path does NOT skip the event drain."""
+    import subprocess, sys, time, os
+    from nbchat.tui2 import ctl
+    sock = str(tmp_path / "bg.sock")
+    env = dict(os.environ)
+    env["NBCHAT_CTL_SOCKET"] = sock
+    env["NBCHAT_TUI3_CONFIG"] = str(tmp_path / "cfg.json")
+    env.pop("NBCHAT_NO_CTL", None)
+    if os.path.exists(sock):
+        os.remove(sock)
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "nbchat.tui2", "--bg", "--new"],
+        env=env, stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True)
+    try:
+        deadline = time.time() + 15
+        while time.time() < deadline and not os.path.exists(sock):
+            if proc.poll() is not None:
+                break
+            time.sleep(0.2)
+        assert os.path.exists(sock), "background TUI did not come up"
+        # It is still alive (did not quit on the /dev/null stdin EOF).
+        assert proc.poll() is None, "background TUI exited on stdin EOF"
+        st = ctl.call(sock, "status", timeout=6)
+        assert st.get("ok") is True
+        q = ctl.call(sock, "quit", timeout=6)
+        assert q.get("ok") is True
+        rc = proc.wait(timeout=10)
+        assert rc == 0
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            pass

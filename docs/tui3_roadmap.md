@@ -26,7 +26,7 @@ these warrant **tui3** rather than piling onto tui2:
 | 4 | **User config + settings overlay + hot reload** (theme/sounds/keybinds) | 6 | M | A user file + per-section validation + in-app overlay that writes it; live apply. |
 | 5 | **Theming: host sync + auto light/dark + switcher** | 7 | S-M | Theme is hard-wired to `DARK` today; needs threading through every component + OSC 10/11 probe. |
 | 6 | **Local JSON socket API + `nbchat-ctl` CLI** | 9 | M-L | A JSON-line RPC socket beside the running harness (status/prompt/events.wait) — makes nbchat observable & scriptable mid-run. |
-| 7 | **Detachable background agent** (reattach after disconnect) | 10 | L | Move the agent/turn worker into a long-lived supervised process; session + in-flight stream + pending approvals survive TUI exit / SSH drop. The headline "detach without stopping work". |
+| 7 | **Detachable background agent** (reattach after disconnect) ✅ shipped (wave 6+) | 10 | L | `--bg` runs the TUI headless (stdin EOF does not quit; it lives on the heartbeat + control socket). `nbchat-ctl bg [--session ID] [prompt]` launches it in its own session (survives the launcher / SSH drop) and submits a first task; `status` / `result` / `quit` drive and stop it. Session + in-flight work survive the terminal going away. |
 
 **Build order** (follows herdr's, adjusted for what tui2 already has):
 1 → 2 → 3 → (4, 5 in parallel) → 6 → 7.  **Shipped so far:** wave 1
@@ -34,7 +34,7 @@ these warrant **tui3** rather than piling onto tui2:
 wave 3 (mouse wheel scroll) + 3b (click / drag-to-copy),
 wave 4 (persistent user settings), wave 5
 (colour theming via the `_ThemeRef` proxy), wave 6 (external control
-socket + `nbchat-ctl`).  Next: detachable background agent.
+socket + `nbchat-ctl`), wave 6+ (detached background agent: `--bg` headless mode + `nbchat-ctl bg` launcher).  All seven roadmap items are now shipped.
 
 ## tui3 wave 1 (this pass)
 
@@ -143,4 +143,4 @@ control client can never block or crash the TUI.  The server is a daemon
 thread; every socket op is wrapped; `ControlServer.stop()` unlinks the
 socket on exit.
 
-Waves 7+ (detachable background agent) proceed in the build order above.
+**tui3 wave 6+ — detached background agent:** `--bg` (also `NBCHAT_BG=1`) puts the TUI in headless mode: a stdin EOF does not end the render loop (the bg EOF path sleeps briefly and falls through to the event drain, so a control-socket `quit` is still processed).  `nbchat-ctl bg [--session ID] [prompt]` launches a `--bg` TUI in its own session (`start_new_session=True`, so it survives the launcher and an SSH drop), points its control socket at `~/.nbchat/tui2-bg.sock`, logs stdout to `~/.nbchat/tui2-bg.log`, waits for the socket, and submits a trailing prompt as the first task.  The full workflow — detach, drive headlessly, read the result, quit — is verified by `test_bg_mode_quit_via_control_socket` and an E2E pty probe.

@@ -219,6 +219,21 @@ shell command (`!ls`); `!!` also stores the output for later.
   task with `send`, poll `status` until `busy` is false, then read the
   answer with `result` (and `quit` when done).
 
+  **Detached background agent.**  `--bg` runs the TUI headless (a stdin EOF
+  does not quit it — it stays alive on its heartbeat and is driven through
+  the socket).  `nbchat-ctl bg` launches one in its own session so it
+  survives the launcher exiting (detach, tmux-style) and optionally submits
+  a first task:
+
+  ```
+  python -m nbchat.tui2 --bg --session tui:abc        # run it headless
+  python -m nbchat.tui2.ctl bg --session tui:abc "summarise the repo"
+  #   -> {"ok": true, "pid": …, "socket": ~/.nbchat/tui2-bg.sock, …}
+  NBCHAT_CTL_SOCKET=~/.nbchat/tui2-bg.sock python -m nbchat.tui2.ctl status
+  NBCHAT_CTL_SOCKET=~/.nbchat/tui2-bg.sock python -m nbchat.tui2.ctl result
+  NBCHAT_CTL_SOCKET=~/.nbchat/tui2-bg.sock python -m nbchat.tui2.ctl quit
+  ```
+
   Read-only commands answer synchronously; mutating ones are enqueued onto
   the UI thread and acked immediately (`{"queued": true}`), so a control
   client can never block or crash the TUI.

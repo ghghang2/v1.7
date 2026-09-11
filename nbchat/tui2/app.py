@@ -101,7 +101,8 @@ class ChatApp(TerminalAgent):
 
     def __init__(self, term: RawTerminal, events: EventQueue,
                  resume_last: bool = True,
-                 session_id: str | None = None) -> None:
+                 session_id: str | None = None,
+                 bg: bool = False) -> None:
         super().__init__(color=False)
         self.term = term
         self.events = events
@@ -210,7 +211,7 @@ class ChatApp(TerminalAgent):
         # Turn worker bookkeeping.
         self._turn_thread: threading.Thread | None = None
 
-        self._tui = TUIApp(term, events)
+        self._tui = TUIApp(term, events, bg=bg)
         self._tui.set_frame_provider(self._build_frame)
         self._tui.set_key_reader(KeyReader())
         self._tui.on_input = self._on_input
@@ -2039,13 +2040,19 @@ def run(argv: list | None = None) -> int:
                         help="force a new session")
     parser.add_argument("--session", metavar="ID",
                         help="resume a specific session id or name")
+    parser.add_argument("--bg", action="store_true",
+                        help="headless / background mode: stdin EOF does not "
+                             "quit; the app stays alive and is driven through "
+                             "the control socket (see nbchat-ctl)")
     args = parser.parse_args(argv)
+    # NBCHAT_BG=1 is an environment escape hatch for the same mode.
+    bg = args.bg or os.environ.get("NBCHAT_BG") == "1"
 
     term = RawTerminal(sys.stdin, sys.stdout)
     events = EventQueue()
     try:
         app = ChatApp(term, events, resume_last=not args.new,
-                      session_id=args.session)
+                      session_id=args.session, bg=bg)
     except ValueError as exc:
         # Only reachable on a real terminal before raw mode is entered;
         # print to the main screen and exit.

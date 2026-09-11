@@ -203,9 +203,14 @@ class TUIApp:
     3. renders the diff of the new frame.
     """
 
-    def __init__(self, terminal: RawTerminal, events: Optional[EventQueue] = None) -> None:
+    def __init__(self, terminal: RawTerminal, events: Optional[EventQueue] = None,
+                 bg: bool = False) -> None:
         self.term = terminal
         self.events = events or EventQueue()
+        # Background / headless mode (tui3 wave 6): a stdin EOF does NOT
+        # end the loop.  The app keeps running on its heartbeat and is
+        # driven / stopped through the external control socket.
+        self._bg = bool(bg)
         self.frame: Optional[Frame] = None
         self._build_frame: object = None
         self._running = False
@@ -255,18 +260,27 @@ class TUIApp:
                 if r:
                     data = self._read_input()
                     if not data:
-                        break
-                    action = self._handle_input(data)
-                    if action is True:
-                        break
-                    # A ``None`` result means the app consumed the chunk
-                    # itself (e.g. an interrupt or a Ctrl+D submit) — refresh
-                    # the screen but do NOT re-dispatch the raw bytes as keys.
-                    # ``False`` is the classic contract: dispatch every key in
-                    # the chunk to the app handler (KeyReader feed).
-                    if action is False:
-                        self.handle_input_events(data)
-                    self._render_first(force=True)
+                        if not self._bg:
+                            break
+                        # Headless / background: stdin is /dev/null or a
+                        # closed pipe (always "ready", always EOF).  Do NOT
+                        # quit; sleep briefly to avoid a busy spin, then fall
+                        # through so queued events (e.g. a control-socket
+                        # "quit") are still drained below.
+                        _time.sleep(0.05)
+                    else:
+                        action = self._handle_input(data)
+                        if action is True:
+                            break
+                        # A ``None`` result means the app consumed the chunk
+                        # itself (e.g. an interrupt or a Ctrl+D submit) —
+                        # refresh the screen but do NOT re-dispatch the raw
+                        # bytes as keys.  ``False`` is the classic contract:
+                        # dispatch every key in the chunk to the app handler
+                        # (KeyReader feed).
+                        if action is False:
+                            self.handle_input_events(data)
+                        self._render_first(force=True)
                 # Coalesce: collapse N "render" events drained in this
                 # tick into a single rebuild (streaming tokens fire
                 # constantly; one rebuild per tick bounds the rate).
