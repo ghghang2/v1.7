@@ -13,6 +13,10 @@ frameworks, agent harnesses, and agent orchestration. All sources surveyed
   Papers with Code, GitHub trending (Python), arXiv cs.MA + cs.AI recent, AlphaXiv,
   papers.cool + known-framework star cross-reference (res-repos:
   `/tmp/nbchat_academic_research/repos.md`).
+- Major research labs + academic institutions: OpenAI, Anthropic, DeepMind, Meta,
+  Microsoft Research, Hugging Face, LangChain, Cognition, OpenHands, Aider/SWE-agent,
+  Princeton/Stanford/CMU - direct HTTP fetch of lab blogs, research pages, RSS feeds,
+  and sitemaps (res-labs: `/tmp/nbchat_academic_research/labs.md`).
 - My own targeted arXiv reads (observability, self-evolving execution, test-time
   graph engineering, self-testing/self-judging, constraint tracking, skill
   consolidation, verification, memory, tree search, deterministic guardrails).
@@ -66,6 +70,87 @@ registries.
    1k-10k stars/week; NVIDIA/SkillSpector bootstrapping skill security scanning;
    COBRA-Skills optimizing skill libraries with bandits.
 
+## Research-lab findings (res-labs: OpenAI, Anthropic, DeepMind, Meta, MSFT, HF, LangChain, Cognition, OpenHands, Aider/SWE-agent, Princeton/Stanford/CMU)
+
+Method: direct HTTP fetch (requests + BeautifulSoup) of lab blogs, research
+pages, RSS feeds, and sitemaps; Cloudflare-blocked sites (OpenAI) accessed via a
+text proxy. Full raw HTML/text cached under `/tmp/nbchat_academic_research/`.
+
+**Convergent themes across the labs (2025 -> 2026):**
+
+1. **The harness is the product; the model is a swappable component.** "Agent =
+   Model + Harness" (LangChain). OpenAI's zero-human-code product (~1M LOC, ~1,500
+   PRs, 0 lines of manually written code), Anthropic's managed agents, MSFT's
+   SkillOpt/Orchard, and SWE-agent's pivot to a minimal loop all agree: with
+   frontier models fixed, nearly all performance + cost headroom lives in harness
+   artifacts - context policy, tools, docs, plans, evals.
+2. **Context engineering supersedes prompt engineering.** Give a **map, not a
+   manual** (AGENTS.md as a ~100-line TOC over a structured docs/ knowledge base);
+   **progressive disclosure** with mechanically verified freshness (linters,
+   doc-gardening agents); **context rot is real** (intelligence degrades with
+   context length - fresh-context subagents + structural compaction beat prompt
+   tricks); **prefix-stable prompts for caching** (static content first, forked
+   subagents exploit prompt caching); **the filesystem as the context medium**
+   (plans, decision logs, evidence as versioned artifacts in-repo).
+3. **Single-writer, multi-intelligence is the working multi-agent pattern.**
+   Cognition: parallel writers fail; writes stay single-threaded while other
+   agents contribute intelligence (clean-context reviewers, "smart friend"
+   escalation, manager/children). Anthropic: Opus lead + parallel Sonnet
+   subagents (+90.2%). LangChain deepagents: workers fork context, verifiers stay
+   isolated. OpenAI: agent-to-agent review loops drive PRs to completion with
+   humans only at judgment points. Unstructured swarms are called a distraction.
+4. **Verification is a first-class, always-on loop.** Devin Review (~2 bugs/PR,
+   58% severe, clean context beats shared context due to context rot);
+   agent-to-agent review until all reviewers are satisfied (OpenAI); value-model
+   reranking of traces (Orchard); agent-audited benchmarks (~30% of SWE-bench Pro
+   tasks found broken); self-correcting memory with drift/poisoning checks
+   (LangChain); "record a video of the failure and of the fix" (OpenAI).
+5. **Memory is becoming agent-owned data, not a vendor service.** HF funes
+   ("a memory is a dataset, not a service"; traces -> local dataset -> hybrid
+   retrieval with exact provenance); LangChain ("your harness, your memory";
+   closed-harness lock-in warning); MSFT Memora (decoupled storage/retrieval);
+   OpenAI (in-repo knowledge is the system of record).
+6. **Containment + blast-radius engineering are now standard harness
+   components.** MicroVM isolation per session (Cognition); per-worktree ephemeral
+   environments with CDP + observability (OpenAI); OS-style virtualized
+   brains/hands (Anthropic); egress control + risk-classified autonomy (measured
+   approval fatigue at 93%); Windows sandbox (OpenAI); loss-of-control evals
+   (Meta).
+7. **Self-improving harnesses (train the harness, not the weights).** SkillOpt
+   (skill files edited under validation gates, best across 52 eval cells with no
+   weight changes); LangChain (evals as harness training data, hill-climbing);
+   OpenAI (doc-gardening + background GC agents).
+
+**res-labs TOP 5 ideas for a coding-agent TUI (ranked):**
+
+1. **Clean-context reviewer subagent + communication bridge** (Cognition ~2
+   bugs/PR, 58% severe; clean context beats shared context; the bridge prevents
+   loops/scope drift) - a `/review` command + a findings table. *Highest-cited
+   pattern in 2026 writing; a safe, high-leverage slice (a future wave).*
+2. **AGENTS.md-as-TOC + linted docs/ knowledge base + doc-gardening agent**
+   (OpenAI's zero-human-code program) - an `/init-repo-knowledge` command + a
+   docs-freshness status line. *nbchat already auto-loads AGENTS.md/CLAUDE.md
+   (tui2); the TOC + doc-gardening are the new slices.*
+3. **Context modes for subagents: fork for workers, isolated for verifiers**
+   (LangChain deepagents; OpenAI Codex loop) - expose a context mode + estimated
+   cache-hit saving when spawning subagents.
+4. **Trace-based local memory with provenance (agent-owned dataset)** (HF funes,
+   exactly this architecture; LangChain lock-in warning; MSFT Memora) -
+   `/remember`/`recall` commands + a `mem` status line. *Answers the #1 cited
+   pain point: every new session meets the project as a stranger.*
+5. **Trainable skill files with validation-gated edits + a smart-friend tool**
+   (MSFT SkillOpt; LangChain hill-climbing; Cognition smart friend) - a `/skills`
+   browser + a `harness-opt` background job. *The long-term moat.*
+
+**How the lab findings converge with the arXiv + repos findings:** the labs
+INDEPENDENTLY confirm every recurring theme in the arXiv cluster (harness-as-
+product, context engineering, single-writer multi-intelligence, always-on
+verification, agent-owned memory, self-improving harnesses). The flagship
+terminal-agent result (T1) + the verifiers-as-process-rewards recipe (Candidate
+A) are the labs' "verification is a first-class, always-on loop" theme made
+concrete. The res-labs #1 idea (clean-context reviewer) is the
+verifier-gated-teams theme (res-arxiv theme 6) made operational; it is deferred
+to a future wave (it touches the team/agent turn logic, like Candidate E).
 ## The single flagship result (for a TERMINAL coding agent)
 
 **T1: Terminal Agent Reinforcement Learning for Long-Horizon Tasks**
@@ -171,4 +256,68 @@ Deferred to a future wave (larger / more invasive): **E** (subagent fan-out rout
 architectural), **G** (skill security scan + portable packs - new subsystem).
 
 ## Implementation + results
-(added as each candidate is implemented - see docs/tui3_roadmap.md)
+
+All four candidates (A, B, C, D) were implemented in `nbchat/tui3/app.py` (a
+subclass of the tui2 `ChatApp`), each as a safe, additive, testable slice that
+does NOT modify the v1 REPL or the tui2 base. Each is intercepted in
+`_run_command` BEFORE the tui2 dispatch (via the `_TUI3_NATIVE` tuple), so the
+version-to-feature-set boundary is explicit. Committed + pushed + remote-verified.
+
+| Candidate | Feature | Commit | Test suite | Worthwhile? |
+|-----------|---------|--------|------------|-------------|
+| A | `/verify` + live process-score pill | `f708433` | tui3 35 | **YES** - the single highest-leverage reliability feature (the T1 recipe) |
+| B | `/health` + rot indicator pill | `fabaabf` | tui3 41 | **YES** - objective long-run health, defends against "agent rot" |
+| C | `/audit` provenance panel | `71ac26b` | tui3 46 | **YES** - a concrete, measurable trust signal (verified vs. relayed vs. unverified) |
+| D | `/profile` evolvable harness profile + user gate | `3972fe7` | tui3 53 | **YES** - the harness-as-optimization-artifact theme, with a non-invasive user gate |
+
+### Results detail
+
+**A — `/verify` (verifier-driven process score).** `_verify_data` reads the DB
+history (most-recent-first) and prefers the latest `run_tests` JSON result (a
+0-100 score from the pass-rate), falling back to the latest `run_command`
+`exit_code` (ok / FAIL). `/verify` shows the score + pass/fail breakdown + a
+clean / not-clean verdict. The `_verify_pill` shows a live status-line pill
+(`tests 3/5` when clean, `tests 2F` on failures, `check ok` / `check FAIL` for
+run_command). **Worthwhile:** directly implements the flagship T1 recipe (live
+verifier-driven process score) + the "objective, not self-reported" reliability
+theme. 9 tests.
+
+**B — `/health` (objective long-run rot monitor).** `_health_data` computes
+objective signals: message count (context bloat), turn count, the current
+verifier score (from A), the test-suite trend (the last two `run_tests`
+pass-rates), and the time since the last verified progress (a DB timestamp
+query). The `/health` report flags RISK when any signal degrades (context bloat
+> 200 messages, verifier score < 50%, test trend regressing, > 30 min since the
+last verified progress). The `_health_pill` shows a live status-line pill only
+when at risk (e.g. `ROT 32m` or `ROT 10%`). **Worthwhile:** a concrete,
+objective defense against "agent rot" + the unreliable-progress-bar problem.
+6 tests.
+
+**C — `/audit` (provenance / audit panel).** `_classify_claim` tags every tool
+call by VERIFICATION STATUS: `verified` (backed by an objective signal - a clean
+test result or a zero exit code), `relayed` (a text summary with no objective
+check), or `unverified` (errored / a failed check). `/audit` shows the verified /
+relayed / unverified counts, the 5 most recent claims, and a note when every
+claim is relayed (no objective check yet) or when there are unverified claims.
+**Worthwhile:** a concrete, measurable trust signal - shows HOW MUCH of the
+session's claims are actually CHECKED vs. merely RELAYED (the defense against
+"Audit Without Verification"). 5 tests.
+
+**D — `/profile` (evolvable harness profile + user gate).** The harness keeps a
+structured, VERSIONED per-task profile (prompt template, allowed tools, memory
+policy, verification rules) in a JSON file (`NBCHAT_TUI3_PROFILE` env override,
+default `~/.nbchat/tui3-profile.json`). `/profile set <key> <value>` STAGES an
+edit (never applied directly) + shows the key-level diff. `/profile diff` shows
+the staged-vs-applied diff. `/profile apply` applies the staged profile (the USER
+GATE). `/profile discard` clears the staged profile. **Worthwhile:** implements
+the "the harness is the primary optimization artifact" theme (Evo-Harness,
+Ecdysis) with a non-invasive, always-safe user gate - the agent can propose
+harness changes, but the USER gates every change. 7 tests.
+
+### Regression status
+
+Full suite after all four: tui3 53, tui2 376, v1 79, team_metrics_main 5, core
+team 54, core 295 (all green; one flaky async-thread v1 test passes on re-run).
+No changes to `nbchat/tui/app.py` (v1) or the tui2 base. `repo_config.yaml`
+clean.
+

@@ -841,6 +841,61 @@ plan-act-reflect loop (the "reflect" step). Inspired by LangGraph deep agents.
   plumbing); the side question is kept out of the session history. tui3 suite
   26 passed; tui2 376 + v1 79 (no regression).
 
+### tui3 wave 2 — academic-research-driven features (DONE)
+
+Four more features, all driven by the exhaustive academic/preprint research
+(`docs/research_academic_preprints.md` — arXiv + Hugging Face/Papers with Code/
+GitHub + major research labs). Each is a safe, additive, testable slice that
+does NOT modify the v1 REPL or the tui2 base. Committed + pushed + remote-
+verified.
+
+**Candidate A - `/verify` (verifier-driven process score)** - the flagship T1
+recipe (Terminal Agent RL: per-task verifiers as dense process rewards).
+`_verify_data` reads the DB history (most-recent-first) and prefers the latest
+`run_tests` JSON result (a 0-100 score from the pass-rate), falling back to the
+latest `run_command` exit_code (ok / FAIL). `/verify` shows the score + the
+pass/fail breakdown + a clean / not-clean verdict. The `_verify_pill` shows a
+live status-line pill (`tests 3/5` when clean, `tests 2F` on failures, `check
+ok` / `check FAIL` for run_command), appended via a `_status_right` override.
+Inspired by T1 + Proof-Carrying Cognition (the verification gap) +
+LLM-as-a-Judge Is Not an Oracle (gate on deterministic verification). 9 tests.
+Commit `f708433`.
+
+**Candidate B - `/health` (objective long-run rot monitor)** - defends against
+"agent rot" (How Fast Do Agents Rot) + the unreliable-progress-bar problem.
+`_health_data` computes objective signals: message count (context bloat), turn
+count, the current verifier score (from A), the test-suite trend (the last two
+run_tests pass-rates), and the time since the last verified progress (a DB
+timestamp query). The `/health` report flags RISK when any signal degrades
+(context bloat > 200 messages, verifier score < 50%, test trend regressing, >
+30 min since the last verified progress). The `_health_pill` shows a live
+status-line pill only when at risk (e.g. `ROT 32m` or `ROT 10%`). 6 tests.
+Commit `fabaabf`.
+
+**Candidate C - `/audit` (provenance / audit panel)** - the defense against
+"Audit Without Verification" (accountability layers relay, they do not check).
+`_classify_claim` tags every tool call by VERIFICATION STATUS: `verified`
+(backed by an objective signal - a clean test result or a zero exit code),
+`relayed` (a text summary with no objective check), or `unverified` (errored /
+a failed check). `/audit` shows the verified / relayed / unverified counts, the
+5 most recent claims, and a note when every claim is relayed or when there are
+unverified claims. A concrete, measurable trust signal. 5 tests. Commit
+`71ac26b`.
+
+**Candidate D - `/profile` (evolvable harness profile + user gate)** - the
+"the harness is the primary optimization artifact" theme (Evo-Harness,
+Ecdysis). The harness keeps a structured, VERSIONED per-task profile (prompt
+template, allowed tools, memory policy, verification rules) in a JSON file
+(`NBCHAT_TUI3_PROFILE` env override, default `~/.nbchat/tui3-profile.json`).
+`/profile set <key> <value>` STAGES an edit (never applied directly) + shows
+the key-level diff. `/profile diff` shows the staged-vs-applied diff.
+`/profile apply` applies the staged profile (the USER GATE). `/profile
+discard` clears the staged profile. The agent can propose harness changes, but
+the USER gates every change. 7 tests. Commit `3972fe7`.
+
+**Wave-2 regression status:** tui3 53, tui2 376, v1 79 (no regression). No
+changes to `nbchat/tui/app.py` (v1) or the tui2 base. `repo_config.yaml` clean.
+
 ### Next phases (tracked)
 
 - **Phase 4 (full) - deep-agent plan loop**: the full plan-act-reflect loop
