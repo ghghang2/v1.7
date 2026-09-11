@@ -160,7 +160,11 @@ shell command (`!ls`); `!!` also stores the output for later.
   task and the subtasks it delegated, each with its current status
   (`pending`/`claimed`/`done`/`failed`/`interrupted`), so you can poll
   progress while a run is in flight.  Pure/read-only (reads the live
-  `TaskQueue`; never mutates the run).
+  `TaskQueue`; never mutates the run).  `/team stats` complements it with a
+  **per-worker breakdown** — how many messages each worker streamed plus any
+  LLM/tool-call metrics from the task log, so you can see which worker did
+  how much of the work (read-only DB queries over the `team:<run>-*` worker
+  sessions).
 - `/browse <url>` — fetch a web page with the `nbchat.tools.browser` engine
   (headless Chromium) and show its title + text in the log.  Runs off the UI
   thread (the Chromium launch + fetch never freezes the interface); a missing
@@ -574,6 +578,7 @@ their output is prefixed `[Wn]` so interleaved streams stay readable.
 /team              status of the last run
 /team stop         stop the current run (tasks wind down gracefully)
 /team roster       live task-queue view (per-task status + subtasks)
+/team stats       per-worker breakdown (messages + LLM/tool metrics)
 ```
 
 ### Configuration (`repo_config.yaml`)

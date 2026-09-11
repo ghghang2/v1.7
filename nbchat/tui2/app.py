@@ -1454,7 +1454,7 @@ class ChatApp(TerminalAgent):
             "  /heartbeat every <dur> <instruction>   fire a recurring turn when idle",
             "  /autonomous <objective> [--auto]   auto-continue with an approval gate",
             "  /log [N]   tail of the TUI2 stderr log (debugging)",
-            "  /team <goal> [stop|roster]   parallel-agent team run (bg) + live task roster",
+            "  /team <goal> [stop|roster|stats]   parallel-agent team run (bg) + live task roster/stats",
             "  @<path>      file completion (type @ + a filename, pick a match)",
             "  /compact    force a context summarisation now",
             "  /copy       copy last reply to the clipboard",
@@ -2493,6 +2493,61 @@ class ChatApp(TerminalAgent):
                 lines.append("    + " + fmt(s))
         return "\n".join(lines)
 
+    def _team_stats(self) -> str:
+        """``/team stats`` - per-worker breakdown for the current/last run.
+
+        Reads the team run's worker sessions from the chat DB (each worker
+        streams its messages under ``team:<run_id>-<tag>``) and shows, per
+        worker, how many messages it produced plus any task-log metrics
+        (LLM calls, tool turns).  Complements ``/team roster`` (per-task
+        status).  Pure and read-only - DB reads only, no render impact.
+        """
+        st = self._team_state
+        coord = st["coordinator"]
+        run_id = getattr(coord, "_run_id", "") if coord is not None else ""
+        if not run_id:
+            return "team stats: no team run yet (usage: /team <goal>)"
+        import nbchat.core.db as _db
+        prefix = "team:" + run_id + "-"
+        workers = _db.list_sessions_with_title(prefix)
+        if not workers:
+            return ("team stats: no worker sessions in the DB for run "
+                    + run_id + " (workers log messages as they run; the run "
+                    "may not have streamed output yet)")
+        counts = _db.session_message_counts(prefix)
+        task_rows: dict = {}
+        try:
+            for row in _db.task_summary_rows(limit=1000):
+                sid = row.get("session_id", "")
+                if sid.startswith(prefix):
+                    task_rows.setdefault(sid, []).append(row)
+        except Exception:
+            task_rows = {}
+        lines = ["team stats - run " + str(run_id) + " (" + str(st["status"])
+                 + "): " + str(len(workers)) + " workers"]
+        total_msgs = total_llm = total_tools = 0
+        for w in workers:
+            sid = w["session_id"]
+            tag = sid[len(prefix):]
+            n_msgs = counts.get(sid, 0)
+            total_msgs += n_msgs
+            llm = tools = 0
+            for row in task_rows.get(sid, []):
+                llm += int(row.get("num_llm_calls") or 0)
+                tools += int(row.get("tool_calls_total") or 0)
+            total_llm += llm
+            total_tools += tools
+            line = "  " + tag.ljust(6) + "msgs " + str(n_msgs).rjust(5)
+            if llm or tools:
+                line += "   llm " + str(llm).rjust(4) + "  tools " + str(tools).rjust(4)
+            lines.append(line)
+        lines.append("  " + "-" * 22)
+        tot = "  total  msgs " + str(total_msgs).rjust(5)
+        if total_llm or total_tools:
+            tot += "   llm " + str(total_llm).rjust(4) + "  tools " + str(total_tools).rjust(4)
+        lines.append(tot)
+        return "\n".join(lines)
+
     def _start_team_run(self, goal: str) -> None:
         from nbchat.core.team import TeamAgent, TeamCoordinator, ToolArbiter
 
@@ -2544,13 +2599,16 @@ class ChatApp(TerminalAgent):
         background; its output is relayed into the log (never to the raw
         screen).  ``/team`` shows the current/last status and report;
         ``/team stop`` interrupts a running team; ``/team roster`` shows the
-        live task-queue view (per-task status)."""
+        live task-queue view (per-task status); ``/team stats`` shows a
+        per-worker breakdown (messages + LLM/tool metrics)."""
         arg = arg.strip()
         st = self._team_state
         if not arg:
             return self._team_status_text()
         if arg == "roster":
             return self._team_roster()
+        if arg == "stats":
+            return self._team_stats()
         if arg == "stop":
             coordinator = st["coordinator"]
             if st["status"] == "running" and coordinator is not None:

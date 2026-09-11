@@ -544,6 +544,26 @@ def list_sessions_with_title(prefix: str) -> list[dict]:
     return [{"session_id": r[0], "title": r[1] or "", "last_ts": r[2]}
             for r in rows]
 
+def session_message_counts(prefix: str) -> dict:
+    """Message count per session stored under *prefix* (additive helper).
+
+    Returns ``{session_id: int}`` for every session with at least one
+    ``chat_log`` row whose id starts with *prefix* (matches a family of
+    sessions, e.g. all ``team:<run_id>-*`` workers when *prefix* is
+    ``"team:<run_id>-"``).  Read-only; best-effort (returns ``{}`` on error).
+    """
+    try:
+        with _connect() as conn:
+            rows = conn.execute(
+                "SELECT session_id, COUNT(*) FROM chat_log "
+                "WHERE session_id LIKE ? GROUP BY session_id",
+                (prefix + "%",),
+            ).fetchall()
+        return {r[0]: int(r[1]) for r in rows}
+    except Exception:
+        return {}
+
+
 def save_turn_summaries(session_id: str, cache: dict) -> None:
     _meta_set(session_id, "turn_summaries", json.dumps(cache))
 

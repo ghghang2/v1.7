@@ -2385,6 +2385,49 @@ def test_team_roster_command():
     out = app._cmd_team("roster")
     assert "no team run yet" in out  # idle, no coordinator
 
+def test_team_stats_no_run():
+    app, *_ = _make_chat_app()
+    out = app._team_stats()
+    assert "no team run yet" in out
+
+def test_team_stats_breakdown(monkeypatch):
+    import tempfile, os, types
+    import nbchat.core.db as db
+    path = tempfile.mktemp(prefix="team_stats_", suffix=".db")
+    monkeypatch.setattr(db, "DB_PATH", path)
+    db.init_db()
+    try:
+        # log messages to two worker sessions of run "runX"
+        for _ in range(3):
+            db.log_message("team:runX-W1", "assistant", "w1 msg")
+        for _ in range(5):
+            db.log_message("team:runX-W2", "assistant", "w2 msg")
+        # a session for a DIFFERENT run must not appear
+        db.log_message("team:other-W1", "assistant", "other")
+        app, *_ = _make_chat_app()
+        app._team_state["coordinator"] = types.SimpleNamespace(_pool_queue=None, _run_id="runX")
+        app._team_state["status"] = "running"
+        out = app._team_stats()
+        assert "runX" in out
+        # W1 has 3 msgs (line ends with 3), W2 has 5 msgs (ends with 5)
+        w1 = next(l for l in out.split(chr(10)) if l.strip().startswith("W1"))
+        w2 = next(l for l in out.split(chr(10)) if l.strip().startswith("W2"))
+        assert w1.rstrip().endswith("3")
+        assert w2.rstrip().endswith("5")
+        # total line sums 3+5=8
+        total_line = next(l for l in out.split(chr(10)) if l.strip().startswith("total"))
+        assert "8" in total_line
+        # the other run must not appear (only runX workers are shown)
+        assert "other" not in out
+        assert "2 workers" in out
+        # /team stats command path
+        out2 = app._cmd_team("stats")
+        assert "runX" in out2
+    finally:
+        try: os.remove(path)
+        except OSError: pass
+
+
 
 
 

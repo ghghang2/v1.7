@@ -500,3 +500,32 @@ report.  `/team roster` renders the live `TaskQueue`.
   indentation; the `/team roster` command path).  Tested with a real
   `Task`/`TaskQueue` from `nbchat.core.team` (no live team run exercised).
   tui2 suite 336 passed; full suite 710 green (336+79+295).
+
+## tui3: /team stats (per-worker breakdown, tui2-only)
+
+**`/team stats`** — a read-only per-worker breakdown for the current/last team
+run.  The prime-agent research flagged a "per-subagent `/stats` breakdown" as a
+runner-up (S).  Each team worker streams its messages under a distinct
+session (`team:<run_id>-<tag>`), so the per-worker view is a DB read over those
+sessions.  Complements `/team roster` (per-task status): together they give a
+full team-observability picture.
+
+- **`db.session_message_counts(prefix)`** (core/db.py, additive) — returns
+  `{session_id: int}` message counts for every `chat_log` session under *prefix*
+  (LIKE `prefix + "%"`, matching a family such as `team:<run_id>-*`).  Read-only;
+  best-effort (returns `{}` on error).  Pure addition - no existing DB function
+  touched.
+- **`_team_stats()`** (tui2/app.py) - pure/read-only.  Reads the run id from
+  `_team_state["coordinator"]._run_id`, lists the run worker sessions
+  (`team:<run_id>-*`) via `db.list_sessions_with_title`, counts their messages
+  via the new helper, and (best-effort) folds in the task-log metrics
+  (`num_llm_calls` / `tool_calls_total`) per worker.  Renders one line per worker
+  (tag, msg count, llm/tools when present) plus a total line.  No run -> "no team
+  run yet"; no worker sessions -> a helpful "not streamed yet" note.  Other runs
+  are excluded (prefix match).  DB reads only, no render impact.
+- **Wiring** - `/team stats` branch in `_cmd_team`; the `_cmd_team` docstring and
+  `/help` list now show the `stats` subcommand.
+- **Tests** - 2 new (no run; a temp DB with two runX worker sessions + a
+  different-run session shows per-worker counts, the 3+5=8 total, and excludes the
+  other run; the `/team stats` command path).  tui2 suite 338 passed; full suite
+  712 green (338+79+295).
