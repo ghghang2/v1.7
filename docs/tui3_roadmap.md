@@ -43,7 +43,11 @@ off the UI thread so the IMAP round-trip never freezes the interface; and
 `/team [goal]` — the multi-agent team coordinator from `nbchat.core.team`
 (`TeamCoordinator` + worker agents), run in the background with its output
 relayed into the log off the UI thread (never to the raw screen), plus
-`/team` status and `/team stop`.
+`/team` status and `/team stop`; and **Up/Down arrow history recall** — the
+arrows walk the submitted-input history (Up = older, Down = back to the
+in-progress draft), complementing the existing `Ctrl+R` reverse search.  The
+`LineEditor` gained a `set_text()` (buffer replace + undo point) so recall is
+undoable.
 
 ## tui3 wave 1 (this pass)
 

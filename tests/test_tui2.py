@@ -2337,3 +2337,74 @@ def test_team_capture_batches_and_flushes(monkeypatch):
     assert "hello world more" in joined
 
 
+
+
+# ── Arrow-key history recall (Up/Down) ───────────────────────────────
+
+def test_history_updown_recalls_inputs():
+    from nbchat.tui2 import Key
+    app, _, _, _ = _make_chat_app()
+    app._history = ["first", "second", "third"]
+    # Up walks to older (newest first); Down walks back.
+    app._on_input(Key(name="up"))
+    assert app.editor.text() == "third"
+    assert app._hist_pos == 2
+    app._on_input(Key(name="up"))
+    assert app.editor.text() == "second"
+    assert app._hist_pos == 1
+    app._on_input(Key(name="up"))
+    assert app.editor.text() == "first"
+    assert app._hist_pos == 0
+    # Up at the oldest entry stays put.
+    app._on_input(Key(name="up"))
+    assert app.editor.text() == "first"
+    # Down walks back toward the newest.
+    app._on_input(Key(name="down"))
+    assert app.editor.text() == "second"
+    app._on_input(Key(name="down"))
+    assert app.editor.text() == "third"
+
+
+def test_history_down_past_newest_restores_draft():
+    from nbchat.tui2 import Key
+    app, _, _, _ = _make_chat_app()
+    app._history = ["a", "b"]
+    for ch in "partial draft":
+        app._on_input(Key(name=ch))
+    assert app.editor.text() == "partial draft"
+    # Up recalls the newest ("b"), snapshotting the draft.
+    app._on_input(Key(name="up"))
+    assert app.editor.text() == "b"
+    assert app._hist_pos == 1
+    assert app._hist_draft == "partial draft"
+    # Down past the newest restores the in-progress draft and stops recalling.
+    app._on_input(Key(name="down"))
+    assert app.editor.text() == "partial draft"
+    assert app._hist_pos is None
+
+
+def test_history_typing_resets_recall():
+    from nbchat.tui2 import Key
+    app, _, _, _ = _make_chat_app()
+    app._history = ["old1", "old2"]
+    app._on_input(Key(name="up"))     # recall old2
+    assert app.editor.text() == "old2"
+    assert app._hist_pos == 1
+    # Typing a character ends recall (the next Up starts fresh).
+    app._on_input(Key(name="z"))
+    assert app._hist_pos is None
+    app._on_input(Key(name="up"))     # fresh recall from the newest
+    assert app.editor.text() == "old2"
+
+
+def test_editor_set_text_updates_buffer_and_undo():
+    from nbchat.tui2.editor import LineEditor
+    ed = LineEditor(multiline=False)
+    ed.set_text("hello")
+    assert ed.text() == "hello"
+    assert ed.cursor_col == 5
+    # A recorded undo point lets Ctrl+Z (undo) restore the prior buffer.
+    ed.undo()
+    assert ed.text() == ""
+    ed.redo()
+    assert ed.text() == "hello"

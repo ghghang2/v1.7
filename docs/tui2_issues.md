@@ -425,6 +425,18 @@ the final report; `/team stop` interrupts the running team (a stop takes
 precedence over the run's own terminal status, so a stopped run reports
 "stopped", not "done").
 
+**Up/Down arrow history recall:** in normal mode the arrow keys previously
+fell through to the single-line editor (a no-op), so there was no quick way to
+recall a previous input other than `Ctrl+R` reverse search.  The tui2 app now
+intercepts `Up`/`Down` in `_on_input` and walks the submitted-input history
+(`_history`): Up steps to older entries, Down steps back toward the newest and
+then restores the in-progress draft (snapshot into `_hist_draft` on the first
+Up).  Any other typed/edited key ends recall so the next Up starts fresh.
+`LineEditor.set_text()` replaces the buffer, moves the cursor to the end, and
+records an undo point so a recall can be undone with the usual undo binding.
+The binding is documented in the KEYMAP (so `/hotkeys` and the mode bar
+agree).
+
 ---
 
 ## Not addressed (out of scope for this pass, tracked in the port tracker)

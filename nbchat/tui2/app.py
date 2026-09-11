@@ -67,6 +67,7 @@ KEYMAP = {
         ("ctrl+l", "session picker (or bare /load)"),
         ("ctrl+p", "command palette"),
         ("ctrl+r", "reverse search input history"),
+        ("up/down", "recall the previous / next input"),
         ("pgup/pgdn", "scroll the log up / down"),
         ("wheel", "scroll the log (mouse)"),
         ("click/drag", "copy one / a range of log lines"),
@@ -221,6 +222,12 @@ class ChatApp(TerminalAgent):
         self._modal_kind = "session" # which modal is (or was) open
         # Input history for Ctrl+R reverse search (turns + commands).
         self._history: list = []
+        # Arrow-key history recall (Up/Down).  ``_hist_pos`` is ``None``
+        # while free-typing; otherwise the index into ``_history`` of the
+        # entry currently recalled.  ``_hist_draft`` holds the text being
+        # typed when recall starts, so Down past the newest restores it.
+        self._hist_pos: int | None = None
+        self._hist_draft = ""
 
         # Tool-approval gate (herdr-style safety): risky tool calls prompt
         # the user before running.  The gate wraps the module-level
@@ -720,6 +727,14 @@ class ChatApp(TerminalAgent):
         if key.name == "ctrl+r":
             self._open_search()
             return
+        # Arrow-key history recall: Up walks to older inputs, Down walks
+        # back toward the newest and then restores the in-progress draft.
+        if key.name == "up":
+            self._history_recall(-1)
+            return
+        if key.name == "down":
+            self._history_recall(1)
+            return
         # Scrollback: page through the conversation log.
         if key.name == "pageup":
             self._scroll_log(max(5, (self.term.height - 8) // 2))
@@ -749,6 +764,9 @@ class ChatApp(TerminalAgent):
             self.editor.handle("paste", key.payload.replace("\n", " "))
             self._ui_refresh()
             return
+        # Any real edit/typing ends history recall (the next Up starts
+        # fresh from the newest entry).
+        self._hist_pos = None
         self.editor.handle(key.name, _key_text(key))
         if self.editor.submitted:
             self.editor.submitted = False
@@ -1641,6 +1659,41 @@ class ChatApp(TerminalAgent):
         self._picker_sessions = list(self._PALETTE)
         self._picker_filter = ""
         self._refresh_picker()
+        self._ui_refresh()
+
+    # ── Arrow-key history recall (Up/Down) ────────────────────────────
+
+    def _history_recall(self, direction: int) -> None:
+        """Walk the input history.  ``direction`` is -1 (Up/older) or
+        +1 (Down/newer).  ``_hist_pos`` is ``None`` while free-typing; the
+        first Up snapshots the in-progress draft into ``_hist_draft`` and
+        steps back one entry.  Down past the newest entry restores the
+        draft and returns to free-typing."""
+        hist = self._history
+        if not hist:
+            return
+        pos = self._hist_pos
+        if pos is None:
+            if direction > 0:
+                return  # Down while free-typing: nothing to advance to
+            self._hist_draft = self.editor.text()
+            pos = len(hist)          # one past the newest
+        if direction < 0:
+            if pos > 0:
+                pos -= 1
+                self.editor.set_text(hist[pos])
+        else:
+            if pos < len(hist) - 1:
+                pos += 1
+                self.editor.set_text(hist[pos])
+            else:
+                # Past the newest: restore the draft, stop recalling.
+                self.editor.set_text(self._hist_draft)
+                self._hist_draft = ""
+                self._hist_pos = None
+                self._ui_refresh()
+                return
+        self._hist_pos = pos
         self._ui_refresh()
 
     # ── Ctrl+R reverse search ──────────────────────────────────────────

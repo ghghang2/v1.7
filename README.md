@@ -125,7 +125,9 @@ Keys: `Enter` submits · `Esc` interrupts a running turn / cancels a modal ·
 `Ctrl+C` interrupts while a turn runs (quits when idle, cancels an open
 modal) · `Ctrl+D` submits when the input has text (quits when empty) ·
 `Ctrl+L` opens the session picker · `Ctrl+P` opens the command palette ·
-`Ctrl+R` reverse-searches the input history · `Ctrl+T` shows / hides thinking
+`Ctrl+R` reverse-searches the input history · `Up`/`Down` arrows recall the
+previous / next input (typing again returns to the in-progress draft) ·
+`Ctrl+T` shows / hides thinking
 blocks · `PgUp`/`PgDn` page the log, `Home`/`End` jump to top/bottom (a `↑N`
 marker shows how far up you are) · `Ctrl+Z/Ctrl+A/Ctrl+E/Ctrl+U/Ctrl+K/Ctrl+W/Ctrl+Y` line
 editing.  Typing a new message while a reply is streaming stops that reply
