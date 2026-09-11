@@ -555,3 +555,20 @@ tabbed terminal.
   Plus an E2E pty probe confirming the startup title (`\033]2;nbchat <sid>\007`)
   reaches a real terminal.  tui2 suite 342 passed; full suite 716 green
   (342+79+295).
+
+## tui3: status-line clock (tui2-only)
+
+**Status-line clock** — the herdr research listed "status-line dynamic segments
+like clock/command output" as a lower-value/fit item to fold into the config
+feature.  This ships the clock as a trivial, safe, opt-in segment: the status
+bar re-renders every render tick, so a `time.strftime("%H:%M:%S")` segment
+updates live at zero cost.
+
+- **`_status_right()`** (tui2/app.py) - when `NBCHAT_TUI3_CLOCK=1`, appends the
+  current time to the right-hand status segments (after ctx / tok/s / goal /
+  todo / queue pills).  Guarded so the default (env var unset) status layout is
+  byte-for-byte unchanged; the `try/except` means a clock failure can never break
+  the bar.
+- **Tests** - 3 new (off by default - no `HH:MM:SS` pattern; on - the pattern is
+  present; on - other segments like `tok/s` still render alongside it).  tui2
+  suite 345 passed; full suite 719 green (345+79+295).

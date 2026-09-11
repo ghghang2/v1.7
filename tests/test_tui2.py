@@ -2479,6 +2479,31 @@ def test_window_title_env_off(monkeypatch):
     assert term.written == []  # env kill switch disables it
 
 
+def test_status_clock_off_by_default():
+    import os
+    app, *_ = _make_chat_app()
+    os.environ.pop("NBCHAT_TUI3_CLOCK", None)
+    out = app._status_right()
+    import re as _re
+    assert not _re.search(r"\d{2}:\d{2}:\d{2}", out)
+
+def test_status_clock_on(monkeypatch):
+    import re as _re
+    app, *_ = _make_chat_app()
+    monkeypatch.setenv("NBCHAT_TUI3_CLOCK", "1")
+    out = app._status_right()
+    assert _re.search(r"\d{2}:\d{2}:\d{2}", out), out
+
+def test_status_clock_does_not_break_other_segments(monkeypatch):
+    import re as _re
+    app, *_ = _make_chat_app()
+    app._tok_times = [1.0, 2.0, 3.0]
+    monkeypatch.setenv("NBCHAT_TUI3_CLOCK", "1")
+    out = app._status_right()
+    assert "tok/s" in out
+    assert _re.search(r"\d{2}:\d{2}:\d{2}", out)
+
+
 
 
 

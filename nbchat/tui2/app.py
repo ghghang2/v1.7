@@ -3975,6 +3975,11 @@ class ChatApp(TerminalAgent):
         qp = self._queue_pill()
         if qp:
             parts.append(qp)
+        if os.environ.get("NBCHAT_TUI3_CLOCK") == "1":
+            try:
+                parts.append(time.strftime("%H:%M:%S"))
+            except Exception:
+                pass
         return "  ".join(parts)
 
     def _build_frame(self) -> Frame:

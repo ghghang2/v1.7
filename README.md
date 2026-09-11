@@ -352,6 +352,9 @@ shell command (`!ls`); `!!` also stores the output for later.
   (`/notify`), the tool-approval gate and its risky-tool list (`/approve`),
   the mouse-wheel scroll tick, and the active theme (`/theme`).  They load
   at startup and save on each toggle and on exit.
+- **Status-line clock** — set `NBCHAT_TUI3_CLOCK=1` to append the current
+  time (`HH:MM:SS`) to the status bar; it updates live on the render tick.
+  Off by default so the default status layout is unchanged.
 - **Project instructions auto-load** — at start, nbchat looks for an
   `AGENTS.md` / `CLAUDE.md` (or the lowercase variants) in the working
   directory and the git repo root and loads it into the system prompt so the
