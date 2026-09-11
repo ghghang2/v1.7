@@ -639,3 +639,104 @@ def test_audit_dispatch_intercepted(monkeypatch, tmp_path):
     app._run_command("/audit")
     assert captured
     assert "audit" in captured[0]
+
+
+# -- Candidate D: /profile (evolvable harness profile + user gate) --------
+def test_profile_show_default(monkeypatch, tmp_path):
+    import nbchat.core.db as db
+    app, term, events = _make_tui3_app(monkeypatch, tmp_path)
+    p = str(tmp_path / "profile.json")
+    monkeypatch.setenv("NBCHAT_TUI3_PROFILE", p)
+    out = app._cmd_profile("")
+    assert "profile (applied)" in out
+    assert "prompt_template" in out
+    assert "verification_rules" in out
+    assert "memory_policy" in out
+
+
+def test_profile_set_stages_not_applies(monkeypatch, tmp_path):
+    import nbchat.core.db as db
+    app, term, events = _make_tui3_app(monkeypatch, tmp_path)
+    p = str(tmp_path / "profile.json")
+    monkeypatch.setenv("NBCHAT_TUI3_PROFILE", p)
+    # Stage an edit (should NOT apply it).
+    out = app._cmd_profile("set memory_policy compact")
+    assert "STAGED" in out
+    assert "memory_policy" in out
+    # The applied profile is unchanged (still the default).
+    applied = app._load_profile()
+    assert applied["memory_policy"] == "auto"
+    # The staged profile has the new value.
+    staged = app._load_staged()
+    assert staged["memory_policy"] == "compact"
+    # The applied file is NOT written (only the staged file).
+    import os as _os
+    assert not _os.path.exists(p)
+    assert _os.path.exists(p + ".staged")
+
+
+def test_profile_diff_shows_changes(monkeypatch, tmp_path):
+    import nbchat.core.db as db
+    app, term, events = _make_tui3_app(monkeypatch, tmp_path)
+    p = str(tmp_path / "profile.json")
+    monkeypatch.setenv("NBCHAT_TUI3_PROFILE", p)
+    app._cmd_profile("set memory_policy compact")
+    out = app._cmd_profile("diff")
+    assert "staged changes" in out
+    assert "memory_policy" in out
+    assert "auto" in out
+    assert "compact" in out
+
+
+def test_profile_apply_applies_and_clears(monkeypatch, tmp_path):
+    import nbchat.core.db as db
+    app, term, events = _make_tui3_app(monkeypatch, tmp_path)
+    p = str(tmp_path / "profile.json")
+    monkeypatch.setenv("NBCHAT_TUI3_PROFILE", p)
+    app._cmd_profile("set memory_policy compact")
+    out = app._cmd_profile("apply")
+    assert "APPLIED" in out
+    # The applied profile now has the new value.
+    applied = app._load_profile()
+    assert applied["memory_policy"] == "compact"
+    # The staged file is cleared.
+    import os as _os
+    assert not _os.path.exists(p + ".staged")
+    # The applied file now exists.
+    assert _os.path.exists(p)
+
+
+def test_profile_discard_clears_staged(monkeypatch, tmp_path):
+    import nbchat.core.db as db
+    app, term, events = _make_tui3_app(monkeypatch, tmp_path)
+    p = str(tmp_path / "profile.json")
+    monkeypatch.setenv("NBCHAT_TUI3_PROFILE", p)
+    app._cmd_profile("set memory_policy compact")
+    out = app._cmd_profile("discard")
+    assert "discarded" in out
+    import os as _os
+    assert not _os.path.exists(p + ".staged")
+    # The applied profile is unchanged.
+    applied = app._load_profile()
+    assert applied["memory_policy"] == "auto"
+
+
+def test_profile_set_rejects_unknown_key(monkeypatch, tmp_path):
+    import nbchat.core.db as db
+    app, term, events = _make_tui3_app(monkeypatch, tmp_path)
+    p = str(tmp_path / "profile.json")
+    monkeypatch.setenv("NBCHAT_TUI3_PROFILE", p)
+    out = app._cmd_profile("set bogus_key value")
+    assert "unknown key" in out
+
+
+def test_profile_dispatch_intercepted(monkeypatch, tmp_path):
+    import nbchat.core.db as db
+    app, term, events = _make_tui3_app(monkeypatch, tmp_path)
+    p = str(tmp_path / "profile.json")
+    monkeypatch.setenv("NBCHAT_TUI3_PROFILE", p)
+    captured = []
+    app._note = lambda text: captured.append(text)
+    app._run_command("/profile")
+    assert captured
+    assert "profile (applied)" in captured[0]

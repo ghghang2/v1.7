@@ -16,6 +16,8 @@ tui3 feature wave (implemented in phases, each tested + committed + pushed):
 
 from __future__ import annotations
 
+import json
+import os
 import sys
 import time
 
@@ -39,7 +41,7 @@ class ChatApp(_Tui2ChatApp):
     """
 
     #: tui3-native slash commands (intercepted before the tui2 dispatch).
-    _TUI3_NATIVE = ("/trace", "/budget", "/reflect", "/verify", "/health", "/audit")
+    _TUI3_NATIVE = ("/trace", "/budget", "/reflect", "/verify", "/health", "/audit", "/profile")
 
     def __init__(self, term, events, *args, **kwargs):
         super().__init__(term, events, *args, **kwargs)
@@ -67,6 +69,7 @@ class ChatApp(_Tui2ChatApp):
             "/verify": self._cmd_verify,
             "/health": self._cmd_health,
             "/audit": self._cmd_audit,
+            "/profile": self._cmd_profile,
         }
         fn = handlers.get(cmd)
         if fn is None:
@@ -694,6 +697,181 @@ class ChatApp(_Tui2ChatApp):
         elif n_relayed > 0 and n_verified == 0:
             lines.append("  NOTE: every claim is relayed (no objective check yet) - run the tests")
         return chr(10).join(lines)
+
+    # -- Candidate D: /profile (evolvable harness profile + user gate) ----
+    # Inspired by Evo-Harness (the agent optimizes its own harness) +
+    # Ecdysis (meta-level harness optimization) + the "the harness is the
+    # primary optimization artifact" theme. The harness keeps a structured,
+    # VERSIONED per-task profile (prompt template, allowed tools, memory
+    # policy, verification rules) that the agent can edit between phases.
+    # Every edit is STAGED (never applied directly), shown as a DIFF, and
+    # gated by the user (/profile apply or /profile discard).
+    _PROFILE_KEYS = ("prompt_template", "allowed_tools",
+                     "memory_policy", "verification_rules")
+
+    def _default_profile(self) -> dict:
+        """The default harness profile (a structured, editable template)."""
+        return {
+            "prompt_template": "",
+            "allowed_tools": [],
+            "memory_policy": "auto",
+            "verification_rules": ["run_tests_after_change"],
+        }
+
+    def _profile_path(self) -> str:
+        """The applied-profile path (honors NBCHAT_TUI3_PROFILE)."""
+        p = os.environ.get("NBCHAT_TUI3_PROFILE")
+        if p:
+            return p
+        return os.path.join(os.path.expanduser("~"), ".nbchat",
+                            "tui3-profile.json")
+
+    def _staged_path(self) -> str:
+        """The staged (pending) profile path."""
+        return self._profile_path() + ".staged"
+
+    def _load_json_obj(self, path: str) -> dict:
+        """Load a JSON object from ``path`` (an empty dict if missing/invalid)."""
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+        return {}
+
+    def _save_json_obj(self, path: str, data: dict) -> None:
+        """Save ``data`` to ``path`` as JSON (best-effort, creates parents)."""
+        try:
+            parent = os.path.dirname(path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, indent=2, sort_keys=True)
+                fh.write(chr(10))
+        except Exception:
+            pass
+
+    def _load_profile(self) -> dict:
+        """The applied profile (the on-disk profile merged over the default)."""
+        prof = self._default_profile()
+        prof.update(self._load_json_obj(self._profile_path()))
+        return prof
+
+    def _load_staged(self) -> dict:
+        """The staged (pending) profile, or the applied profile if none."""
+        staged = self._load_json_obj(self._staged_path())
+        if not staged:
+            return self._load_profile()
+        return staged
+
+    def _profile_diff(self, applied: dict, staged: dict) -> list:
+        """A key-level diff between the applied and staged profiles.
+
+        Returns a list of (key, applied_value, staged_value) tuples for every
+        key whose value differs (the keys present in either profile).
+        """
+        diffs = []
+        keys = []
+        for k in self._PROFILE_KEYS:
+            if k in applied or k in staged:
+                keys.append(k)
+        for k in applied:
+            if k not in keys:
+                keys.append(k)
+        for k in staged:
+            if k not in keys:
+                keys.append(k)
+        for k in keys:
+            a = applied.get(k)
+            s = staged.get(k)
+            if a != s:
+                diffs.append((k, a, s))
+        return diffs
+
+    def _fmt_profile(self, prof: dict) -> str:
+        """Render a profile as an indented JSON block."""
+        return json.dumps(prof, indent=2, sort_keys=True)
+
+    def _cmd_profile(self, arg: str) -> str:
+        """Show / edit the evolvable harness profile (with a user gate).
+
+        ``/profile`` (or ``/profile show``) shows the applied profile.
+        ``/profile set <key> <value>`` STAGES an edit (never applied
+        directly). ``/profile diff`` shows the staged-vs-applied diff.
+        ``/profile apply`` applies the staged profile (the user gate).
+        ``/profile discard`` discards the staged profile.  This is the
+        evolvable-harness feature: the agent can propose harness changes,
+        but the USER gates every change.
+        """
+        parts = arg.strip().split() if arg else []
+        sub = parts[0] if parts else "show"
+        if sub in ("", "show"):
+            return ("profile (applied)\n" + self._fmt_profile(self._load_profile())
+                    + "\n\n(hint: /profile set <key> <value> to stage an edit)")
+        if sub == "set":
+            if len(parts) < 3:
+                return "profile: usage: /profile set <key> <value>"
+            key = parts[1]
+            if key not in self._PROFILE_KEYS:
+                return ("profile: unknown key %r (valid: %s)"
+                        % (key, ", ".join(self._PROFILE_KEYS)))
+            value_raw = " ".join(parts[2:])
+            # Parse the value (JSON if it looks like JSON, else a string).
+            value = value_raw
+            try:
+                value = json.loads(value_raw)
+            except Exception:
+                value = value_raw
+            staged = self._load_staged()
+            staged[key] = value
+            self._save_json_obj(self._staged_path(), staged)
+            diffs = self._profile_diff(self._load_profile(), staged)
+            lines = ["profile: STAGED %s = %r (not yet applied)" % (key, value)]
+            lines.append("  diff (applied -> staged):")
+            if not diffs:
+                lines.append("    (no differences)")
+            for k, a, s in diffs:
+                lines.append("    %s: %r -> %r" % (k, a, s))
+            lines.append("  (apply: /profile apply   discard: /profile discard)")
+            return chr(10).join(lines)
+        if sub == "diff":
+            applied = self._load_profile()
+            staged = self._load_staged()
+            diffs = self._profile_diff(applied, staged)
+            if not diffs:
+                return "profile: no staged changes (applied == staged)"
+            lines = ["profile: staged changes (not yet applied):"]
+            for k, a, s in diffs:
+                lines.append("  %s: %r -> %r" % (k, a, s))
+            lines.append("  (apply: /profile apply   discard: /profile discard)")
+            return chr(10).join(lines)
+        if sub == "apply":
+            staged = self._load_staged()
+            applied = self._load_profile()
+            diffs = self._profile_diff(applied, staged)
+            if not diffs:
+                return "profile: nothing to apply (applied == staged)"
+            self._save_json_obj(self._profile_path(), staged)
+            try:
+                os.remove(self._staged_path())
+            except Exception:
+                pass
+            lines = ["profile: APPLIED %d change(s) (user gate: approved)"
+                     % len(diffs)]
+            for k, a, s in diffs:
+                lines.append("  %s: %r -> %r" % (k, a, s))
+            return chr(10).join(lines)
+        if sub == "discard":
+            try:
+                if os.path.exists(self._staged_path()):
+                    os.remove(self._staged_path())
+                    return "profile: staged changes discarded"
+            except Exception as exc:
+                return "profile: failed to discard: %s" % exc
+            return "profile: nothing to discard (no staged changes)"
+        return "profile: unknown subcommand %r (show / set / diff / apply / discard)" % sub
 
 def run(argv: list | None = None) -> int:
     """``python -m nbchat.tui3`` entry point.
