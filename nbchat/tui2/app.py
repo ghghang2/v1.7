@@ -1391,7 +1391,7 @@ class ChatApp(TerminalAgent):
             "  /undo [label]         preview (no label) / revert tracked files",
             "  /find <query>         search messages across all sessions",
             "  /diff [--stat] [label]  review tracked-file changes (colorized)",
-            "  /export [path]  save this session as a markdown file",
+            "  /export [html] [path]  save this session (markdown, or html page)",
             "  /plan [on|off]  read-only research mode (blocks file edits)",
             "  /retry [text] re-run your last message (or run a new one)",
             "  /queue [clear]  view/clear the Ctrl+Q follow-up queue",
@@ -2263,20 +2263,81 @@ class ChatApp(TerminalAgent):
                 parts += [f"**{role}**", "", content, ""]
         return chr(10).join(parts).rstrip() + chr(10)
 
-    def _cmd_export(self, arg: str = "") -> str:
-        """``/export [path]`` — save this session as a markdown file.
+    def _session_html(self, sid: str) -> str:
+        """Build a self-contained HTML document for a session's history
+        (read-only over the DB, mirrors _session_markdown)."""
+        from nbchat.core import db as _db
+        import datetime
+        import html as _html
+        rows = _db.load_history(sid)
+        title = _db.load_session_title(sid) or sid
+        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        esc = _html.escape
+        parts = [
+            "<!DOCTYPE html>",
+            "<html><head><meta charset=\"utf-8\">",
+            f"<title>{esc(title)}</title>",
+            "<style>",
+            "body{font-family:ui-monospace,Menlo,Consolas,monospace;max-width:900px;margin:2em auto;padding:0 1em;color:#1c1e21;background:#fafafa;line-height:1.45;}",
+            "h1{font-size:1.4em;border-bottom:2px solid #333;padding-bottom:.3em;}",
+            ".meta{color:#666;font-size:.85em;margin-bottom:1.2em;}",
+            ".msg{margin:0 0 1em;padding:.6em .8em;border-radius:6px;border-left:4px solid #999;background:#fff;}",
+            ".msg .role{font-weight:700;font-size:.75em;text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:.3em;color:#333;}",
+            ".user{border-left-color:#2f81f7;}",
+            ".assistant{border-left-color:#189a63;}",
+            ".tool{border-left-color:#b08800;background:#fffdf5;}",
+            ".toolname{color:#b08800;font-weight:700;font-size:.8em;}",
+            "pre{white-space:pre-wrap;word-break:break-word;background:#f4f4f4;padding:.5em;border-radius:4px;}",
+            "</style></head><body>",
+            f"<h1>{esc(title)}</h1>",
+            (f"<div class=\"meta\">Exported {esc(now)} "
+             "&middot; session <code>{esc(sid)}</code> "
+             f"&middot; {len(rows)} messages</div>"),
+        ]
+        for row in rows:
+            role = row[0]
+            content = (row[1] if len(row) > 1 else "") or ""
+            tool_name = (row[3] if len(row) > 3 else "") or ""
+            content = content.strip()
+            if not content and not tool_name:
+                continue
+            if role == "tool":
+                body = f"<pre>{esc(content)}</pre>" if content else ""
+                nm = f'<span class="toolname">{esc(tool_name)}</span>' if tool_name else ""
+                parts.append(f'<div class="msg tool"><span class="role">tool</span>{nm}{body}</div>')
+            else:
+                css = role if role in ("user", "assistant") else "msg"
+                parts.append(f'<div class="msg {css}"><span class="role">{esc(role)}</span>{esc(content)}</div>')
+        parts.append("</body></html>")
+        return chr(10).join(parts) + chr(10)
 
-        Read-only over the DB; writes one file.  With no path it writes to
-        ``~/.nbchat/exports/nbchat-<short-sid>-<ts>.md`` (never pollutes the
-        working tree).  An explicit path (relative or absolute) is honoured.
+    def _cmd_export(self, arg: str = "") -> str:
+        """``/export [html] [path]`` — save this session as a file.
+
+        Read-only over the DB; writes one file.  Default format is markdown;
+        pass ``html`` as the first token to write a self-contained HTML page
+        (``/export html [path]``).  With no path it writes to
+        ``~/.nbchat/exports/nbchat-<short-sid>-<ts>.{md,html}`` (never pollutes
+        the working tree).  An explicit path (relative or absolute) is honoured.
         """
         from nbchat.core import db as _db
         import datetime
-        a = (arg or "").strip()
+        toks = (arg or "").split(None, 1)
+        fmt = "md"
+        if toks and toks[0].lower() in ("html", "htm"):
+            fmt = "html"
+            a = toks[1].strip() if len(toks) > 1 else ""
+        else:
+            a = (arg or "").strip()
         rows = _db.load_history(self.session_id)
         if not rows:
             return "export: no messages in this session to export"
-        md = self._session_markdown(self.session_id)
+        if fmt == "html":
+            doc = self._session_html(self.session_id)
+            ext = "html"
+        else:
+            doc = self._session_markdown(self.session_id)
+            ext = "md"
         if a:
             path = a if os.path.isabs(a) else os.path.join(os.getcwd(), a)
         else:
@@ -2284,15 +2345,15 @@ class ChatApp(TerminalAgent):
             ts = datetime.datetime.now().strftime("%Y%m%d-%H%M")
             base = os.environ.get("NBCHAT_EXPORT_DIR") or os.path.join(
                 os.path.expanduser("~"), ".nbchat", "exports")
-            path = os.path.join(base, f"nbchat-{short}-{ts}.md")
+            path = os.path.join(base, f"nbchat-{short}-{ts}.{ext}")
         try:
             d = os.path.dirname(os.path.abspath(path))
             os.makedirs(d, exist_ok=True)
             with open(path, "w", encoding="utf-8") as fh:
-                fh.write(md)
+                fh.write(doc)
         except Exception as exc:
             return f"export: could not write {path}: {type(exc).__name__}: {exc}"
-        return f"export: wrote {len(rows)} messages -> {path}"
+        return f"export: wrote {len(rows)} messages as {ext} -> {path}"
 
     # ── /team (tui3: multi-agent team runs, output relayed off-thread) ──
 

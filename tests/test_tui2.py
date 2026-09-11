@@ -3464,6 +3464,38 @@ def test_export_writes_markdown(monkeypatch, tmp_path):
     assert "**user**" in txt and "hello there" in txt
     assert "**assistant**" in txt and "hi! how can I help?" in txt
     assert "session `tui:" in txt
+def test_export_html(monkeypatch, tmp_path):
+    app, _, _, _ = _make_chat_app()
+    _patch_history(monkeypatch, [
+        ("user", "hello <there> & co", "", "", "", 0),
+        ("assistant", "hi! 2 < 3", "", "", "", 0),
+        ("tool", "ran <cmd>", "", "run_command", "{}", 0),
+    ])
+    path = str(tmp_path / "out.html")
+    out = app._cmd_export("html " + path)
+    assert path in out and "as html" in out
+    txt = open(path, encoding="utf-8").read()
+    assert "<!DOCTYPE html>" in txt
+    assert "<title>My Session</title>" in txt
+    # content is HTML-escaped
+    assert "hello &lt;there&gt; &amp; co" in txt
+    assert "hi! 2 &lt; 3" in txt
+    assert 'class="msg user"' in txt
+    assert 'class="msg assistant"' in txt
+    assert 'class="msg tool"' in txt
+    assert "run_command" in txt
+
+
+def test_session_html_escaping(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    _patch_history(monkeypatch, [
+        ("user", '<script>alert("x")</script>', "", "", "", 0),
+    ])
+    html = app._session_html(app.session_id)
+    assert "<script>" not in html
+    assert "&lt;script&gt;" in html
+
+
 
 def test_export_tool_block_fenced(monkeypatch, tmp_path):
     app, _, _, _ = _make_chat_app()

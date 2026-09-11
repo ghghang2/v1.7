@@ -367,3 +367,26 @@ prompt so the agent follows project rules without the user pasting them.
   hint; opt-out leaves the system prompt clean).  tui2 suite 309 passed;
   full suite 683 green (309+79+295).  E2E pty verified (boot in a dir with an
   AGENTS.md, `/project` shows the file + content, clean exit).
+
+## tui3: /export html (self-contained HTML conversation export)
+
+**`/export html`** (prime-agent gap: "`/export` HTML / `/share`"): the existing
+`/export` writes a clean markdown file; this adds a self-contained HTML page so
+a conversation can be shared / archived with formatting intact.
+
+- **`_session_html(sid)`** — mirrors `_session_markdown` over the same
+  `db.load_history` rows, but emits a single self-contained HTML document
+  (inline `<style>`, no external assets).  Role-coloured message blocks
+  (user / assistant / tool), a labelled tool panel, and **all content is
+  HTML-escaped** via `html.escape` so `<script>`/`&`/quotes render literally
+  (never as markup) — safe for arbitrary model output.
+- **`/export [html] [path]`** — the `html`/`htm` first token selects the format;
+  everything else is unchanged (markdown remains the default).  Default output
+  path extension follows the format (`.html` vs `.md`); an explicit path is
+  honoured.  Pure/read-only over the DB + one file write; no I/O in the frame
+  path, so no render impact.
+- **Default behaviour unchanged** — `/export` with no `html` token writes
+  markdown exactly as before.  Only the new opt-in format is added.
+- **Tests** — 2 new (full export writes a `.html` file with the DOCTYPE, title,
+  escaped content, role/tool classes; `_session_html` escapes a `<script>` tag).
+  tui2 suite 311 passed; full suite 685 green (311+79+295).
