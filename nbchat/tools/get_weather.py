@@ -98,6 +98,82 @@ def _fetch_weather(city: str, date: str) -> Dict:
         return json.loads(response.read().decode("utf-8"))
 
 
+def _sum_hourly_precip(hourly: list) -> float:
+    """Sum the hourly ``precipMM`` values into a daily precipitation total.
+
+    Parameters
+    ----------
+    hourly: list
+        List of hourly forecast dicts from the wttr.in ``j1`` payload.
+
+    Returns
+    -------
+    float
+        Total precipitation in millimetres for the day.
+    """
+    total = 0.0
+    for entry in hourly or []:
+        value = entry.get("precipMM")
+        if value is None:
+            continue
+        try:
+            total += float(value)
+        except (TypeError, ValueError):
+            continue
+    return round(total, 1)
+
+
+def _max_chance_of_rain(hourly: list) -> int:
+    """Return the highest hourly chance of rain (percent) for a day."""
+    best = 0
+    for entry in hourly or []:
+        try:
+            best = max(best, int(entry.get("chanceofrain") or 0))
+        except (TypeError, ValueError):
+            continue
+    return best
+
+
+def _day_descriptions(day: dict) -> list:
+    """Collect the distinct weather descriptions for a forecast day."""
+    descriptions = []
+    for entry in day.get("hourly", []):
+        desc = (entry.get("weatherDesc") or [{}])[0].get("value")
+        if desc and desc not in descriptions:
+            descriptions.append(desc)
+    return descriptions
+
+
+def _forecast_for_date(data: dict, date: str) -> dict:
+    """Extract the real per-day forecast from the wttr.in ``j1`` payload.
+
+    Parameters
+    ----------
+    data: dict
+        Decoded JSON payload from ``wttr.in/<city>?format=j1``.
+    date: str
+        ISO 8601 date (YYYY-MM-DD) to match against the ``weather`` array.
+
+    Returns
+    -------
+    dict
+        Forecast fields sourced from the actual ``weather`` array, or an empty
+        dict if no matching day is available.
+    """
+    for day in data.get("weather", []):
+        if day.get("date") == date:
+            hourly = day.get("hourly", [])
+            return {
+                "temperature_2m_max": day.get("maxtempC"),
+                "temperature_2m_min": day.get("mintempC"),
+                "precipitation_sum": _sum_hourly_precip(hourly),
+                "chance_of_rain": _max_chance_of_rain(hourly),
+                "description": _day_descriptions(day),
+                "uv_index": day.get("uvIndex"),
+            }
+    return {}
+
+
 # ---------------------------------------------------------------------------
 # The actual tool implementation
 # ---------------------------------------------------------------------------
@@ -117,22 +193,27 @@ def _get_weather(city: str, date: str = "") -> str:
     """
     try:
         date = _parse_date(date) if date else datetime.now().strftime("%Y-%m-%d")
+        today = datetime.now().strftime("%Y-%m-%d")
         data = _fetch_weather(city, date)
+
         current_condition = data.get("current_condition", [])
-        weather = current_condition[0] if current_condition else {}
+        live = current_condition[0] if current_condition else {}
+        # Live conditions are only meaningful for the current day.
+        if date == today and live:
+            current = {
+                "temperature": live.get("temp_C"),
+                "windspeed": live.get("windspeedKmph"),
+                "humidity": live.get("humidity"),
+                "weather": (live.get("weatherDesc") or [{}])[0].get("value"),
+            }
+        else:
+            current = None
+
         result = {
             "city": city,
             "date": date,
-            "current": {
-                "temperature": weather.get("temp_C"),
-                "windspeed": weather.get("windspeedKmph"),
-                "humidity": weather.get("humidity"),
-                "weather": weather.get("weatherDesc", [{}])[0].get("value") if weather.get("weatherDesc") else None,
-            },
-            "forecast": {
-                "temperature_2m_max": weather.get("temp_C"),
-                "precipitation_sum": weather.get("precipMM"),
-            },
+            "current": current,
+            "forecast": _forecast_for_date(data, date),
         }
         return json.dumps({"result": result})
     except Exception as exc:
