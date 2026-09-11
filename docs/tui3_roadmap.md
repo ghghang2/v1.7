@@ -390,3 +390,28 @@ a conversation can be shared / archived with formatting intact.
 - **Tests** — 2 new (full export writes a `.html` file with the DOCTYPE, title,
   escaped content, role/tool classes; `_session_html` escapes a `<script>` tag).
   tui2 suite 311 passed; full suite 685 green (311+79+295).
+
+## tui3: /heartbeat (recurring instruction, prime-agent gap)
+
+**`/heartbeat`** (prime-agent gap: a user-defined recurring instruction that
+fires as a turn on a schedule): poll CI, watch a build, nudge a long-running
+task, without keeping a terminal hand on the wheel.
+
+- **`/heartbeat every <dur> <instruction>`** — fires `<instruction>` as a turn
+  every `<dur>` (a bare number = seconds; `s`/`m`/`h` suffixes supported) while
+  the session is idle.  `/heartbeat` shows the current heartbeat; `/heartbeat
+  clear` (or `off`/`stop`) stops it.  Bad durations are rejected with a hint.
+- **No new thread, no interrupt** — the check lives in `_tick_heartbeat()`,
+  called from the frame builder on every render tick (the existing 1 s
+  `clock_interval`).  When the interval has elapsed **and** no turn thread is
+  alive, it fires via `_start_turn("[heartbeat] " + instruction)`.  If a turn is
+  running it defers (the elapsed window is preserved, so it fires as soon as
+  idle) — a heartbeat never interrupts a running turn.  The fired turn is
+  prefixed `[heartbeat]` so it is distinguishable in history.  No new daemon
+  thread, no render impact (the check is a few `time.monotonic()` reads).
+- **Default off** — nothing is scheduled until the user sets it; no state
+  persisted across restarts (a heartbeat is a live-session convenience).
+- **Tests** — 6 new (duration parsing incl. bad/short values; set + status +
+  clear; usage on bad args; fires when idle; does NOT fire when the window has
+  not elapsed; defers while a turn thread is alive).  tui2 suite 317 passed;
+  full suite 691 green (317+79+295).

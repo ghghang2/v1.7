@@ -3496,6 +3496,96 @@ def test_session_html_escaping(monkeypatch):
     assert "&lt;script&gt;" in html
 
 
+def _FakeThread():
+    class _T:
+        def __init__(self, alive=True):
+            self._alive = alive
+        def is_alive(self):
+            return self._alive
+    return _T
+
+def test_parse_duration():
+    from nbchat.tui2.app import ChatApp
+    assert ChatApp._parse_duration("5") == 5.0
+    assert ChatApp._parse_duration("30s") == 30.0
+    assert ChatApp._parse_duration("5m") == 300.0
+    assert ChatApp._parse_duration("1h") == 3600.0
+    assert ChatApp._parse_duration("2.5s") == 2.5
+    assert ChatApp._parse_duration("0") is None
+    assert ChatApp._parse_duration("0s") is None
+    assert ChatApp._parse_duration("abc") is None
+    assert ChatApp._parse_duration("") is None
+
+def test_heartbeat_set_status_clear():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("tt", "tests/test_tui2.py")
+    tt = importlib.util.module_from_spec(spec); spec.loader.exec_module(tt)
+    app, *_ = tt._make_chat_app()
+    out = app._cmd_heartbeat("every 5 check the build")
+    assert "every 5s" in out
+    assert "check the build" in out
+    assert app._heartbeat == "check the build"
+    assert app._heartbeat_interval == 5.0
+    out = app._cmd_heartbeat("")
+    assert "every 5s" in out
+    out = app._cmd_heartbeat("clear")
+    assert "cleared" in out
+    assert app._heartbeat == ""
+    out = app._cmd_heartbeat("every")
+    assert "usage" in out
+
+def test_heartbeat_bad_duration():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("tt", "tests/test_tui2.py")
+    tt = importlib.util.module_from_spec(spec); spec.loader.exec_module(tt)
+    app, *_ = tt._make_chat_app()
+    out = app._cmd_heartbeat("every 0 check the build")
+    assert "bad duration" in out
+    assert app._heartbeat == ""
+
+def test_heartbeat_fires_when_idle():
+    import importlib.util, time as _time
+    spec = importlib.util.spec_from_file_location("tt", "tests/test_tui2.py")
+    tt = importlib.util.module_from_spec(spec); spec.loader.exec_module(tt)
+    app, *_ = tt._make_chat_app()
+    app._heartbeat = "check the build"
+    app._heartbeat_interval = 1.0
+    app._heartbeat_last = _time.monotonic() - 2.0  # elapsed
+    app._turn_thread = None
+    calls = []
+    app._start_turn = lambda text: calls.append(text)
+    app._tick_heartbeat()
+    assert calls == ["[heartbeat] check the build"]
+
+def test_heartbeat_fires_only_when_idle_window_elapsed():
+    import importlib.util, time as _time
+    spec = importlib.util.spec_from_file_location("tt", "tests/test_tui2.py")
+    tt = importlib.util.module_from_spec(spec); spec.loader.exec_module(tt)
+    app, *_ = tt._make_chat_app()
+    app._heartbeat = "check the build"
+    app._heartbeat_interval = 10.0
+    app._heartbeat_last = _time.monotonic()  # just now, not elapsed
+    app._turn_thread = None
+    calls = []
+    app._start_turn = lambda text: calls.append(text)
+    app._tick_heartbeat()
+    assert calls == []
+
+def test_heartbeat_defers_when_busy():
+    import importlib.util, time as _time
+    spec = importlib.util.spec_from_file_location("tt", "tests/test_tui2.py")
+    tt = importlib.util.module_from_spec(spec); spec.loader.exec_module(tt)
+    app, *_ = tt._make_chat_app()
+    app._heartbeat = "check the build"
+    app._heartbeat_interval = 1.0
+    app._heartbeat_last = _time.monotonic() - 2.0  # elapsed
+    app._turn_thread = _FakeThread()(alive=True)  # busy
+    calls = []
+    app._start_turn = lambda text: calls.append(text)
+    app._tick_heartbeat()
+    assert calls == []
+
+
 
 def test_export_tool_block_fenced(monkeypatch, tmp_path):
     app, _, _, _ = _make_chat_app()

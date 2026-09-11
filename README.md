@@ -336,6 +336,11 @@ shell command (`!ls`); `!!` also stores the output for later.
   directory and the git repo root and loads it into the system prompt so the
   agent follows repo conventions (capped at 16 KB).  `/project` shows what
   was loaded; `NBCHAT_NO_PROJECT_INSTRUCTIONS=1` disables it.
+- **Recurring instruction (`/heartbeat`)** — `/heartbeat every <dur> <instruction>`
+  fires the instruction as a turn every `<dur>` (5 / 30s / 5m / 1h) whenever the
+  session is idle — poll CI, watch a build, nudge a long-running task. It never
+  interrupts a running turn (defers to the next idle moment). `/heartbeat` shows
+  the current heartbeat; `/heartbeat clear` stops it.
 - **External control socket (`nbchat-ctl`)** — a running TUI listens on a
   local Unix socket (`~/.nbchat/tui2-ctl.sock`; override `NBCHAT_CTL_SOCKET`,
   disable `NBCHAT_NO_CTL=1`) that a script or another process can drive:

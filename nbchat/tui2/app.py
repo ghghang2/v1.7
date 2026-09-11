@@ -284,6 +284,11 @@ class ChatApp(TerminalAgent):
         self._tok_times: list = []
         self._turns = 0
         self._turn_mutated = False  # auto-checkpoint once per edit-window
+        # Recurring instruction (/heartbeat): fired as a turn every N seconds
+        # while the session is idle.  "" = disabled.
+        self._heartbeat: str = ""
+        self._heartbeat_interval: float = 0.0
+        self._heartbeat_last: float = 0.0
         self._plan_mode = False     # read-only research mode (blocks edits)
         self._file_mutating_tools = {"create_file", "make_change_to_file",
                                      "run_command"}
@@ -1325,7 +1330,7 @@ class ChatApp(TerminalAgent):
                     "/team", "/browse", "/search", "/sup", "/voice",
                     "/fork", "/checkpoint", "/undo", "/find", "/diff",
                     "/export", "/plan", "/retry", "/queue", "/tpl", "/editor", "/gstatus", "/stash",
-                    "/rewind", "/pin", "/unpin", "/settings", "/todos", "/project")
+                    "/rewind", "/pin", "/unpin", "/settings", "/todos", "/project", "/heartbeat")
 
     def _run_command(self, line: str) -> None:
         """Route a slash command.
@@ -1404,6 +1409,7 @@ class ChatApp(TerminalAgent):
             "  /settings [k v]  view / live-tune TUI settings (theme, scroll, toasts) ",
             "  /todos          show the live agent task list (progress pill)",
             "  /project        show the AGENTS.md / CLAUDE.md auto-loaded at start",
+            "  /heartbeat every <dur> <instruction>   fire a recurring turn when idle",
             "  @<path>      file completion (type @ + a filename, pick a match)",
             "  /compact    force a context summarisation now",
             "  /copy       copy last reply to the clipboard",
@@ -1464,6 +1470,7 @@ class ChatApp(TerminalAgent):
             "/settings": self._cmd_settings,
             "/todos": self._cmd_todos,
             "/project": self._cmd_project,
+            "/heartbeat": self._cmd_heartbeat,
         }
         fn = handlers.get(cmd)
         try:
@@ -3013,6 +3020,78 @@ class ChatApp(TerminalAgent):
             out.append("\u2026 +" + str(more) + " more lines (use a tool to read the full file)")
         return "\n".join(out)
 
+    @staticmethod
+    def _parse_duration(s: str):
+        """Parse a duration like ``5`` / ``30s`` / ``5m`` / ``1h`` to seconds.
+
+        Returns ``None`` when unparseable or < 1 second.
+        """
+        import re as _re
+        m = _re.match(r"^(\d+(?:\.\d+)?)\s*([smh]?)$", (s or "").strip().lower())
+        if not m:
+            return None
+        val = float(m.group(1))
+        unit = m.group(2)
+        if unit == "m":
+            val *= 60.0
+        elif unit == "h":
+            val *= 3600.0
+        if val < 1.0:
+            return None
+        return val
+
+    def _tick_heartbeat(self) -> None:
+        """Fire the recurring instruction when the interval has elapsed and
+        the session is idle.  Called from the frame builder on every render
+        tick.  Never interrupts a running turn (it defers until idle)."""
+        if not self._heartbeat or self._heartbeat_interval <= 0:
+            return
+        now = time.monotonic()
+        if now - self._heartbeat_last < self._heartbeat_interval:
+            return
+        running = (self._turn_thread is not None
+                   and self._turn_thread.is_alive())
+        if running:
+            return  # defer until idle; the elapsed window is preserved
+        self._heartbeat_last = now
+        try:
+            self._start_turn("[heartbeat] " + self._heartbeat)
+        except Exception:
+            pass
+
+    def _cmd_heartbeat(self, arg: str) -> str:
+        """``/heartbeat`` - manage a recurring instruction.
+
+        ``/heartbeat every <dur> <instruction>`` fires <instruction> as a
+        turn every <dur> while the session is idle (dur: 5 / 30s / 5m / 1h).
+        ``/heartbeat clear`` stops it.  No arg shows the current heartbeat.
+        """
+        a = (arg or "").strip()
+        if not a:
+            if self._heartbeat:
+                return ("heartbeat: every %gs -> %r"
+                        % (self._heartbeat_interval, self._heartbeat))
+            return ("heartbeat: none (use /heartbeat every <dur> <instruction>)")
+        low = a.lower()
+        if low in ("clear", "off", "stop"):
+            self._heartbeat = ""
+            self._heartbeat_interval = 0.0
+            return "heartbeat: cleared"
+        toks = a.split(None, 2)
+        if toks and toks[0].lower() == "every" and len(toks) >= 3:
+            dur = self._parse_duration(toks[1])
+            if dur is None:
+                return "heartbeat: bad duration (use e.g. 5 / 30s / 5m / 1h)"
+            instr = toks[2].strip()
+            if not instr:
+                return "heartbeat: empty instruction"
+            self._heartbeat = instr
+            self._heartbeat_interval = dur
+            self._heartbeat_last = time.monotonic()
+            return "heartbeat: every %gs -> %r" % (dur, instr)
+        return ("heartbeat: usage: /heartbeat every <dur> <instruction>, "
+                "/heartbeat clear, or /heartbeat (status)")
+
     def _open_picker(self) -> None:
         from nbchat.core import db
         self._modal_kind = "session"
@@ -3606,6 +3685,7 @@ class ChatApp(TerminalAgent):
         return "  ".join(parts)
 
     def _build_frame(self) -> Frame:
+        self._tick_heartbeat()
         w, h = self.term.width, self.term.height
         header_h = 1
         # Bottom area: the 3-row message editor, the tool-approval prompt,
