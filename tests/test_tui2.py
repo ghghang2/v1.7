@@ -2830,6 +2830,51 @@ def test_rewind_listed_in_help():
     from nbchat.tui2.app import ChatApp
     assert "/rewind" in ChatApp._TUI2_NATIVE
 
+
+
+# ── session pin (top of the picker) ─────────────────────────────────────
+
+
+def test_pin_set_and_clear(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    import nbchat.core.db as dbmod
+    meta = {}
+    monkeypatch.setattr(dbmod, "_meta_set", lambda sid, k, v: meta.__setitem__((sid, k), v))
+    monkeypatch.setattr(dbmod, "_meta_get", lambda sid, k, d="": meta.get((sid, k), d))
+    out = app._cmd_pin("")
+    assert "pinned" in out
+    assert meta.get((app.session_id, "pinned")) == "1"
+    out = app._cmd_unpin("")
+    assert "unpinned" in out
+    assert meta.get((app.session_id, "pinned")) == ""
+
+
+def test_open_picker_sorts_pinned_first(monkeypatch):
+    app, *_ = _make_chat_app()
+    import nbchat.core.db as dbmod
+    rows = [
+        {"session_id": "tui:aaa", "title": "A", "last_ts": None},
+        {"session_id": "tui:pinned1", "title": "P", "last_ts": None},
+        {"session_id": "tui:bbb", "title": "B", "last_ts": None},
+    ]
+    monkeypatch.setattr(dbmod, "list_sessions_with_title", lambda prefix: rows)
+    class FakeConn:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def execute(self, q, *a):
+            if "session_meta" in q and "pinned" in q:
+                return [("tui:pinned1",)]
+            return []
+    monkeypatch.setattr(dbmod, "_connect", lambda: FakeConn())
+    app._open_picker()
+    assert app._picker_sessions[0][0] == "tui:pinned1"
+    assert "\u2605" in app._picker_sessions[0][1]  # star glyph on pinned rows
+
+
+def test_pin_listed_in_help():
+    from nbchat.tui2.app import ChatApp
+    assert "/pin" in ChatApp._TUI2_NATIVE
+    assert "/unpin" in ChatApp._TUI2_NATIVE
 def _gitrepo(tmp_path):
     import subprocess as _sp
     d = tmp_path / "repo"

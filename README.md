@@ -246,6 +246,10 @@ shell command (`!ls`); `!!` also stores the output for later.
   Bare `/rewind` lists your recent user turns with the number to pass.
   The removed slice is kept recoverable (one level) via
   `/rewind restore` until you start a new turn.
+- **Session pin** — `/pin` pins the current session to the top of the
+  session picker (Ctrl+L); `/unpin` un-pins it.  Pinned sessions are
+  marked with a ★ and sort above the rest, so important sessions are
+  always one jump away even as your session list grows.
 - `/hotkeys` — the keybinding reference.
 - `/copy` — copies the last assistant message to the clipboard (OSC 52;
   silent no-op where the terminal lacks clipboard support).

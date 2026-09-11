@@ -1253,7 +1253,7 @@ class ChatApp(TerminalAgent):
                     "/team", "/browse", "/search", "/sup", "/voice",
                     "/fork", "/checkpoint", "/undo", "/find", "/diff",
                     "/export", "/plan", "/retry", "/queue", "/tpl", "/editor", "/gstatus", "/stash",
-                    "/rewind")
+                    "/rewind", "/pin", "/unpin")
 
     def _run_command(self, line: str) -> None:
         """Route a slash command.
@@ -1328,6 +1328,7 @@ class ChatApp(TerminalAgent):
             "  /gstatus  git working-tree overview (branch/staged/unstaged/untracked)",
             "  /stash [push|pop [n]|clear]  stash/pop drafts (git-stash for input)",
             "  /rewind [n|restore]  drop the last N user turns (restore to undo)",
+            "  /pin /unpin  pin/unpin this session (top of the picker)",
             "  @<path>      file completion (type @ + a filename, pick a match)",
             "  /compact    force a context summarisation now",
             "  /copy       copy last reply to the clipboard",
@@ -1383,6 +1384,8 @@ class ChatApp(TerminalAgent):
             "/gstatus": self._cmd_gstatus,
             "/stash": self._cmd_stash,
             "/rewind": self._cmd_rewind,
+            "/pin": self._cmd_pin,
+            "/unpin": self._cmd_unpin,
         }
         fn = handlers.get(cmd)
         try:
@@ -2657,6 +2660,24 @@ class ChatApp(TerminalAgent):
 
     # ── session picker modal ────────────────────────────────────────────
 
+    def _cmd_pin(self, arg: str) -> str:
+        """``/pin`` — pin the current session to the top of the picker."""
+        import nbchat.core.db as _db
+        try:
+            _db._meta_set(self.session_id, "pinned", "1")
+            return "pinned " + self.session_id + " (top of the session picker)"
+        except Exception as e:
+            return "pin: " + type(e).__name__ + ": " + str(e)
+
+    def _cmd_unpin(self, arg: str) -> str:
+        """``/unpin`` — unpin the current session."""
+        import nbchat.core.db as _db
+        try:
+            _db._meta_set(self.session_id, "pinned", "")
+            return "unpinned " + self.session_id
+        except Exception as e:
+            return "unpin: " + type(e).__name__ + ": " + str(e)
+
     def _open_picker(self) -> None:
         from nbchat.core import db
         self._modal_kind = "session"
@@ -2671,17 +2692,31 @@ class ChatApp(TerminalAgent):
                     counts[sid] = n
         except Exception:
             pass
-        self._picker_sessions = []
+        # Pinned sessions sort to the top of the picker (a per-session
+        # "pinned" flag in session_meta; set with /pin and /unpin).
+        pinned = set()
+        try:
+            with db._connect() as conn:
+                for (psid,) in conn.execute(
+                        "SELECT session_id FROM session_meta "
+                        "WHERE key='pinned' AND value='1'"):
+                    pinned.add(psid)
+        except Exception:
+            pass
+        entries = []
         for r in rows:
             sid = r["session_id"]
             title = (r.get("title") or "").strip()
             short = sid.rsplit(":", 1)[-1][:10]
             label = (title or short)
+            pin = "\u2605 " if sid in pinned else ""
             tail = f" · {counts.get(sid, 0)} msg"
             tail += f" · {_fmt_ts(r.get('last_ts'))}"
             if sid == self.session_id:
                 tail += "  (current)"
-            self._picker_sessions.append((sid, label + tail))
+            entries.append((sid, pin + label + tail, sid in pinned))
+        entries.sort(key=lambda e: e[2], reverse=True)  # pinned first
+        self._picker_sessions = [(s, lab) for s, lab, _p in entries]
         self._picker_filter = ""
         self._refresh_picker()
         self._ui_refresh()
