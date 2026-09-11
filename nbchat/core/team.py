@@ -1471,6 +1471,43 @@ class TeamCoordinator:
         self._run_id = ""
         self._active_workers: list = []
         self._active_workers_lock = threading.Lock()
+        # User notes added mid-run (via the TUI ``/msg``); included in the
+        # final synthesis report so the coordinator weighs them.  Additive /
+        # append-only; never affects worker execution.
+        self._user_notes: list = []
+        self._user_notes_lock = threading.Lock()
+
+    # -- user notes (mid-run, from the TUI ``/msg``) --------------------
+
+    def add_note(self, text: str) -> None:
+        """Record a user note to include in the final synthesis report.
+
+        Called from the TUI (``/msg <text>``) while a run is in flight.  The
+        note is appended to the synthesis report so the coordinator LLM takes
+        it into account.  Additive, thread-safe (append-only); never affects
+        worker execution.  Capped to the last 50 notes.
+        """
+        text = (text or "").strip()
+        if not text:
+            return
+        with self._user_notes_lock:
+            self._user_notes.append(text[:400])
+            if len(self._user_notes) > 50:
+                self._user_notes = self._user_notes[-50:]
+
+    def notes(self) -> list:
+        """A copy of the user notes recorded so far (empty if none)."""
+        with self._user_notes_lock:
+            return list(self._user_notes)
+
+    def _notes_block(self) -> str:
+        """The report section carrying the user notes ("" if none)."""
+        ns = self.notes()
+        if not ns:
+            return ""
+        lines = ["", "User notes added mid-run (weigh them in your synthesis):"]
+        lines += [f"- {n}" for n in ns]
+        return "\n".join(lines)
 
     # -- LLM calls (non-streaming) --------------------------------------
 
@@ -1830,6 +1867,10 @@ class TeamCoordinator:
         subs = [t for t in queue._tasks.values() if t.parent_id is not None]
         all_tasks = top + subs
         report = self._build_report(all_tasks)
+        # Include any user notes added mid-run (via the TUI ``/msg``) so the
+        # coordinator's synthesis weighs them.  Additive: no change when no
+        # notes were added.
+        report = report + self._notes_block()
         if result == "interrupted":
             summary = f"Team run interrupted. {report}"
         else:

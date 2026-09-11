@@ -2522,6 +2522,69 @@ def test_sessions_picker_same_as_load():
     assert app._picker_sessions == picker_sessions
 
 
+def test_team_add_note_and_notes():
+    import nbchat.core.team as tm
+    c = tm.TeamCoordinator(agent=None)
+    assert c.notes() == []
+    c.add_note("please prioritize the tests")
+    c.add_note("")  # empty ignored
+    c.add_note("  spaced  ")  # stripped
+    assert c.notes() == ["please prioritize the tests", "spaced"]
+
+def test_team_notes_block():
+    import nbchat.core.team as tm
+    c = tm.TeamCoordinator(agent=None)
+    assert c._notes_block() == ""  # no notes -> empty
+    c.add_note("focus on edge cases")
+    blk = c._notes_block()
+    assert "weigh them" in blk
+    assert "- focus on edge cases" in blk
+
+def test_team_note_cap():
+    import nbchat.core.team as tm
+    c = tm.TeamCoordinator(agent=None)
+    for i in range(60):
+        c.add_note("n" + str(i))
+    assert len(c.notes()) == 50
+    assert c.notes()[-1] == "n59"  # keeps the most recent 50
+
+def test_cmd_msg_no_run():
+    app, *_ = _make_chat_app()
+    out = app._cmd_msg("hello")
+    assert "no team run" in out
+
+def _coord_with_notes():
+    import types
+    import nbchat.core.team as tm
+    inner = tm.TeamCoordinator(agent=None)
+    coord = types.SimpleNamespace(_run_id="runX")
+    coord.add_note = inner.add_note.__get__(inner)
+    coord.notes = inner.notes.__get__(inner)
+    return coord
+
+def test_cmd_msg_add_and_list():
+    app, *_ = _make_chat_app()
+    app._team_state["coordinator"] = _coord_with_notes()
+    out = app._cmd_msg("check the types")
+    assert "note added" in out
+    out2 = app._cmd_msg("")
+    assert "check the types" in out2
+    assert "1." in out2
+
+def test_cmd_msg_usage_when_empty():
+    app, *_ = _make_chat_app()
+    app._team_state["coordinator"] = _coord_with_notes()
+    out = app._cmd_msg("")  # no arg, no notes yet -> usage
+    assert "no notes yet" in out
+    assert "/msg <text>" in out
+
+def test_cmd_msg_dispatched():
+    # /msg is wired into the native dispatch
+    app, *_ = _make_chat_app()
+    app._team_state["coordinator"] = _coord_with_notes()
+    app._run_command("/msg")  # must not raise; routes to _cmd_msg
+
+
 
 
 

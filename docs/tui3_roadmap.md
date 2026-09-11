@@ -588,3 +588,27 @@ falls through to v1 (list by id), so nothing is removed.
 - **Tests** - 2 new (bare `/sessions` opens the session modal picker; the picker
   it opens is identical to the one `/load` opens).  tui2 suite 347 passed; full
   suite 721 green (347+79+295).
+
+## tui3: /msg - note for the running team (tui2-only, additive core)
+
+**`/msg <text>`** — the prime-agent research flagged "/msg Wn worker
+steering" as a runner-up.  The nbchat team workers are generic claimers (not
+task-bound, individually-addressable agents), so *mid-task* steering is not a
+good fit (and is E2E-unsafe).  This ships the genuinely-useful, safe slice:
+a note to the team that the coordinator weighs in its **final synthesis**.
+
+- **core/team.py** (additive) - `TeamCoordinator` gains `_user_notes` (append-only,
+  lock-protected, capped at 50) plus three methods:
+  - `add_note(text)` - thread-safe append (strips; ignores empty; 400-char cap each).
+  - `notes()` - a copy of the notes so far.
+  - `_notes_block()` - the report section carrying the notes ("" if none).
+  `TeamCoordinator.run()` appends `_notes_block()` to the synthesis report before the
+  coordinator LLM call, so the notes are weighed in the final report.  Additive:
+  no change when no notes are added; the notes are read at synthesis time only and
+  never affect worker execution.  Existing team tests still pass (54 green).
+- **tui2/app.py** - `_cmd_msg(arg)`: no team run -> "no team run"; no arg -> lists the
+  notes (or a usage hint); with a text -> `add_note` + confirmation.  `/msg` added to
+  the native set, the handler dict, and `/help`.
+- **Tests** - 7 new (core: add_note/notes/strip/empty/cap; tui2: no run; add + list;
+  usage when empty; dispatch).  tui2 suite 354 passed; full suite 728 green
+  (354+79+295); core team suite 54 green (no regression).

@@ -1376,7 +1376,7 @@ class ChatApp(TerminalAgent):
                     "/team", "/browse", "/search", "/sup", "/voice",
                     "/fork", "/checkpoint", "/undo", "/find", "/diff",
                     "/export", "/plan", "/retry", "/queue", "/tpl", "/editor", "/gstatus", "/stash",
-                    "/rewind", "/pin", "/unpin", "/settings", "/todos", "/project", "/heartbeat", "/autonomous", "/log")
+                    "/rewind", "/pin", "/unpin", "/settings", "/todos", "/project", "/heartbeat", "/autonomous", "/log", "/msg")
 
     def _run_command(self, line: str) -> None:
         """Route a slash command.
@@ -1465,6 +1465,7 @@ class ChatApp(TerminalAgent):
             "  /autonomous <objective> [--auto]   auto-continue with an approval gate",
             "  /log [N]   tail of the TUI2 stderr log (debugging)",
             "  /team <goal> [stop|roster|stats]   parallel-agent team run (bg) + live task roster/stats",
+            "  /msg [text]             note for the running team (feeds its synthesis)",
             "  @<path>      file completion (type @ + a filename, pick a match)",
             "  /compact    force a context summarisation now",
             "  /copy       copy last reply to the clipboard",
@@ -1528,6 +1529,7 @@ class ChatApp(TerminalAgent):
             "/heartbeat": self._cmd_heartbeat,
             "/autonomous": self._cmd_autonomous,
             "/log": self._cmd_log,
+            "/msg": self._cmd_msg,
         }
         fn = handlers.get(cmd)
         try:
@@ -2557,6 +2559,32 @@ class ChatApp(TerminalAgent):
             tot += "   llm " + str(total_llm).rjust(4) + "  tools " + str(total_tools).rjust(4)
         lines.append(tot)
         return "\n".join(lines)
+
+    def _cmd_msg(self, arg: str) -> str:
+        """``/msg <text>`` - send a note to the running team's synthesis.
+
+        The note is recorded on the coordinator and included in the final
+        synthesis report (so the coordinator LLM weighs it in).  ``/msg`` with
+        no argument lists the notes recorded so far.  Requires a team run to
+        be active (start one with ``/team <goal>``).
+        """
+        st = self._team_state
+        coord = st["coordinator"]
+        if coord is None or not getattr(coord, "_run_id", ""):
+            return "msg: no team run (start one with /team <goal>)"
+        if not hasattr(coord, "add_note"):
+            return "msg: this coordinator does not support notes"
+        if not arg:
+            ns = coord.notes()
+            if not ns:
+                return ("msg: no notes yet "
+                        "(usage: /msg <text> to note something for the team "
+                        "synthesis)")
+            return ("team notes (weighed in the final synthesis):\n"
+                    + "\n".join(f"  {i+1}. {n}" for i, n in enumerate(ns)))
+        coord.add_note(arg)
+        return (f"note added ({len(coord.notes())} total) - the teams "
+                "final synthesis will weigh it in")
 
     def _start_team_run(self, goal: str) -> None:
         from nbchat.core.team import TeamAgent, TeamCoordinator, ToolArbiter

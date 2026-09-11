@@ -164,7 +164,12 @@ shell command (`!ls`); `!!` also stores the output for later.
   **per-worker breakdown** — how many messages each worker streamed plus any
   LLM/tool-call metrics from the task log, so you can see which worker did
   how much of the work (read-only DB queries over the `team:<run>-*` worker
-  sessions).
+  sessions).  **`/msg <text>`** drops a note for the running team: it is
+  recorded on the coordinator and folded into the final synthesis report, so
+  the coordinator LLM weighs your note when it combines the workers' results
+  (e.g. ``/msg make sure you cover the edge cases``); ``/msg`` with no
+  argument lists the notes so far.  Additive - the notes are read at synthesis
+  time only and never affect the workers while they run.
 - `/browse <url>` — fetch a web page with the `nbchat.tools.browser` engine
   (headless Chromium) and show its title + text in the log.  Runs off the UI
   thread (the Chromium launch + fetch never freezes the interface); a missing
@@ -591,6 +596,7 @@ their output is prefixed `[Wn]` so interleaved streams stay readable.
 /team stop         stop the current run (tasks wind down gracefully)
 /team roster       live task-queue view (per-task status + subtasks)
 /team stats       per-worker breakdown (messages + LLM/tool metrics)
+/msg [text]       note for the running team (feeds its synthesis)
 ```
 
 ### Configuration (`repo_config.yaml`)
