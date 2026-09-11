@@ -107,6 +107,8 @@ on the next start.
 ```bash
 python -m nbchat.tui --v2        # or: python -m nbchat.tui2
 python -m nbchat.tui2 --demo     # Phase 1 rendering demo (no LLM needed)
+python -m nbchat.tui2 --supervisor   # + the always-on watchdog (§ /sup)
+python -m nbchat.tui2 --voice        # + the Alfred voice bridge (§ /voice)
 ```
 
 A prime-agent-style fullscreen UI: a fixed layout
@@ -121,18 +123,250 @@ REPL: the last session is resumed on start, `--new` forces a fresh one and
 `/sessions`, `/load`, `/history`, `/effort`, `/quit`, …) work exactly as in
 v1 and their output renders inside the UI.
 
-Keys: `Enter` submits · `Esc` interrupts a running turn · `Ctrl+C`
-interrupts while a turn runs (quits when idle) · `Ctrl+D` submits when the
-input has text (quits when empty) · `Ctrl+Z/Ctrl+R` undo/redo ·
-`Ctrl+A/Ctrl+E/Ctrl+U/Ctrl+K/Ctrl+W/Ctrl+Y` line editing.  Typing a new
-message while a reply is streaming stops that reply and redirects the
-agent to the new text.
+Keys: `Enter` submits · `Esc` interrupts a running turn / cancels a modal ·
+`Ctrl+C` interrupts while a turn runs (quits when idle, cancels an open
+modal) · `Ctrl+D` submits when the input has text (quits when empty) ·
+`Ctrl+L` opens the session picker · `Ctrl+P` opens the command palette ·
+`Ctrl+R` reverse-searches the input history · `Up`/`Down` arrows recall the
+previous / next input (typing again returns to the in-progress draft) ·
+`Ctrl+T` shows / hides thinking
+blocks · `PgUp`/`PgDn` page the log, `Home`/`End` jump to top/bottom (a `↑N`
+marker shows how far up you are) · `Ctrl+Z/Ctrl+A/Ctrl+E/Ctrl+U/Ctrl+K/Ctrl+W/Ctrl+Y` line
+editing.  Typing a new message while a reply is streaming stops that reply
+and redirects the agent to the new text.  Lines starting with `!` run a local
+shell command (`!ls`); `!!` also stores the output for later.
+
+**tui2-native commands** (handled inside the UI, not the v1 REPL):
+
+- `/context` — model, session, context bar, tool-output compression and
+  turn count.
+- `/monitor` — live per-session metrics from the monitoring engine
+  (cache similarity / invalidation, per-tool call counts and error rates,
+  any detected warnings).
+- `/inbox [n]` — browse unseen email: `/inbox` lists headers (position,
+  sender, subject, date), `/inbox 2` reads the body of unseen message #2.
+  Read-only (nothing is marked read — the `--email` bridge owns that) and
+  runs the IMAP round-trip off the UI thread, so the interface never
+  freezes.  Requires `GHG_APP_PASSWORD` (Gmail app password); with no
+  credential it notes that and stops cleanly.
+- `/team [goal]` — run a goal as a **team of parallel agents** (the
+  multi-agent coordinator in `nbchat.core.team`).  `/team <goal>` starts a
+  coordinated run in the background: the coordinator decomposes the goal
+  into independent tasks and fans them out to worker agents.  Each worker's
+  output is relayed into the log off the UI thread (never to the raw
+  screen), so the interface stays live and intact.  `/team` shows the
+  current/last status and final report; `/team stop` interrupts a running
+  team.
+- `/browse <url>` — fetch a web page with the `nbchat.tools.browser` engine
+  (headless Chromium) and show its title + text in the log.  Runs off the UI
+  thread (the Chromium launch + fetch never freezes the interface); a missing
+  scheme is auto-corrected to `https://`.  `/search <query>` is a convenience
+  wrapper that browses a DuckDuckGo search for the query.
+- `/sup [question]` — supervisor state query.  `/sup` shows whether the
+  always-on watchdog is running, its review/cooldown cadence and how many
+  corrective interjections it has pushed; `/sup <question>` asks the
+  supervisor about the live system state (server, git, tasks, the
+  assistant's current progress).  The answer is an LLM call on the
+  supervisor's own slot, so it runs off the UI thread and is delivered into
+  the log.  Requires the supervisor to be started (`--supervisor` /
+  `NBCHAT_SUPERVISOR=1`).
+- `/voice` — status of the Alfred voice bridge.  `--voice` (or
+  `NBCHAT_VOICE=1`) starts the bridge on `localhost:8765`; a laptop Alfred
+  client reaches it over an SSH tunnel (`ssh -L 8765:127.0.0.1:8765
+  user@server`) and POSTs transcripts, which are auto-submitted as user
+  turns exactly like keyboard input (off the UI thread, so the raw screen
+  is never touched from a background thread).
+- `/fork [n]` — branch this conversation into a new session.  Bare `/fork`
+  copies the entire current history; `/fork <n>` copies everything up to and
+  including your Nth message, so you can steer the branch differently from
+  the point you asked it.  The original session is left completely untouched
+  and the app switches to the fork (the fork is titled `fork <src> …`).
+- `/checkpoint [label]` — record a restorable snapshot of the working tree
+  (tracked files) via `git stash create` (a non-destructive record; falls back
+  to `HEAD` on a clean tree).  A checkpoint is also recorded automatically
+  before the first file edit of a turn, so a botched agent edit is always
+  revertible.
+- `/undo [label]` — with no label it is **preview only** (lists checkpoints
+  and shows what restoring the latest would change); with a label it restores
+  tracked files to that checkpoint via `git restore --source=…` (untracked
+  files are left alone).  Reverting is itself reversible: take a fresh
+  `/checkpoint` first.
+- `/find <query> [session]` — case-insensitive full-text search over message
+  content, across **all** sessions by default (append `session` to search only
+  the current one).  Each hit shows the session, role, and a snippet; the
+  current session is marked `*`.  Open a hit with `/load <sid>`.
+- `/diff [--stat] [label]` — review tracked-file changes as a colorized diff
+  (`+` green / `-` red).  Bare `/diff` shows the working tree vs `HEAD`;
+  `/diff --stat` shows the per-file summary; `/diff <label>` diffs against a
+  `/checkpoint`.  Pairs with `/undo` (review, then revert).
+- `/export [path]` — save the current session as a clean markdown file
+  (user/assistant/tool sections, tool output fenced).  Defaults to
+  `~/.nbchat/exports/` so it never pollutes the working tree; pass a path to
+  choose.  Pairs with `/find` (search, then export a conversation).
+- `/plan [on|off]` — read-only research mode.  While on, file-mutating tools
+  (`create_file` / `make_change_to_file` / `run_command`) are blocked at the
+  tool gate and a read-only note is added to the system prompt, so the agent
+  researches and proposes a plan instead of editing.  The mode bar shows
+  `plan`.  Pairs with the safety suite (`/checkpoint` → `/diff` → `/undo`).
+- `@<file>` — file completion.  Type `@` then a filename; a fuzzy-ranked
+  box appears above the editor: `↑`/`↓` pick, `Enter`/`Tab` inserts the path
+  in place of the `@`-token (undoable), `Esc` cancels.  The `@` inside an
+  email address is ignored; directories carry a trailing `/`.
+  Recently-used `@`-files jump to the top of the match list (frecency;
+  best-effort `~/.nbchat/tui3-filecomp-recency.json`, override
+  `NBCHAT_FILECOMP_RECENCY`).
+- **Auto-compact** — when the context window crosses a threshold (default
+  80% of the budget), the session is compacted automatically right after the
+  turn finishes (off the render path; a dim note confirms it).  Toggle/tune with
+  `NBCHAT_AUTO_COMPACT` (`0`/`off` disables, a float like `0.6` sets the threshold);
+  `/context` shows the current setting.
+- `/retry [text]` — re-run your last message (or a new one) without retyping it;
+  handy after a failed/unsatisfying turn.  Refuses while a turn is in flight.
+- **Steering queue (Ctrl+Q)** — while a turn runs, type a follow-up and
+  press `Ctrl+Q` to queue it; queued messages run one at a time as each
+  turn finishes.  `/queue` lists them, `/queue clear` empties the queue.
+  (Pressing `Enter` while a turn runs still interjects/interrupts, as
+  before — queueing is a separate, opt-in path.)
+- **Prompt templates** — drop `*.md` files in `~/.nbchat/prompts/` (or
+  `NBCHAT_PROMPTS_DIR`); `/tpl` lists them, `/tpl <name> [args...]` renders
+  and sends one (`$1` `$2` … are positional args, `$0`/`$ARG` = all of
+  them).  While a turn runs the rendered prompt is queued, not sent.
+- **External editor** — `/editor` or `Ctrl+E` opens the current draft in
+  `$EDITOR` (`$VISUAL` fallback) to compose a long prompt; the result is
+  loaded back into the input.  Requires `$EDITOR`/`$VISUAL` to be set.
+- **Git overview** — `/gstatus` shows the working-tree state at a glance
+  (branch, staged / unstaged / untracked), complementing `/diff` and
+  `/checkpoint`.  Read-only.
+- **Prompt stash** — `/stash push [label]` saves the draft you are
+  composing (persists to `~/.nbchat/tui3-stash.jsonl`, up to 50 entries);
+  `/stash pop [n]` loads a stashed draft back into the input; `/stash`
+  lists them and `/stash clear` empties them.  Complements the Ctrl+Q
+  steering queue (which queues messages to *send*; the stash holds
+  *drafts to compose later* and survives restarts).
+- **Rewind** — `/rewind [n|restore]` drops the last *n* user turn(s) and
+  everything after them from the current session (the #1-ranked survey
+  feature; complements `/checkpoint`+`/undo`, which revert *files*).
+  Bare `/rewind` lists your recent user turns with the number to pass.
+  The removed slice is kept recoverable (one level) via
+  `/rewind restore` until you start a new turn.
+- **Session pin** — `/pin` pins the current session to the top of the
+  session picker (Ctrl+L); `/unpin` un-pins it.  Pinned sessions are
+  marked with a ★ and sort above the rest, so important sessions are
+  always one jump away even as your session list grows.
+- **Settings** — `/settings` shows your TUI preferences and `/settings <key>
+  <value>` tunes one live (theme, scroll, thinking, toasts, bell, sound,
+  approve, risky) — persisted to `~/.nbchat/tui3.json` and applied without
+  a restart.
+- `/hotkeys` — the keybinding reference.
+- `/copy` — copies the last assistant message to the clipboard (OSC 52;
+  silent no-op where the terminal lacks clipboard support).
+- `/compact [focus]` — a manual, one-shot compaction of the context window
+  (reuses the engine's summarization) with a before/after report; the
+  per-turn auto-windowing is left untouched.
+- `/refine [instructions]` — schedule a manual refinement round over the
+  last task; `/refine rollback` reverts the most recent round.
+- `/lessons` — the applied refinement lessons.
+- `/memory` — the L1 core memory block plus L2 episodic stats.
+- `/btw <question>` — a throwaway side question on an isolated agent so
+  the current session/history is not touched.
+- `/approve [on|off|add <t>|rm <t>|list]` — a herdr-style tool-approval
+  gate: risky tools (shell / push / email by default) show a confirm
+  prompt (`y` approve, `n`/`Esc` decline, `a` **always** — approve now and
+  stop prompting for that tool this session) before they run.
+- `/notify [toasts|bel|sound on|off]` — the in-TUI notification stack:
+  transient toast cards (above the input box) plus a terminal `BEL` and an
+  optional `.wav` (set `NBCHAT_SOUND_DIR`, kill switch `NBCHAT_NO_SOUND=1`).
+  Fires on turn-complete (quiet), a pending approval, and a failed shell
+  command.  `/notify test [kind]` fires a sample.
+- `/goal <objective>` — a running goal (prime-agent style): after each
+  turn the app auto-continues toward the objective until the turn budget
+  is exhausted, the model replies with `GOAL COMPLETE`, or you run
+  `/goal stop`.  `/goal` for status · `/goal stop` · `/goal clear` ·
+  `/goal budget <n>`.  A `goal K/N` pill tracks progress on the status
+  line.
+- `/name <title>` — alias for v1's `/title`.
+- Bare `/load` (no id) opens the **session picker**: type to fuzzy-filter,
+  `↑/↓` move, `Enter` loads, `Esc`/`Ctrl+C` cancel.
+- `!cmd` / `!!cmd` — run a local shell command and show its output as a
+  bordered panel (exit code in the title); `!!` also stores the combined
+  output on the app for later reference.
+- `Ctrl+P` — a fuzzy **command palette** over every command above; pick one
+  and it is inserted into the editor for confirmation.  `Ctrl+R` — fuzzy
+  **reverse search** over the input history; pick a line and it is re-entered
+  for editing.
+
+**TUI v3 — keymap substrate + browse mode** (on the same engine):
+
+- A **mode bar** (one line above the status line) shows the active mode and
+  its key hints.  Both the mode bar and `/hotkeys` are generated from a
+  single data-driven `KEYMAP`, so they can never desync.
+- **Browse mode** — press `Ctrl+O` to read/scroll the log without typing:
+  `j`/`k` step down/up, `PgUp`/`PgDn` page, `Home`/`End` jump; `Esc` (or
+  `Ctrl+O`) leaves and snaps back to the bottom.  Inside browse mode,
+  `/` **searches the log** (type a query, Enter to find all matches,
+  `n`/`N` cycle to the next/previous match — the log jumps to it), and
+  `v` **copies the visible log** to your clipboard.
+- **Mouse wheel scrolling** — the mouse wheel (SGR-encoded) scrolls the
+  conversation log up/down in any mode, with the `↑N` indicator showing how
+  far you've scrolled from the bottom.  Opt out with `NBCHAT_NO_MOUSE=1`
+  (for links that mangle the mouse-report escape).
+- **Click / drag-to-copy** — click a log line (or drag across several) and
+  release to copy that line / line-range to your clipboard (the `v` key in
+  browse mode copies the whole visible viewport).  A small "copied" toast
+  confirms it.
+- **Colour theming** — `/theme` switches the whole UI between the built-in
+  `dark`, `light`, and `prime` colour sets live (every component re-colours
+  on the next render), and the choice is remembered across sessions.
+- **Persistent settings** — a few preferences survive across sessions,
+  saved to `~/.nbchat/tui3.json` (override with `NBCHAT_TUI3_CONFIG`):
+  thinking-block visibility (`Ctrl+T`), the toast / BEL / sound channels
+  (`/notify`), the tool-approval gate and its risky-tool list (`/approve`),
+  the mouse-wheel scroll tick, and the active theme (`/theme`).  They load
+  at startup and save on each toggle and on exit.
+- **External control socket (`nbchat-ctl`)** — a running TUI listens on a
+  local Unix socket (`~/.nbchat/tui2-ctl.sock`; override `NBCHAT_CTL_SOCKET`,
+  disable `NBCHAT_NO_CTL=1`) that a script or another process can drive:
+
+  ```
+  python -m nbchat.tui2.ctl status            # busy / session / model / turns / theme
+  python -m nbchat.tui2.ctl sessions          # list tui: sessions
+  python -m nbchat.tui2.ctl result            # last assistant reply (this session)
+  python -m nbchat.tui2.ctl theme light       # switch the colour theme
+  python -m nbchat.tui2.ctl send "hello"      # submit a message
+  python -m nbchat.tui2.ctl quit              # request a clean exit
+  ```
+
+  Together these support a **headless / background agent** loop: submit a
+  task with `send`, poll `status` until `busy` is false, then read the
+  answer with `result` (and `quit` when done).
+
+  **Detached background agent.**  `--bg` runs the TUI headless (a stdin EOF
+  does not quit it — it stays alive on its heartbeat and is driven through
+  the socket).  `nbchat-ctl bg` launches one in its own session so it
+  survives the launcher exiting (detach, tmux-style) and optionally submits
+  a first task:
+
+  ```
+  python -m nbchat.tui2 --bg --session tui:abc        # run it headless
+  python -m nbchat.tui2.ctl bg --session tui:abc "summarise the repo"
+  #   -> {"ok": true, "pid": …, "socket": ~/.nbchat/tui2-bg.sock, …}
+  NBCHAT_CTL_SOCKET=~/.nbchat/tui2-bg.sock python -m nbchat.tui2.ctl status
+  NBCHAT_CTL_SOCKET=~/.nbchat/tui2-bg.sock python -m nbchat.tui2.ctl result
+  NBCHAT_CTL_SOCKET=~/.nbchat/tui2-bg.sock python -m nbchat.tui2.ctl quit
+  ```
+
+  Read-only commands answer synchronously; mutating ones are enqueued onto
+  the UI thread and acked immediately (`{"queued": true}`), so a control
+  client can never block or crash the TUI.
+- The remaining tui3 scope (detachable background agent) is tracked in
+  `docs/tui3_roadmap.md`.
 
 The v1 print-based REPL is unchanged and remains the default; v2 is
 opt-in via the flag above.  Voice / email / supervisor / team surfaces
 start from the v1 entry point (their status output is print-based); the
 chat, sessions and commands work in v2.  See `docs/tui2_issues.md` for the
-2026-07-10 fix log and `docs/prime_tui_port_tracker.md` for the port plan.
+2026-07-10 fix log, `docs/tui3_roadmap.md` for the v3 plan, and
+`docs/prime_tui_port_tracker.md` for the port plan.
 
 ---
 

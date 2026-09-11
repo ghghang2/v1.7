@@ -42,6 +42,10 @@ _SHOW_CURSOR = "\033[?25h"
 _HIDE_CURSOR = "\033[?25l"
 _BRACKETED_PASTE_ON = "\033[?2004h"
 _BRACKETED_PASTE_OFF = "\033[?2004l"
+# SGR-extended mouse reporting (wheel + button press/release).  Opt out
+# with NBCHAT_NO_MOUSE=1 (e.g. over some SSH/serial links that mangle it).
+_MOUSE_SGR_ON = "\033[?1000h\033[?1006h"
+_MOUSE_SGR_OFF = "\033[?1000l\033[?1006l"
 
 
 class RawTerminal:
@@ -83,6 +87,8 @@ class RawTerminal:
             self._write(
                 _ENTER_ALT_SCREEN + _HIDE_CURSOR + _BRACKETED_PASTE_ON
             )
+            if not os.environ.get("NBCHAT_NO_MOUSE"):
+                self._write(_MOUSE_SGR_ON)
             # Clear the screen and hide the cursor.  The differential
             # writer addresses every line absolutely (CUP), so the
             # cursor's initial position no longer matters; the clear
@@ -104,7 +110,8 @@ class RawTerminal:
             return
         if self._saved is not None:
             out = (
-                _BRACKETED_PASTE_OFF
+                _MOUSE_SGR_OFF
+                + _BRACKETED_PASTE_OFF
                 + _SHOW_CURSOR
                 + _LEAVE_ALT_SCREEN
             )
@@ -196,9 +203,14 @@ class TUIApp:
     3. renders the diff of the new frame.
     """
 
-    def __init__(self, terminal: RawTerminal, events: Optional[EventQueue] = None) -> None:
+    def __init__(self, terminal: RawTerminal, events: Optional[EventQueue] = None,
+                 bg: bool = False) -> None:
         self.term = terminal
         self.events = events or EventQueue()
+        # Background / headless mode (tui3 wave 6): a stdin EOF does NOT
+        # end the loop.  The app keeps running on its heartbeat and is
+        # driven / stopped through the external control socket.
+        self._bg = bool(bg)
         self.frame: Optional[Frame] = None
         self._build_frame: object = None
         self._running = False
@@ -248,18 +260,27 @@ class TUIApp:
                 if r:
                     data = self._read_input()
                     if not data:
-                        break
-                    action = self._handle_input(data)
-                    if action is True:
-                        break
-                    # A ``None`` result means the app consumed the chunk
-                    # itself (e.g. an interrupt or a Ctrl+D submit) — refresh
-                    # the screen but do NOT re-dispatch the raw bytes as keys.
-                    # ``False`` is the classic contract: dispatch every key in
-                    # the chunk to the app handler (KeyReader feed).
-                    if action is False:
-                        self.handle_input_events(data)
-                    self._render_first(force=True)
+                        if not self._bg:
+                            break
+                        # Headless / background: stdin is /dev/null or a
+                        # closed pipe (always "ready", always EOF).  Do NOT
+                        # quit; sleep briefly to avoid a busy spin, then fall
+                        # through so queued events (e.g. a control-socket
+                        # "quit") are still drained below.
+                        _time.sleep(0.05)
+                    else:
+                        action = self._handle_input(data)
+                        if action is True:
+                            break
+                        # A ``None`` result means the app consumed the chunk
+                        # itself (e.g. an interrupt or a Ctrl+D submit) —
+                        # refresh the screen but do NOT re-dispatch the raw
+                        # bytes as keys.  ``False`` is the classic contract:
+                        # dispatch every key in the chunk to the app handler
+                        # (KeyReader feed).
+                        if action is False:
+                            self.handle_input_events(data)
+                        self._render_first(force=True)
                 # Coalesce: collapse N "render" events drained in this
                 # tick into a single rebuild (streaming tokens fire
                 # constantly; one rebuild per tick bounds the rate).
@@ -270,6 +291,14 @@ class TUIApp:
                         quit_requested = True
                     elif kind == "render":
                         render_requested = True
+                    elif kind == "call" and callable(payload):
+                        # A closure to run on the UI thread (e.g. an
+                        # external control-socket command).  Never let a
+                        # bad closure take the render loop down.
+                        try:
+                            payload()
+                        except Exception:
+                            pass
                 if quit_requested:
                     self.stop()
                     break

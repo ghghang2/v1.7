@@ -78,6 +78,34 @@ def _match_csi(body: str) -> Optional[str]:
     return None
 
 
+def _match_mouse(body: str) -> Optional[Key]:
+    """Parse an SGR mouse report (``ESC[<btn;col;rowM`` or ``...m``).
+
+    ``btn`` low bits: 0=left, 1=middle, 2=right, 3=release; 64/65 = wheel
+    up/down.  Returns a ``Key`` for wheel events and button presses, or
+    ``None`` if *body* is not an SGR mouse sequence.
+    """
+    if not body.startswith("<") or body[-1] not in ("M", "m"):
+        return None
+    parts = body[1:-1].split(";")
+    if len(parts) != 3:
+        return None
+    try:
+        btn, col, row = int(parts[0]), int(parts[1]), int(parts[2])
+    except ValueError:
+        return None
+    if btn in (64, 66):
+        return Key("wheel-up")
+    if btn in (65, 67):
+        return Key("wheel-down")
+    if body[-1] == "M":  # press (or drag)
+        if btn in (0, 1, 2):
+            return Key("mouse-press", f"{col},{row}")
+    elif btn == 3:  # release
+        return Key("mouse-release", f"{col},{row}")
+    return None
+
+
 class KeyReader:
     """Incremental parser from raw terminal input to :class:`Key`."""
 
@@ -125,22 +153,30 @@ class KeyReader:
             return Key("paste", text), idx + len(_PASTE_END)
 
         if b.startswith("\x1b["):
-            # CSI: find the terminator (bytes 0x40-0x7E).
+            # CSI: after the "ESC[" introducer, the final byte is the first
+            # byte in 0x40-0x7E.  Params are 0x30-0x3F and intermediates
+            # 0x20-0x2F, so that first byte is unambiguous.  The matchable
+            # body is everything up to and including the final byte.  (The
+            # scan must start past the "[" introducer — "[" is itself in the
+            # 0x40-0x7E range and would otherwise terminate the sequence.)
             end = -1
-            for i in range(1, len(b)):
+            for i in range(2, len(b)):
                 if 0x40 <= ord(b[i]) <= 0x7E:
                     end = i
                     break
             if end < 0:
-                # Incomplete CSI (marker possibly split across chunks).
+                # Incomplete CSI (final byte not yet arrived).
                 return None, 0
-            body = b[2:end]
+            body = b[2:end + 1]
             if body == "200~":
                 self._pasting = True
                 self._paste_text = ""
                 return Key("paste-start", ""), end + 1
             name = _match_csi(body)
             if name is None:
+                mouse = _match_mouse(body)
+                if mouse is not None:
+                    return mouse, end + 1
                 # Unknown CSI (mouse, etc.) — swallow it whole.
                 return Key("unknown", b[: end + 1]), end + 1
             return Key(name), end + 1

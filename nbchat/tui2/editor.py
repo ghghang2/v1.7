@@ -285,6 +285,32 @@ class LineEditor:
     def text(self) -> str:
         return "\n".join(self.lines).strip()
 
+    def set_text(self, text: str) -> None:
+        """Replace the buffer with *text* (single-line) and move the cursor
+        to the end.  Records an undo point so the replacement can be undone
+        (Ctrl+/undo restores the previous draft).  Used for history recall."""
+        before = "\n".join(self.lines)
+        self.lines = [text]
+        self.cursor_line = 0
+        self.cursor_col = len(text)
+        self.scroll = 0
+        self._kill = ""
+        if before != text:
+            self._record(_Edit(0, 0, before, text))
+
+    def replace_range(self, start: int, end: int, text: str) -> None:
+        """Replace ``[start, end)`` on the current line with *text*
+        and place the cursor just after the inserted text.  Records an
+        undo point.  Used for @-file completion."""
+        def do() -> None:
+            line = self.lines[self.cursor_line]
+            s = max(0, min(start, len(line)))
+            e = max(s, min(end, len(line)))
+            self.lines[self.cursor_line] = line[:s] + text + line[e:]
+            self.cursor_col = s + len(text)
+        self._apply(do)
+        self._clamp_cursor()
+
     def clear(self) -> None:
         if self.lines == [""] and not self._undo:
             return

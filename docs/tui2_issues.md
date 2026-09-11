@@ -83,6 +83,25 @@ the in-flight turn when busy, quits when idle; Ctrl+D submits when the
 editor has text, quits when empty — same on both the raw-byte path and the
 key path.
 
+### C6. Every CSI key (arrows, PgUp/PgDn, Home/End, F-keys, paste) mis-parsed
+`tui2/keys.py` `KeyReader._take_one` found the CSI *final byte* by scanning
+`for i in range(1, len(b))` for the first byte in `0x40-0x7E`. But the very
+first byte checked is the `[` introducer itself (`0x5B`), which lies inside
+that range — so every `ESC[...` sequence was "terminated" immediately after
+the `[`, eaten as an *unknown* key, and the remainder leaked into the editor
+as literal text. Result: **no** arrow key, PgUp/PgDn, Home/End, F1–F4, or
+bracketed-paste sequence ever parsed; `ESC[A` produced `Key("unknown",
+"ESC[")` + a stray `A`. The basic E2E (typing + Enter) never exercised a CSI
+key, so it slipped through.
+
+**Fix:** the terminator scan now starts *past* the `[` introducer
+(`range(2, len(b))`) and the matchable body includes the final byte
+(`b[2:end+1]`). Params (`0x30-0x3F`) and intermediates (`0x20-0x2F`) can
+never be mistaken for the final byte, so the first `0x40-0x7E` byte after
+the `[` is unambiguous. All CSI keys now parse, and a sequence split across
+read chunks is held until the final byte arrives. Covered by six new
+KeyReader regression tests.
+
 ---
 
 ## Major (functional gaps vs. the v1 REPL)
@@ -177,17 +196,272 @@ exit); errors still surface in the status line via the hooks.
 * **m6. `Turn worker swallows exceptions silently`** in the normal (no-UI)
   path — now also surfaced as an error block + status.
 
+## Features added in this pass (2026-07-11)
+
+A second wave of prime-agent / herdr-inspired features, all additive and
+built on the existing engine (no new subsystems; v1 REPL untouched).
+
+**tui2-native slash commands** (handled in `ChatApp._run_command` before v1
+delegation, so v1's `handle_command` is never reached for these):
+
+* `/context` — model, session, context bar, tool-output compression, turns.
+* `/hotkeys` — the keybinding reference (generated, so it can't desync).
+* `/copy` — last assistant message → clipboard (OSC 52; no-op elsewhere).
+* `/compact [focus]` — a manual one-shot compaction via the new
+  `ContextMixin.force_compact()`, with a before/after report. The per-turn
+  auto-windowing is left untouched.
+* `/refine [instructions]` / `/refine rollback` — schedule a manual
+  refinement round (`refine_hook.schedule_manual_refine`) / revert the last.
+* `/lessons` — applied refinement lessons.
+* `/memory` — L1 core memory + L2 episodic stats.
+* `/btw <question>` — a throwaway side question on an isolated agent
+  (separate `btw:` session) so the current history is not touched.
+* `/name <title>` — alias for v1's `/title`.
+
+**Session picker modal** (herdr's navigator overlay): bare `/load` or
+`Ctrl+L` opens a fuzzy-filterable `SelectList` over the `tui:` sessions
+(type to filter, `↑/↓` move, `Enter` loads, `Esc`/`Ctrl+C` cancel). Reuses
+the existing `SelectList` + `fuzzy_rank` and the v1 `_switch_session` path.
+
+**Thinking toggle** (`Ctrl+T`): shows/hides reasoning blocks in the live
+turn *and* committed turns, losslessly (full blocks are kept and restored).
+
+**Scrollback** (herdr's copy-mode precursor): `PgUp`/`PgDn` page the log,
+`Home`/`End` jump to top/bottom, a `↑N` indicator shows how far up you are,
+and new content snaps back to the bottom. Built on `ChatLog.offset` — and
+only works because of the C6 KeyReader fix (PgUp/PgDn are CSI keys).
+
+**Shell prefixes** (`!cmd` / `!!cmd`): a line starting with `!` runs a local
+shell command on a worker thread (so the UI never blocks) and renders the
+output as a bordered tool panel with the exit code in the title; `!!` also
+stores the combined output on the app. `ChatApp._run_shell` /
+`_shell_worker`.
+
+**Command palette** (`Ctrl+P`, herdr's command palette): `ChatApp
+._open_palette` opens the shared picker modal (kind `"palette"`) over a
+curated list of every command; typing fuzzy-filters, `Enter` inserts the
+chosen command into the editor for confirmation. Reuses the same
+`SelectList` + `fuzzy_rank` + modal machinery as the session picker.
+
+**Reverse search** (`Ctrl+R`, herdr's search): `ChatApp._open_search` opens
+the picker (kind `"search"`) over the input history (`ChatApp._history`,
+recorded on every submit, newest first); `Enter` re-enters a line for
+editing. The `LineEditor` previously used `Ctrl+R` for redo; the app now
+intercepts it first, so `Ctrl+R` is reverse search (a deliberate trade).
+
+The picker modal was generalized with a `_modal_kind` field
+(`"session"` / `"palette"` / `"search"`) so all three share one
+`SelectList` slot, one fuzzy filter, and one key handler; `_picker_select`
+dispatches on the kind.
+
+**`ContextMixin.force_compact()`** (`core/context_manager.py`): recomputes
+the token-budget window, persists the summary cache, logs a `FORCE_COMPACT`
+context event, and returns a before/after report (rows, estimated tokens,
+budget). **`refine_hook.schedule_manual_refine()`** (`core/refine_hook.py`):
+bypasses the automatic predicate, still honors the `REFINE_HOOK_ENABLED`
+kill switch, runs a background round, and reports via `_on_agent_message`.
+
+**Tool-approval gate** (`/approve`, herdr's interactive tool approval):
+`ChatApp._install_approval_gate` wraps the module-level
+`tool_executor.run_tool` — the exact seam `team.py`'s `ToolArbiter` uses —
+so risky tool calls (`run_command`, `push_to_github`, `send_email` by
+default) show a confirm modal before executing. The worker thread parks on a
+`threading.Event` while the UI renders the prompt; `y`/`Enter` approve,
+`n`/`Esc`/`Ctrl+C` decline (a declined tool gets an actionable
+"DECLINED" result so the model stops retrying). A 5-minute safety timeout
+auto-declines so a parked turn can never wedge. The gate is installed in
+`run()` and removed (restoring the true original) on exit; `/approve
+on|off|add <t>|rm <t>|list` configures it at runtime.
+
+**`/goal`** (prime-agent's flagship): a running objective the app keeps
+auto-continuing toward. `/goal <objective>` sets the goal and starts the
+first turn; after each turn `_finalize_turn` chains the next turn (same
+re-entrancy as the mid-stream redirect) until the turn budget is exhausted,
+the model replies with a completion phrase (`GOAL COMPLETE`, configurable
+via `ChatApp._goal_done_markers`), or the user runs `/goal stop`.
+`/goal` shows status, `/goal clear` clears it, `/goal budget <n>` sets the
+default auto-turn budget (20). A `goal K/N` pill tracks progress on the
+status line.
+
+**Notification stack** (`/notify`, herdr's attention system): a new
+`nbchat/tui2/notify.py` `NotifyStack` holds a bounded queue of transient
+*toasts*. Each toast renders as a small bordered card (coloured by kind:
+ok/warn/error) just above the input box for ~5 s; auto-dismiss is
+timestamp-based and checked in the per-frame pass (no timers or threads).
+Side channels are best-effort and dependency-free: a terminal `BEL`
+(`\a`) always works, and a `.wav` plays on a daemon thread only when
+`NBCHAT_SOUND_DIR` is set and `aplay`/`afplay` exists (kill switch
+`NBCHAT_NO_SOUND=1`). Events wired: **turn-complete** (a quiet "done"
+card — no BEL/sound, matching herdr's suppression of the focused pane),
+**approval pending** (a warn card + forced BEL), and **shell failure**
+(an error card + forced BEL). `/notify toasts|bel|sound on|off` toggles
+the channels; `/notify test [kind]` fires a sample. `/help` now appends a
+"TUI v2 extras" addendum listing the tui2-native commands, and `/hotkeys`
+covers the new bindings.
+
+**tui3 wave 1 — keymap substrate + browse mode + mode bar:** a single
+data-driven `KEYMAP` (module-level in `app.py`) is the source of truth for
+both the `/hotkeys` reference and the new **mode bar** — one line above the
+status line showing the active mode and its key hints — so the two can
+never desync. **Browse mode** is toggled with `Ctrl+O` (a free key;
+`Ctrl+B` is the editor's backward): while active it captures keys so the
+log can be read without typing — `j`/`k` step down/up one line,
+`PgUp`/`PgDn` page, `Home`/`End` jump to the top/bottom, and `Esc` (or
+`Ctrl+O`) leaves the mode and snaps the offset back to the bottom. The
+frame budget accounts for the extra mode-bar line (the log region shrinks
+by one). The remaining tui3 scope (in-log `/` search, `v` visual copy,
+mouse, theming, user config, JSON socket API, detachable agent) is scoped
+in `docs/tui3_roadmap.md`.
+
+**tui3 wave 2 — in-log search + visual copy** (inside browse mode, purely
+additive, self-contained in `app.py`): `/` opens a query prompt rendered in
+the mode bar (type a case-insensitive substring, Enter to run; consecutive
+matching lines group into one match; the mode bar shows the live query then
+`match i/N`). `n`/`N` cycle to the next/previous match and the log jumps to
+bring it to the viewport bottom (offset clamped to content height); `Esc`
+clears the search, and `n` with no matches starts a fresh query. `v` copies
+the currently **visible** log viewport (rendered lines at the current
+offset) to the clipboard via the same OSC 52 escape `/copy` uses, and pushes
+a small "copied" toast. The `KEYMAP["browse"]` rows for `/` and `v` drive
+both the mode-bar hints and `/hotkeys`.
+
+**tui3 wave 3 — mouse wheel scrolling** (SGR-extended mouse reporting,
+purely additive): `RawTerminal.enter()` now enables SGR mouse reporting
+(`ESC[?1000h` button tracking + `ESC[?1006h` SGR encoding) after the alt
+screen / bracketed-paste setup, and `restore()` disables it (so no mouse
+bytes leak into the shell); opt out with `NBCHAT_NO_MOUSE=1`. `KeyReader`
+parses SGR mouse reports (`ESC[<btn;col;rowM/m`) into `wheel-up` /
+`wheel-down` / `mouse-press` / `mouse-release` keys (buttons 64/66 = up,
+65/67 = down); unrecognised `<`-CSI still falls through to the `unknown`
+swallow. `ChatApp._on_input` maps wheel-up/down to a 3-line `_scroll_log`
+in any mode (normal or browse); button press/release are consumed for now
+(click-to-select is a later wave). The existing `↑N` indicator shows how far
+the log is scrolled from the bottom.
+
+**tui3 wave 3b — click / drag-to-copy over the log:** a mouse **press** in
+the log/live region records the anchor frame row; a **release** copies the
+line range `[anchor .. release]` (a single click = one line) to the
+clipboard with a small "copied" toast.  The text is read from the last
+rendered frame (`_last_frame_rows`, populated in `_build_frame`) so no
+log-index math is needed and it always matches what the user saw.  Presses
+outside the log region (header / editor / status, rows beyond `_last_log_end`)
+are ignored, and a wheel scroll drops any pending anchor. `KEYMAP["normal"]`
+documents the binding.
+
+**tui3 wave 4 — persistent user settings:** `nbchat/tui2/config.py` loads
+and saves a small JSON settings file (default `~/.nbchat/tui3.json`,
+override `NBCHAT_TUI3_CONFIG`) holding the thinking-block visibility, the
+toast/BEL/sound channels, the tool-approval gate + risky-tool list, and the
+mouse-wheel scroll tick.  `ChatApp.__init__` merges the file over defaults
+(never raising); `_save_cfg()` runs on each toggle (`Ctrl+T`, `/notify`,
+`/approve`) and on exit (`run()` finally).  Purely additive; loading is
+defensive so a config problem cannot block the TUI.
+
+**tui3 wave 5 — colour theming:** `/theme [dark|light|prime]` switches the
+whole UI's colours live and persists the choice.  Implemented with a
+`_ThemeRef` proxy in `theme.py`: the public `DARK` name is a stable object
+(forwarding every attribute to the currently-active theme), so components
+keep writing `DARK.<attr>` unchanged while `theme.set_active(name)`
+retargets the proxy in place — the switch is live everywhere with zero
+call-site edits.  `/theme` invalidates the logged turns (so they re-render
+with the new colours), fires a toast, and saves the choice to the settings
+file (a new `theme` key, applied at startup).  `LIGHT` / `PRIME` stay
+concrete `Theme` objects for lookup.
+
+**tui3 wave 6 — external control socket (`nbchat-ctl`):** a running TUI
+binds a local Unix socket (`~/.nbchat/tui2-ctl.sock`; override
+`NBCHAT_CTL_SOCKET`, disable `NBCHAT_NO_CTL=1`) driven by
+`python -m nbchat.tui2.ctl <cmd> [arg]` (newline-delimited JSON).  Commands:
+`status`, `sessions`, `result` (last assistant reply for the current
+session, enabling a headless send→status→result background loop),
+`theme <name>`, `send <text>`, `quit`.  Read-only commands answer on the
+socket thread; mutating ones enqueue a closure onto
+the UI thread via a new `"call"` event type in the render loop and ack
+`{"queued": true}` immediately, so a control client can never block or
+crash the TUI.  The server is a daemon thread; `ControlServer.stop()`
+unlinks the socket on exit; every socket operation is wrapped so a
+control-client problem cannot take the TUI down.
+
+**`--bg` headless / detached background agent (wave 6+):** `--bg` (or
+`NBCHAT_BG=1`) makes a stdin EOF *not* end the render loop — the bg EOF
+path sleeps briefly and falls through to the event drain, so the app stays
+alive on its heartbeat and a control-socket `quit` is still processed
+(earlier the EOF path `continue`d past the drain, which silently dropped
+`quit`).  `nbchat-ctl bg [--session ID] [prompt]` launches a `--bg` TUI in
+its own session (survives the launcher / an SSH drop), with its socket at
+`~/.nbchat/tui2-bg.sock` and stdout logged to `~/.nbchat/tui2-bg.log`,
+optionally submitting a first task.  This completes the "detach without
+stopping work" roadmap item (row 7).
+
+**`/monitor` (live per-session observability):** a tui2-native slash command
+surfacing the existing `nbchat.core.monitoring` engine's per-session metrics
+— cache similarity / invalidation rate, per-tool call counts, reread and
+error-after-compression rates, and any detected warnings.  Read-only (no new
+subsystem); the data is accumulated by the conversation loop as the session
+runs, so it is live.  Returns a friendly note when nothing has been recorded
+yet (e.g. a fresh session before the first turn).
+
+**`/inbox` (unseen-email browsing):** a tui2-native slash command over the
+existing `nbchat.core.email_inbox` IMAP engine.  `/inbox` lists unseen
+messages (position, date, sender, subject); `/inbox <n>` fetches and shows the
+full body of unseen message #*n*.  Read-only — nothing is marked read (the
+`--email` auto-bridge owns marking read).  The IMAP round-trip runs on a
+daemon thread and the result is delivered through the `"call"` event, so the
+UI thread is never blocked by the network call.  Requires `GHG_APP_PASSWORD`;
+without it the command reports the missing credential and stops cleanly (the
+same guard `email_inbox.peek_unseen` already raises).
+
+**`/team` (multi-agent team runs):** a tui2-native command over the
+`nbchat.core.team` coordinator.  In v1, `/team` streams worker output straight
+to the terminal — which in tui2's raw mode is the surface the TUI paints its
+frames into, so an unguarded team run would corrupt the screen.  The tui2
+implementation runs the `TeamCoordinator` on a daemon thread with `sys.stdout`
+redirected to a `_TeamCapture`: it swallows the run's output, holds complete
+lines, and — throttled by time and size — relays batches to the UI thread
+(via the `"call"` event) which appends them as dim notes.  The UI thread is
+never blocked and the screen is never corrupted.  `/team <goal>` starts a run
+(refusing a second while one is live); `/team` shows current/last status and
+the final report; `/team stop` interrupts the running team (a stop takes
+precedence over the run's own terminal status, so a stopped run reports
+"stopped", not "done").
+
+**Up/Down arrow history recall:** in normal mode the arrow keys previously
+fell through to the single-line editor (a no-op), so there was no quick way to
+recall a previous input other than `Ctrl+R` reverse search.  The tui2 app now
+intercepts `Up`/`Down` in `_on_input` and walks the submitted-input history
+(`_history`): Up steps to older entries, Down steps back toward the newest and
+then restores the in-progress draft (snapshot into `_hist_draft` on the first
+Up).  Any other typed/edited key ends recall so the next Up starts fresh.
+`LineEditor.set_text()` replaces the buffer, moves the cursor to the end, and
+records an undo point so a recall can be undone with the usual undo binding.
+The binding is documented in the KEYMAP (so `/hotkeys` and the mode bar
+agree).
+
+**`/browse` + `/search` (web surface):** tui2-native commands over the
+`nbchat.tools.browser` engine (a stateless headless-Chromium tool that the
+agent already uses for function-calling).  In v1 there was no way for a user
+to fetch and read a web page without asking the agent to run the tool; tui2
+adds a direct surface.  The page fetch runs on a daemon thread (launching
+Chromium is slow) and the result is delivered via the `"call"` event, so the
+UI thread is never blocked and the screen is never corrupted — the same
+off-thread pattern as `/inbox` and `/team`.  `/browse <url>` shows the page
+title + truncated text; `/search <query>` browses a DuckDuckGo search.  A
+missing URL scheme is auto-corrected to `https://`; errors (network,
+bot-blocked) render as a friendly note rather than a crash.
+
+---
+
 ## Not addressed (out of scope for this pass, tracked in the port tracker)
 
-* **Voice / email / supervisor / team surfaces.** These start in
-  `nbchat.tui.app.run()` with print-based status output and print-based
-  inbound loops; tui2 doesn't start them (their prints would corrupt raw
-  mode). Chat + sessions + commands work; the other surfaces need a
-  dedicated UI pass (see `docs/prime_tui_port_tracker.md`).
-* **Scrollback / log scrolling** (`ChatLog.scroll`, PgUp/PgDn keys).
-* **Full session picker UI** (fuzzy `SelectList` exists but is not wired to
-  `/sessions`; the command renders the plain list instead).
 * **CJK/wide-glyph column math** (`_clamp` counts codepoints, not cells).
+
+(All of the original v1-only surfaces are now tui2-native: email (`/inbox`),
+supervisor (`/sup` + `--supervisor`), team (`/team`), and the Alfred voice
+bridge (`/voice` + `--voice`, whose v1 print-based inbound loop was replaced
+by an off-thread daemon that dispatches a tui2-native submit onto the UI
+thread).  Also resolved since the original list: mouse wheel + drag-to-copy,
+in-log search + visual copy, in-app theming/settings, the JSON control
+socket, and the detachable background agent — see the wave notes above.)
 
 ---
 

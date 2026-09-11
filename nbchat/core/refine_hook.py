@@ -199,3 +199,84 @@ def on_task_finished(agent, rec) -> bool:
     except Exception:
         _log.debug("refine hook failed to schedule", exc_info=True)
         return False
+
+
+def schedule_manual_refine(agent, instructions: str = "") -> bool:
+    """Run a refine round on demand (bypasses the auto-trigger predicate).
+
+    Uses the most recent user turn as the task context; *instructions*
+    (if given) are prepended as a focus note in the review prompt.  Respects
+    the global engine kill-switch (``refine_hook_enabled``) but not the
+    per-task ``should_refine_task`` predicate.  Returns True when a round was
+    scheduled, False otherwise (never raises).
+    """
+    try:
+        if not REFINE_HOOK_ENABLED:
+            return False
+        hook = getattr(agent, "_refine_hook_state", None)
+        if hook is None:
+            hook = {"running": False}
+            setattr(agent, "_refine_hook_state", hook)
+        if hook["running"]:
+            return False
+        hook["running"] = True
+
+        session_id = getattr(agent, "session_id", "") or ""
+        last_user = ""
+        try:
+            history = getattr(agent, "history", None) or []
+            last_user = next((r[1] for r in reversed(history)
+                              if r[0] == "user"), "")
+        except Exception:
+            last_user = ""
+        task_summary = last_user or instructions or "(manual refine)"
+        if instructions:
+            task_summary = f"(focus: {instructions})\n{task_summary}"
+        trajectory = digest_trajectory(agent, task_summary)
+        report = getattr(agent, "_on_agent_message", None)
+
+        def _run() -> None:
+            started = time.time()
+            try:
+                llm_call = _build_llm_call(agent)
+                result = refinement.run_refine_round(
+                    session_id, task_summary, trajectory, llm_call)
+                n = len(result.applied)
+                if n:
+                    msg = (f"[refine] round {result.round_id}: "
+                           f"{n} lesson(s) updated "
+                           f"(took {time.time()-started:.0f}s)")
+                else:
+                    why = (result.skipped[0]
+                           if result.skipped else "no edits needed")
+                    msg = f"[refine] reviewed, no changes ({why})"
+                if report is not None:
+                    try:
+                        report(msg)
+                    except Exception:
+                        pass
+                db.insert_refine_event(
+                    session_id, "refine:manual",
+                    {"applied": n,
+                     "elapsed_s": round(time.time()-started, 1)},
+                    action="manual", round_id=result.round_id)
+            except Exception as exc:
+                _log.warning("manual refine round failed: %s: %s",
+                             type(exc).__name__, exc)
+                try:
+                    db.insert_refine_event(
+                        session_id, "refine:manual",
+                        {"error": f"{type(exc).__name__}: {exc}"[:300]},
+                        action="manual:failed")
+                except Exception:
+                    pass
+            finally:
+                hook["running"] = False
+
+        t = threading.Thread(
+            target=_run, name="refine-manual", daemon=True)
+        t.start()
+        return True
+    except Exception:
+        _log.debug("manual refine failed to schedule", exc_info=True)
+        return False
