@@ -231,6 +231,9 @@ shell command (`!ls`); `!!` also stores the output for later.
 - **External editor** — `/editor` or `Ctrl+E` opens the current draft in
   `$EDITOR` (`$VISUAL` fallback) to compose a long prompt; the result is
   loaded back into the input.  Requires `$EDITOR`/`$VISUAL` to be set.
+- **Git overview** — `/gstatus` shows the working-tree state at a glance
+  (branch, staged / unstaged / untracked), complementing `/diff` and
+  `/checkpoint`.  Read-only.
 - `/hotkeys` — the keybinding reference.
 - `/copy` — copies the last assistant message to the clipboard (OSC 52;
   silent no-op where the terminal lacks clipboard support).

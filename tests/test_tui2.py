@@ -3555,3 +3555,39 @@ def test_ctrl_e_triggers_external_editor(monkeypatch):
 def test_editor_listed_in_help():
     app, _, _, _ = _make_chat_app()
     assert "/editor" in app._tui2_help_addendum()
+
+
+# ── /gstatus (git working-tree overview) ─────────────────────────
+def test_gstatus_real_git_lists_categories(tmp_path, monkeypatch):
+    import subprocess as _sp
+    d = _gitrepo(tmp_path)
+    (d / "f.txt").write_text("v2\n")                    # unstaged (tracked, modified)
+    (d / "g.txt").write_text("g\n")
+    _sp.run(["git", "add", "g.txt"], cwd=d, check=True, capture_output=True)  # staged
+    (d / "h.txt").write_text("h\n")                     # untracked
+    monkeypatch.chdir(d)
+    app, _, _, _ = _make_chat_app()
+    monkeypatch.setattr(app, "_note", lambda t: None)
+    out = app._cmd_gstatus("")
+    assert "1 staged, 1 unstaged, 1 untracked" in out
+    blk = app.log.messages[-1].blocks[0]
+    assert blk.kind == "tool" and blk.name == "git status" and blk.diff is False
+    joined = chr(10).join(blk.body)
+    assert "staged (1):" in joined and "unstaged (1):" in joined and "untracked (1):" in joined
+    assert "g.txt" in joined and "f.txt" in joined and "h.txt" in joined
+
+def test_gstatus_clean_working_tree(tmp_path, monkeypatch):
+    d = _gitrepo(tmp_path)
+    monkeypatch.chdir(d)
+    app, _, _, _ = _make_chat_app()
+    notes = []
+    monkeypatch.setattr(app, "_note", lambda t: notes.append(t))
+    out = app._cmd_gstatus("")
+    assert "clean working tree" in out
+    assert any("clean" in n for n in notes)
+
+def test_gstatus_not_git(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    app, _, _, _ = _make_chat_app()
+    out = app._cmd_gstatus("")
+    assert "not a git work tree" in out

@@ -1251,7 +1251,7 @@ class ChatApp(TerminalAgent):
                     "/goal", "/notify", "/theme", "/monitor", "/inbox",
                     "/team", "/browse", "/search", "/sup", "/voice",
                     "/fork", "/checkpoint", "/undo", "/find", "/diff",
-                    "/export", "/plan", "/retry", "/queue", "/tpl", "/editor")
+                    "/export", "/plan", "/retry", "/queue", "/tpl", "/editor", "/gstatus")
 
     def _run_command(self, line: str) -> None:
         """Route a slash command.
@@ -1323,6 +1323,7 @@ class ChatApp(TerminalAgent):
             "  /queue [clear]  view/clear the Ctrl+Q follow-up queue",
             "  /tpl [name [args]] prompt templates from prompts/*.md",
             "  /editor [ctrl+e]  compose the draft in $EDITOR",
+            "  /gstatus  git working-tree overview (branch/staged/unstaged/untracked)",
             "  @<path>      file completion (type @ + a filename, pick a match)",
             "  /compact    force a context summarisation now",
             "  /copy       copy last reply to the clipboard",
@@ -1375,6 +1376,7 @@ class ChatApp(TerminalAgent):
             "/queue": self._cmd_queue,
             "/tpl": self._cmd_tpl,
             "/editor": self._cmd_editor,
+            "/gstatus": self._cmd_gstatus,
         }
         fn = handlers.get(cmd)
         try:
@@ -1726,6 +1728,7 @@ class ChatApp(TerminalAgent):
     # ── /diff (tui3: review tracked-file changes, colorized) ────────────
 
     _DIFF_MAX_LINES = 200
+    _GSTATUS_MAX = 50
 
     def _cmd_diff(self, arg: str) -> str:
         """``/diff [--stat] [label]`` — review tracked-file changes.
@@ -1786,6 +1789,61 @@ class ChatApp(TerminalAgent):
         nfiles = len(files)
         return (f"diff: {title} — {nfiles} file(s) changed"
                 + ("" if stat_only else "  ·  /undo reverts tracked files"))
+
+    # ── /gstatus (tui3: git working-tree overview) ────────────────────
+    def _cmd_gstatus(self, arg: str) -> str:
+        """``/gstatus`` — a git working-tree overview (branch, staged,
+        unstaged, untracked).  Rounds out the /diff + /checkpoint tooling
+        with a quick "what has changed" snapshot.  Read-only.
+        """
+        from . import undo as _undo
+        cwd = os.getcwd()
+        if not _undo.is_git_repo(cwd):
+            return "gstatus: this directory is not a git work tree"
+        rc, branch = _undo._git(cwd, "rev-parse", "--abbrev-ref", "HEAD")
+        branch = branch.strip() if rc == 0 else "?"
+        rc, out = _undo._git(cwd, "status", "--porcelain")
+        if rc != 0:
+            return f"gstatus: git status failed: {out.strip()[:200]}"
+        staged, unstaged, untracked = [], [], []
+        for line in out.splitlines():
+            if len(line) < 3 or not line.strip():
+                continue
+            x, y, path = line[0], line[1], line[3:].strip()
+            if x == "?" and y == "?":
+                untracked.append(path)
+                continue
+            if x not in (" ", "?"):
+                staged.append(f"{x} {path}")
+            if y not in (" ", "?"):
+                unstaged.append(f"{y} {path}")
+        def _fmt(items):
+            out_ = [f"  {i}" for i in items[:self._GSTATUS_MAX]]
+            if len(items) > self._GSTATUS_MAX:
+                out_.append(f"  … (+{len(items) - self._GSTATUS_MAX} more)")
+            return out_
+        total = len(staged) + len(unstaged) + len(untracked)
+        if total == 0:
+            self._note(f"gstatus: clean working tree ({branch})")
+            return f"gstatus: clean working tree ({branch})"
+        lines = [f"branch: {branch}"]
+        if staged:
+            lines.append(f"staged ({len(staged)}):")
+            lines.extend(_fmt(staged))
+        if unstaged:
+            lines.append(f"unstaged ({len(unstaged)}):")
+            lines.extend(_fmt(unstaged))
+        if untracked:
+            lines.append(f"untracked ({len(untracked)}):")
+            lines.extend(_fmt(untracked))
+        self.log.add(chatc.ChatMessage(
+            role="assistant",
+            blocks=[chatc.ChatBlock(kind="tool", name="git status",
+                                    title=f"git status ({branch})",
+                                    status="done", body=lines, diff=False)],
+        ))
+        return (f"gstatus: {len(staged)} staged, {len(unstaged)} unstaged, "
+                f"{len(untracked)} untracked on {branch}")
 
     # ── /plan (tui3: read-only research mode) ───────────────────────────
 
