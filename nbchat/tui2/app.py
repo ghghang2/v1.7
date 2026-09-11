@@ -2785,6 +2785,12 @@ class ChatApp(TerminalAgent):
         self._todo_pill_cache = (now, text)
         return text
 
+    def _queue_pill(self) -> str:
+        """A live pill for the steering queue (Ctrl+Q) when non-empty."""
+        if self._queue:
+            return f"{len(self._queue)} queued"
+        return ""
+
     def _cmd_todos(self, arg: str) -> str:
         """``/todos`` — show the agent's current task list."""
         from nbchat.tools.todo import load_todos
@@ -3385,6 +3391,9 @@ class ChatApp(TerminalAgent):
         pill = self._todo_pill()
         if pill:
             parts.append(pill)
+        qp = self._queue_pill()
+        if qp:
+            parts.append(qp)
         return "  ".join(parts)
 
     def _build_frame(self) -> Frame:

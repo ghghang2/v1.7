@@ -294,3 +294,16 @@ the handlers, `_TUI2_NATIVE`, and `/help`.
 renders the list + empty case; the note is in the system prompt; `/todos`
 listed in help/native).  tui2 suite 296 passed; full suite 670 green
 (296+79+295).  E2E pty verified (status-bar pill + `/todos` list, clean exit).
+
+## tui3: queued pill (steering-queue count in the status bar)
+
+**Queued pill** (harness-survey #4, the second half of "todo/progress pills +
+queued pill"): the steering queue (Ctrl+Q) already lets you queue follow-up
+messages while a turn runs, and `/queue` lists them.  Now the count is also
+surfaced live in the status bar so a walk-away user can see at a glance that
+N messages are waiting.  All in `nbchat/tui2/app.py`: `_queue_pill()` returns
+`"N queued"` when `self._queue` is non-empty ("" otherwise) and is appended to
+the status bar via `_status_right()`, right next to the `tasks N/M` todo pill.
+Zero backend change — it reads the existing queue list.  1 new unit test
+(`test_queue_pill_reflects_queue`); tui2 suite 297 passed; full suite 671 green
+(297+79+295).

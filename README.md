@@ -260,6 +260,8 @@ shell command (`!ls`); `!!` also stores the output for later.
 - **Todo / progress pill** — the agent keeps a short live task list (via the
   `todo` tool) shown as a `tasks N/M` pill in the status bar; `/todos` prints
   the full list.  Works on any multi-step task so you can watch progress.
+  The steering queue shows up the same way: a `N queued` pill appears in the
+  status bar while you have messages queued (Ctrl+Q) to run after the turn.
 - `/hotkeys` — the keybinding reference.
 - `/copy` — copies the last assistant message to the clipboard (OSC 52;
   silent no-op where the terminal lacks clipboard support).

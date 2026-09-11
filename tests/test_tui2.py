@@ -2995,6 +2995,14 @@ def test_todos_listed_in_help(monkeypatch, tmp_path):
     from nbchat.tui2.app import ChatApp
     assert "/todos" in ChatApp._TUI2_NATIVE
     assert "/todos" in app._tui2_help_addendum()
+def test_queue_pill_reflects_queue(monkeypatch, tmp_path):
+    monkeypatch.setenv("NBCHAT_TUI3_CONFIG", str(tmp_path / "c.json"))
+    app, *_ = _make_chat_app()
+    assert app._queue_pill() == ""
+    app._queue = ["do X", "do Y", "do Z"]
+    assert app._queue_pill() == "3 queued"
+    assert "3 queued" in app._status_right()
+
 def _gitrepo(tmp_path):
     import subprocess as _sp
     d = tmp_path / "repo"
