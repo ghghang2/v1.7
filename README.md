@@ -176,6 +176,11 @@ shell command (`!ls`); `!!` also stores the output for later.
   user@server`) and POSTs transcripts, which are auto-submitted as user
   turns exactly like keyboard input (off the UI thread, so the raw screen
   is never touched from a background thread).
+- `/fork [n]` — branch this conversation into a new session.  Bare `/fork`
+  copies the entire current history; `/fork <n>` copies everything up to and
+  including your Nth message, so you can steer the branch differently from
+  the point you asked it.  The original session is left completely untouched
+  and the app switches to the fork (the fork is titled `fork <src> …`).
 - `/hotkeys` — the keybinding reference.
 - `/copy` — copies the last assistant message to the clipboard (OSC 52;
   silent no-op where the terminal lacks clipboard support).

@@ -2615,3 +2615,91 @@ def test_stop_voice_stops_bridge():
     app._stop_voice()
     assert fake.stopped is True
     assert app._voice_bridge is None
+
+
+# ── /fork (branch the conversation into a new session) ───────────────
+# NOTE: every nbchat.core.db function is patched via the `monkeypatch`
+# fixture so the patch is reverted after each test (no leak into the
+# shared DB that later v1 tests depend on).
+
+def _fork_rows():
+    # 6-tuples: (role, content, tool_id, tool_name, tool_args, error_flag)
+    return [
+        ("user", "hi", "", "", "", 0),
+        ("assistant", "hello!", "", "", "", 0),
+        ("user", "do X", "", "", "", 0),
+        ("tool", "did X", "t1", "run_command", "{}", 0),
+        ("assistant", "done", "", "", "", 0),
+        ("user", "now Y", "", "", "", 0),
+    ]
+
+def _patch_db_fork(monkeypatch, rows):
+    import nbchat.core.db as dbmod
+    calls = {}
+    monkeypatch.setattr(dbmod, "load_history",
+                        lambda sid, limit=None: [tuple(r) for r in rows])
+    monkeypatch.setattr(dbmod, "replace_session_history",
+                        lambda sid, hist: calls.setdefault("hist", (sid, hist)))
+    monkeypatch.setattr(dbmod, "load_task_log", lambda sid: [])
+    monkeypatch.setattr(dbmod, "save_task_log", lambda sid, tl: None)
+    monkeypatch.setattr(dbmod, "save_session_title",
+                        lambda sid, t: calls.setdefault("title", (sid, t)))
+    return calls
+
+def test_fork_empty_history(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    import nbchat.core.db as dbmod
+    monkeypatch.setattr(dbmod, "load_history", lambda sid, limit=None: [])
+    out = app._cmd_fork("")
+    assert "nothing to fork" in out
+
+
+def test_fork_full_copies_all_and_switches(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    rows = _fork_rows()
+    calls = _patch_db_fork(monkeypatch, rows)
+    orig = app.session_id
+    def fake_switch(sid):
+        calls["switch"] = sid
+        app.session_id = sid  # mimic real _switch_session
+    monkeypatch.setattr(app, "_switch_session", fake_switch)
+    monkeypatch.setattr(app, "_session_changed", lambda: calls.setdefault("changed", True))
+    monkeypatch.setattr(app, "remember_session", lambda sid: calls.setdefault("remember", sid))
+    out = app._cmd_fork("")
+    assert "full history" in out
+    sid, hist = calls["hist"]
+    assert sid != orig                 # a brand-new session id
+    assert len(hist) == len(rows)      # all rows copied
+    assert calls["switch"] == sid      # switched to the fork
+    assert calls["changed"] is True
+    assert calls["remember"] == sid    # fork is now the current session
+    assert "fork" in calls["title"][1] # title records it is a fork
+
+
+def test_fork_at_message_2_includes_that_user_message(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    calls = _patch_db_fork(monkeypatch, _fork_rows())
+    monkeypatch.setattr(app, "_switch_session", lambda sid: None)
+    monkeypatch.setattr(app, "_session_changed", lambda: None)
+    monkeypatch.setattr(app, "remember_session", lambda sid: None)
+    out = app._cmd_fork("2")
+    assert "message 2" in out
+    sid, hist = calls["hist"]
+    # 2nd user message is at index 2 -> cut = 3 -> rows[:3] = [hi, hello!, do X]
+    assert len(hist) == 3
+    assert hist[-1][0] == "user" and hist[-1][1] == "do X"
+
+
+def test_fork_bad_arg(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    _patch_db_fork(monkeypatch, _fork_rows())
+    out = app._cmd_fork("abc")
+    assert "give a number" in out
+
+
+def test_fork_out_of_range(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    _patch_db_fork(monkeypatch, _fork_rows())
+    out = app._cmd_fork("99")
+    assert "message(s)" in out
+    assert "/fork 1..3" in out

@@ -177,3 +177,14 @@ thread; every socket op is wrapped; `ControlServer.stop()` unlinks the
 socket on exit.
 
 **tui3 wave 6+ — detached background agent:** `--bg` (also `NBCHAT_BG=1`) puts the TUI in headless mode: a stdin EOF does not end the render loop (the bg EOF path sleeps briefly and falls through to the event drain, so a control-socket `quit` is still processed).  `nbchat-ctl bg [--session ID] [prompt]` launches a `--bg` TUI in its own session (`start_new_session=True`, so it survives the launcher and an SSH drop), points its control socket at `~/.nbchat/tui2-bg.sock`, logs stdout to `~/.nbchat/tui2-bg.log`, waits for the socket, and submits a trailing prompt as the first task.  The full workflow — detach, drive headlessly, read the result, quit — is verified by `test_bg_mode_quit_via_control_socket` and an E2E pty probe.
+
+
+**Post-wave-7 additions (v1-surface parity closed, then conversation tooling):**
+`/fork [n]` — branch the conversation into a new session.  Bare `/fork` copies
+the entire current history; `/fork <n>` copies everything up to and including
+your Nth user message, so you can steer the branch differently from the point
+you asked it.  It is non-destructive (the original session is left untouched),
+built entirely on the existing `nbchat.core.db` engine (`load_history` +
+`replace_session_history` + `save_session_title`), and carries the in-flight
+task list so the branch keeps its to-dos.  The app switches to the fork and
+remembers it as the current session; the fork is titled `fork <src> …`.

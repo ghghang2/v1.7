@@ -962,7 +962,8 @@ class ChatApp(TerminalAgent):
     _TUI2_NATIVE = ("/context", "/hotkeys", "/copy", "/compact",
                     "/refine", "/lessons", "/memory", "/btw", "/approve",
                     "/goal", "/notify", "/theme", "/monitor", "/inbox",
-                    "/team", "/browse", "/search", "/sup", "/voice")
+                    "/team", "/browse", "/search", "/sup", "/voice",
+                    "/fork")
 
     def _run_command(self, line: str) -> None:
         """Route a slash command.
@@ -1023,6 +1024,7 @@ class ChatApp(TerminalAgent):
             "  /search <q> web search (DuckDuckGo) via /browse",
             "  /sup [q]    supervisor state query / watchdog status",
             "  /voice      Alfred voice-bridge status (--voice)",
+            "  /fork [n]   branch this conversation into a new session",
             "  /compact    force a context summarisation now",
             "  /copy       copy last reply to the clipboard",
             "  /btw <q>    side question, kept out of this session",
@@ -1062,6 +1064,7 @@ class ChatApp(TerminalAgent):
             "/search": self._cmd_search,
             "/sup": self._cmd_sup,
             "/voice": self._cmd_voice,
+            "/fork": self._cmd_fork,
         }
         fn = handlers.get(cmd)
         try:
@@ -1263,6 +1266,58 @@ class ChatApp(TerminalAgent):
             port = "?"
         return (f"voice: ACTIVE on localhost:{port}  ·  "
                 f"ssh -L {port}:127.0.0.1:{port} user@server")
+
+    # ── /fork (tui3: branch the conversation into a new session) ────────
+
+    def _cmd_fork(self, arg: str) -> str:
+        """``/fork [n]`` — branch this conversation into a new session.
+
+        With no argument the *entire* current history is copied into a fresh
+        session (branch from now).  With ``n`` (the 1-based index of a user
+        message) the new session holds everything up to and including that
+        message, so you can steer the branch differently from the point you
+        asked it.  The original session is left completely untouched; the app
+        switches to the fork and remembers it as the current session.
+        """
+        import nbchat.core.db as _db
+        rows = _db.load_history(self.session_id)
+        if not rows:
+            return "fork: nothing to fork yet (no history in this session)"
+        user_idx = [i for i, r in enumerate(rows) if r[0] == "user"]
+        a = (arg or "").strip()
+        if not a:
+            cut, where = len(rows), "full history"
+        else:
+            if not a.isdigit():
+                return ("fork: give a number (your Nth message) or leave it "
+                        "blank for a full fork")
+            n = int(a)
+            if n < 1 or n > len(user_idx):
+                return (f"fork: this session has {len(user_idx)} message(s); "
+                        f"use /fork 1..{len(user_idx)} or bare /fork")
+            cut, where = user_idx[n - 1] + 1, f"up to your message {n}"
+        if cut <= 0:
+            return "fork: nothing to fork at that point"
+        prev = self.session_id
+        try:
+            new_sid = self._new_session_id()
+            _db.replace_session_history(new_sid, [tuple(r) for r in rows[:cut]])
+            try:  # carry the in-flight task list so the branch keeps its to-dos
+                tl = _db.load_task_log(prev)
+                if tl:
+                    _db.save_task_log(new_sid, tl)
+            except Exception:
+                pass
+            short_old = (prev or "").rsplit(":", 1)[-1][:12]
+            _db.save_session_title(new_sid, f"fork {short_old} {where}")
+        except Exception as exc:
+            return f"fork: failed ({type(exc).__name__}: {exc})"
+        self._switch_session(new_sid)
+        self._session_changed()
+        self.remember_session(self.session_id)
+        self._note(f"forked into {self.session_id} ({where}); "
+                   f"original {prev} is untouched")
+        return f"fork: branched {where} -> {self.session_id}"
 
     # ── /team (tui3: multi-agent team runs, output relayed off-thread) ──
 
