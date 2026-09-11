@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import urllib.request
+import urllib.parse
 from datetime import datetime, timedelta
 from typing import Dict
 
@@ -93,7 +94,7 @@ def _fetch_weather(city: str, date: str) -> Dict:
     date: str
         ISO 8601 formatted date string (YYYY-MM-DD).
     """
-    url = f"http://wttr.in/{city}?format=j1"
+    url = f"http://wttr.in/{urllib.parse.quote(city.strip())}?format=j1"
     with urllib.request.urlopen(url, timeout=10) as response:
         return json.loads(response.read().decode("utf-8"))
 
