@@ -4636,11 +4636,17 @@ def _to_lines(text: str, width: int):
     return Text(text or " ").render(width)
 
 
-def run(argv: list | None = None) -> int:
+def run(argv: list | None = None,
+        chat_app_cls: type = None) -> int:
     """``python -m nbchat.tui2`` entry point.
 
     ``--new`` forces a fresh session; ``--session <id|name>`` resumes a
     specific one; ``--demo`` is handled by :mod:`nbchat.tui2.__main__`.
+
+    ``chat_app_cls`` (optional) is the ``ChatApp`` class to instantiate;
+    it defaults to this module's ``ChatApp``.  A later version (``nbchat.
+    tui3``) passes its own subclass so the tui3 feature wave is clearly
+    delineated from the tui2 base while reusing the tui2 entry plumbing.
     """
     import argparse
 
@@ -4667,8 +4673,9 @@ def run(argv: list | None = None) -> int:
 
     term = RawTerminal(sys.stdin, sys.stdout)
     events = EventQueue()
+    app_cls = chat_app_cls if chat_app_cls is not None else ChatApp
     try:
-        app = ChatApp(term, events, resume_last=not args.new,
+        app = app_cls(term, events, resume_last=not args.new,
                       session_id=args.session, bg=bg,
                       supervisor=supervisor, voice=voice)
     except ValueError as exc:

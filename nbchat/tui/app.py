@@ -512,7 +512,19 @@ def run(argv: list[str] | None = None) -> int:
                         help="use the new TUI v2 engine (prime-agent-style "
                              "fullscreen raw-mode UI; --demo for the Phase "
                              "1 rendering demo)")
+    parser.add_argument("--v3", action="store_true",
+                        help="use the TUI v3 engine (the tui2 base extended "
+                             "with the tui3 feature wave; --v3 takes "
+                             "precedence over --v2)")
     args = parser.parse_args(argv)
+
+    if args.v3:
+        # TUI v3: the tui2 base extended with the tui3 feature wave.
+        # (Deliberately separate from tui2 so the version-to-feature-set
+        # boundary is explicit.)
+        from nbchat.tui3 import run as _tui3_run
+
+        return _tui3_run()
 
     if args.v2:
         # TUI v2: the prime-agent-style fullscreen raw-mode UI.  The full

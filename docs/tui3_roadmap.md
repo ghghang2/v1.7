@@ -745,3 +745,53 @@ mirror + read + send + safety.
   --frame view rendered the frame lines). 3 tests (command dispatch; unsupported
   when no frame_fn; error propagation). tui2 suite 376 passed; full suite 750
   green (376+79+295).
+
+## tui3: version delineation + Phase 1 /trace (observability)
+
+**The tui3 version boundary + `/trace`** - the new `nbchat.tui3` module is the
+NEXT version after tui2. It subclasses the tui2 `ChatApp` (inheriting the full
+tui2 feature set) and adds the tui3 feature wave. The version-to-feature-set
+boundary is explicit: every tui3 feature lives in `nbchat/tui3`, and the tui2
+base is left untouched. Entry points: `python -m nbchat.tui3` or
+`python -m nbchat.tui --v3` (v3 takes precedence over v2).
+
+**Phase 1 - `/trace` (live task-trace / observability view)** - a structured
+view of the recent agent activity for the current session (user turns,
+assistant turns, tool calls, and errors). `/trace` shows the last 40 steps + a
+summary (N you / N nbchat / N tools / N err); `/trace N` shows the last N;
+`/trace errors` shows only the errored steps; `/trace tools` shows only the
+tool calls. Reads the EXISTING conversation history via `db.load_history`
+(no new data plumbing). The error flag is only meaningful for tool rows
+(structured `is_tool_error`), so `[ERR]` and the error count apply to tool
+rows only. Inspired by CrewAI tracing & observability + LangGraph durable
+execution.
+
+- nbchat/tui3/__init__.py: documents the tui2/tui3 boundary, exports VERSION.
+- nbchat/tui3/app.py: ChatApp subclasses the tui2 ChatApp; _TUI3_NATIVE
+  ("/trace", "/budget"); _run_command intercepts tui3-native commands BEFORE
+  the tui2 dispatch; _run_tui3_command dispatches to the handlers; _cmd_trace
+  builds the trace view.
+- nbchat/tui3/__main__.py: entry point for `python -m nbchat.tui3`.
+- nbchat/tui2/app.py: run() gains an OPTIONAL chat_app_cls param (defaults to
+  the tui2 ChatApp - zero behavior change) so tui3 reuses the tui2 entry
+  plumbing.
+- nbchat/tui/app.py: a --v3 flag dispatches to nbchat.tui3.run (precedence
+  over --v2).
+- tests/test_tui3.py: 10 tests (version, subclass, native-command delineation,
+  trace empty/basic/errors-filter/tools-filter/limit, dispatch interception,
+  pass-through).
+- Safe: purely additive; the tui2 base and the v1 print REPL are unchanged.
+  Verified E2E (a pty boot of `python -m nbchat.tui3 --new` renders the frame;
+  `/trace` on a fresh session shows "no history"). tui3 suite 10 passed; tui2
+  suite 376 passed; v1 suite 79 passed (no regression).
+
+### Next phases (tracked)
+
+- **Phase 2 - approval diff-preview** (HITL upgrade): upgrade the existing
+  tool-approval gate to show a clearer preview of the intended change
+  (inspired by Google ADK tool confirmation + LangGraph human-in-the-loop).
+- **Phase 3 - `/budget`** (cost/token tracking + budgets): a cost/token view
+  with per-session totals and an optional token budget (inspired by the
+  harnesses cost tracking + LiteLLM budgets).
+- **Phase 4 - deep-agent plan loop** (strengthen `/plan`): a plan-act-reflect
+  loop (inspired by LangGraph deep agents).

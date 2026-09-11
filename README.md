@@ -465,6 +465,38 @@ chat, sessions and commands work in v2.  See `docs/tui2_issues.md` for the
 
 ---
 
+### TUI v3 — the extension engine (version-delineated feature wave)
+
+`v3` is the NEXT version after `v2`. It is a clear, delineated feature set:
+**v2 = the base harness + fix wave + first feature wave** (what you are
+testing); **v3 = the v2 base, extended with the v3 feature wave** (researched
+from the frontier multi-agent harnesses). Every v3 feature lives in
+`nbchat/tui3` (a `ChatApp` subclass of the v2 `ChatApp`), so the v2 base is
+left untouched and the version-to-feature-set boundary stays explicit.
+
+Run it with either entry point (v3 takes precedence over v2):
+
+```
+python -m nbchat.tui3            # run the v3 app
+python -m nbchat.tui --v3        # dispatch to the v3 app
+```
+
+**v3 feature wave (implemented in phases, each tested + committed + pushed):**
+
+* **Phase 1 — `/trace`** (live task-trace / observability view): a structured
+  view of the recent agent activity for the current session (user turns,
+  assistant turns, tool calls, and errors). ` /trace` shows the last 40 steps
+  + a summary; `/trace N` shows the last N; `/trace errors` shows only the
+  errored steps; `/trace tools` shows only the tool calls. Reads the existing
+  conversation history (no new data plumbing). Inspired by CrewAI tracing &
+  observability + LangGraph durable execution.
+
+More phases (approval diff-preview, `/budget` cost tracking, a deeper
+plan-act-reflect loop) are tracked in `docs/research_multagent_harnesses.md`
+and `docs/tui3_roadmap.md`.
+
+---
+
 ## 3. Email bridge — your inbox becomes the chat input box
 
 A daemon thread polls your Gmail inbox (IMAP) and injects **matching** emails
