@@ -411,6 +411,20 @@ UI thread is never blocked by the network call.  Requires `GHG_APP_PASSWORD`;
 without it the command reports the missing credential and stops cleanly (the
 same guard `email_inbox.peek_unseen` already raises).
 
+**`/team` (multi-agent team runs):** a tui2-native command over the
+`nbchat.core.team` coordinator.  In v1, `/team` streams worker output straight
+to the terminal — which in tui2's raw mode is the surface the TUI paints its
+frames into, so an unguarded team run would corrupt the screen.  The tui2
+implementation runs the `TeamCoordinator` on a daemon thread with `sys.stdout`
+redirected to a `_TeamCapture`: it swallows the run's output, holds complete
+lines, and — throttled by time and size — relays batches to the UI thread
+(via the `"call"` event) which appends them as dim notes.  The UI thread is
+never blocked and the screen is never corrupted.  `/team <goal>` starts a run
+(refusing a second while one is live); `/team` shows current/last status and
+the final report; `/team stop` interrupts the running team (a stop takes
+precedence over the run's own terminal status, so a stopped run reports
+"stopped", not "done").
+
 ---
 
 ## Not addressed (out of scope for this pass, tracked in the port tracker)

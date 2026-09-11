@@ -87,6 +87,62 @@ KEYMAP = {
 _MODEBAR_HINTS = 5
 
 
+class _TeamCapture:
+    """Capture a background team run's ``sys.stdout`` and relay it (batched)
+    into the TUI log via ``"call"`` events.
+
+    A team run's workers and coordinator write their output to the global
+    ``sys.stdout``.  In raw mode that is the terminal the TUI paints its
+    frames into, so unguarded worker output would corrupt the screen.  This
+    object is dropped in as ``sys.stdout`` for the duration of the run: it
+    swallows the output, holds complete lines, and — throttled by time and
+    size — pushes a batch to the UI thread (which appends it as a dim note).
+    The UI thread is never blocked and the screen is never corrupted.
+    """
+
+    def __init__(self, app, min_interval: float = 0.4, min_chars: int = 1200):
+        self._app = app
+        self._buf = ""
+        self._lock = threading.Lock()
+        self._min_interval = min_interval
+        self._min_chars = min_chars
+        self._last_emit = 0.0
+
+    def writable(self) -> bool:
+        return True
+
+    def isatty(self) -> bool:
+        return False
+
+    def write(self, data: str) -> int:
+        if not data:
+            return 0
+        now = time.monotonic()
+        batch = ""
+        with self._lock:
+            self._buf += data
+            flush_all = len(self._buf) >= self._min_chars
+            has_line = "\n" in self._buf
+            if flush_all or (has_line
+                             and (now - self._last_emit) >= self._min_interval):
+                batch, self._buf = self._buf, ""
+                self._last_emit = now
+        if batch:
+            # Deliver on the UI thread (the render loop runs "call" closures),
+            # so the log is never mutated from the worker thread.
+            self._app.events.put("call",
+                                 lambda b=batch: self._app._team_emit(b))
+        return len(data)
+
+    def flush(self) -> None:
+        """Ship any partial tail (called when the run ends)."""
+        with self._lock:
+            batch, self._buf = self._buf, ""
+        if batch:
+            self._app.events.put("call",
+                                 lambda b=batch: self._app._team_emit(b))
+
+
 class ChatApp(TerminalAgent):
     """A full conversation app: agent + chat log + input line.
 
@@ -207,6 +263,19 @@ class ChatApp(TerminalAgent):
         self._goal_done_markers = ("goal complete", "goal: complete",
                                    "goal achieved", "[goal done]",
                                    "goal accomplished")
+
+        # Team (multi-agent) run bookkeeping.  A background team run streams
+        # its output through a _TeamCapture that is relayed into the log.
+        self._team_state: dict = {
+            "thread": None,        # live worker thread (None when idle)
+            "coordinator": None,   # TeamCoordinator for the current/last run
+            "capture": None,       # _TeamCapture holding the run's stdout
+            "goal": "",            # goal text of the current/last run
+            "status": "idle",      # idle | running | done | failed | stopped
+            "report": "",          # final coordinator report (last run)
+            "started": 0.0,        # time.monotonic() when the run started
+            "stopped": False,      # True once the user requests a stop
+        }
 
         # Turn worker bookkeeping.
         self._turn_thread: threading.Thread | None = None
@@ -863,7 +932,8 @@ class ChatApp(TerminalAgent):
     # v1 print REPL.  Everything else falls through to v1 ``handle_command``.
     _TUI2_NATIVE = ("/context", "/hotkeys", "/copy", "/compact",
                     "/refine", "/lessons", "/memory", "/btw", "/approve",
-                    "/goal", "/notify", "/theme", "/monitor", "/inbox")
+                    "/goal", "/notify", "/theme", "/monitor", "/inbox",
+                    "/team")
 
     def _run_command(self, line: str) -> None:
         """Route a slash command.
@@ -919,6 +989,7 @@ class ChatApp(TerminalAgent):
             "  /context    model + context window + compression stats",
             "  /monitor    live session metrics (cache / tools / warnings)",
             "  /inbox [n]  list / read unseen email (read-only, off-thread)",
+            "  /team [g]   run a goal as parallel agent team (stop / status)",
             "  /compact    force a context summarisation now",
             "  /copy       copy last reply to the clipboard",
             "  /btw <q>    side question, kept out of this session",
@@ -953,6 +1024,7 @@ class ChatApp(TerminalAgent):
             "/theme": self._cmd_theme,
             "/monitor": self._cmd_monitor,
             "/inbox": self._cmd_inbox,
+            "/team": self._cmd_team,
         }
         fn = handlers.get(cmd)
         try:
@@ -1055,6 +1127,111 @@ class ChatApp(TerminalAgent):
 
         threading.Thread(target=work, daemon=True).start()
         return "inbox: checking…"
+
+    # ── /team (tui3: multi-agent team runs, output relayed off-thread) ──
+
+    def _team_emit(self, text: str) -> None:
+        """Relay a batch of captured team output into the log (UI thread).
+
+        Invoked on the UI thread via a ``"call"`` event (see
+        :class:`_TeamCapture`), so touching the log directly is safe."""
+        text = text.rstrip("\n")
+        if not text.strip():
+            return
+        self.log.add(chatc.ChatMessage(role="system", text=text))
+        self._ui_refresh()
+
+    def _team_status_text(self) -> str:
+        st = self._team_state
+        if st["status"] == "running" and (st["thread"] is None
+                                          or not st["thread"].is_alive()):
+            st["status"] = "done"
+        if st["status"] == "running":
+            elapsed = (time.monotonic() - st["started"]) if st["started"] else 0
+            return (f"team: running — goal: {st['goal'][:80]}\n"
+                    f"  elapsed {elapsed:.0f}s  (output streams into the log "
+                    f"above; /team stop to interrupt)")
+        if st["status"] == "idle":
+            return "team: no team run (usage: /team <goal>)"
+        lines = [f"team: {st['status']} — goal: {st['goal'][:80]}"]
+        if st["report"]:
+            lines.append(st["report"].strip())
+        return "\n".join(lines)
+
+    def _start_team_run(self, goal: str) -> None:
+        from nbchat.core.team import TeamAgent, TeamCoordinator, ToolArbiter
+
+        st = self._team_state
+        team_agent = TeamAgent(color=False)
+        coordinator = TeamCoordinator(team_agent)
+        capture = _TeamCapture(self)
+        st["coordinator"] = coordinator
+        st["capture"] = capture
+        st["goal"] = goal
+        st["status"] = "running"
+        st["report"] = ""
+        st["started"] = time.monotonic()
+        st["stopped"] = False
+
+        def _run() -> None:
+            old = sys.stdout
+            sys.stdout = capture
+            try:
+                with ToolArbiter():
+                    result = coordinator.run(goal)
+                result = result or {}
+                report = result.get("summary", "") or ""
+                status = result.get("status", "done") or "done"
+            except Exception as exc:
+                report = f"team run crashed: {type(exc).__name__}: {exc}"
+                status = "failed"
+            finally:
+                try:
+                    capture.flush()
+                except Exception:
+                    pass
+                sys.stdout = old
+            # Finalize.  A user stop takes precedence over the run's own
+            # terminal status, so a stopped run reports "stopped", not "done".
+            st["report"] = report
+            if not st["stopped"]:
+                st["status"] = status
+            st["thread"] = None
+
+        thread = threading.Thread(target=_run, daemon=True)
+        st["thread"] = thread
+        thread.start()
+
+    def _cmd_team(self, arg: str) -> str:
+        """Run a goal as a team of parallel agents (tui3).
+
+        ``/team <goal>`` starts a coordinated multi-agent run in the
+        background; its output is relayed into the log (never to the raw
+        screen).  ``/team`` shows the current/last status and report;
+        ``/team stop`` interrupts a running team."""
+        arg = arg.strip()
+        st = self._team_state
+        if not arg:
+            return self._team_status_text()
+        if arg == "stop":
+            coordinator = st["coordinator"]
+            if st["status"] == "running" and coordinator is not None:
+                try:
+                    coordinator._interrupt_active_workers()
+                except Exception as exc:
+                    return f"team: could not stop: {exc}"
+                st["stopped"] = True
+                st["status"] = "stopped"
+                return "team: stop requested (workers are being interrupted)"
+            return "team: nothing to stop (no run in progress)"
+        if st["status"] == "running" and st["thread"] is not None \
+                and st["thread"].is_alive():
+            return ("team: a run is already in progress; wait for it to "
+                    "finish or type /team stop")
+        self._start_team_run(arg)
+        return (f"team: starting run for: {arg[:100]}\n"
+                f"  workers stream into the log; /team for status, "
+                f"/team stop to interrupt")
 
     def _cmd_hotkeys(self, arg: str) -> str:
         """Generated from the single ``KEYMAP`` source of truth."""

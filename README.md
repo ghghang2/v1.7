@@ -145,6 +145,14 @@ shell command (`!ls`); `!!` also stores the output for later.
   runs the IMAP round-trip off the UI thread, so the interface never
   freezes.  Requires `GHG_APP_PASSWORD` (Gmail app password); with no
   credential it notes that and stops cleanly.
+- `/team [goal]` — run a goal as a **team of parallel agents** (the
+  multi-agent coordinator in `nbchat.core.team`).  `/team <goal>` starts a
+  coordinated run in the background: the coordinator decomposes the goal
+  into independent tasks and fans them out to worker agents.  Each worker's
+  output is relayed into the log off the UI thread (never to the raw
+  screen), so the interface stays live and intact.  `/team` shows the
+  current/last status and final report; `/team stop` interrupts a running
+  team.
 - `/hotkeys` — the keybinding reference.
 - `/copy` — copies the last assistant message to the clipboard (OSC 52;
   silent no-op where the terminal lacks clipboard support).

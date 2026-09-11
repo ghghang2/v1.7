@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import io
 import os
+import sys
 import threading
 import time
 
@@ -2215,4 +2216,124 @@ def test_cmd_inbox_is_native_and_async_delivers(monkeypatch):
     call()
     assert len(app.log.messages) == before + 1
     assert "Hello" in app.log.messages[-1].text
+
+# ── /team (tui3: multi-agent team runs, output relayed off-thread) ─────
+
+class _FakeCoordinator:
+    """Stands in for nbchat.core.team.TeamCoordinator in tests: writes
+    fake worker output to sys.stdout (which the app redirects to its
+    _TeamCapture) and returns a result dict."""
+
+    def __init__(self, agent, out=(), result=None, block=None):
+        self.agent = agent
+        self._out = list(out)
+        self._result = result or {"status": "done", "summary": "ALL TASKS DONE"}
+        self._block = block
+        self.interrupted = False
+
+    def run(self, goal):
+        if self._block is not None:
+            self._block.wait(timeout=5)
+        for line in self._out:
+            sys.stdout.write(line + "\n")
+        sys.stdout.flush()
+        return dict(self._result)
+
+    def _interrupt_active_workers(self):
+        self.interrupted = True
+        if self._block is not None:
+            self._block.set()
+
+
+def _patch_team(monkeypatch, out=(), result=None, block=None):
+    import nbchat.core.team as team_mod
+
+    def _make(agent):
+        return _FakeCoordinator(agent, out=out, result=result, block=block)
+
+    monkeypatch.setattr(team_mod, "TeamCoordinator", _make)
+
+
+def _drain_calls(app, events):
+    """Stand in for the render loop: run queued 'call' closures."""
+    for _ in range(50):
+        evs = list(events.drain())
+        calls = [p for k, p in evs if k == "call" and callable(p)]
+        if not calls:
+            return
+        for c in calls:
+            c()
+
+
+def _wait_team_done(app, timeout=5.0):
+    st = app._team_state
+    end = time.time() + timeout
+    while time.time() < end:
+        th = st["thread"]
+        if th is None or not th.is_alive():
+            break
+        time.sleep(0.02)
+    return st
+
+
+def test_team_status_idle():
+    app, term, events, _ = _make_chat_app()
+    out = app._cmd_team("")
+    assert "no team run" in out
+
+
+def test_team_start_relays_output_and_report(monkeypatch):
+    app, term, events, _ = _make_chat_app()
+    _patch_team(monkeypatch, out=["[worker 1] investigating A",
+                                  "[worker 2] verifying B"],
+                result={"status": "done", "summary": "ALL TASKS DONE"})
+    ack = app._cmd_team("do the thing")
+    assert "starting run" in ack
+    st = _wait_team_done(app)
+    _drain_calls(app, events)
+    assert st["status"] == "done"
+    logtext = "\n".join(m.text for m in app.log.messages)
+    assert "[worker 1] investigating A" in logtext
+    assert "[worker 2] verifying B" in logtext
+    status = app._cmd_team("")
+    assert "ALL TASKS DONE" in status
+
+
+def test_team_busy_guard(monkeypatch):
+    app, term, events, _ = _make_chat_app()
+    gate = threading.Event()
+    _patch_team(monkeypatch, block=gate,
+                result={"status": "done", "summary": "late"})
+    app._cmd_team("first")
+    assert app._team_state["status"] == "running"
+    # a second run is refused while the first is alive
+    busy = app._cmd_team("second")
+    assert "already in progress" in busy
+    # stopping unblocks the run
+    stop = app._cmd_team("stop")
+    assert "stop requested" in stop
+    st = _wait_team_done(app)
+    _drain_calls(app, events)
+    assert st["status"] == "stopped"
+
+
+def test_team_stop_with_no_run():
+    app, term, events, _ = _make_chat_app()
+    assert "nothing to stop" in app._cmd_team("stop")
+
+
+def test_team_capture_batches_and_flushes(monkeypatch):
+    app, term, events, _ = _make_chat_app()
+    from nbchat.tui2.app import _TeamCapture
+    cap = _TeamCapture(app, min_interval=0.0, min_chars=10)
+    # below the size threshold and no time elapsed -> buffered
+    cap.write("hello wor")
+    assert app.log.messages == []
+    # crossing the size threshold ships a batch (queued as a 'call'); run it
+    # via _drain_calls (which drains AND executes, unlike a bare drain)
+    cap.write("ld more")
+    _drain_calls(app, events)
+    joined = "\n".join(m.text for m in app.log.messages)
+    assert "hello world more" in joined
+
 
