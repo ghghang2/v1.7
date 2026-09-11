@@ -266,3 +266,31 @@ _settings_view`, `_parse_onoff`), wired into the handlers dict, `_TUI2_NATIVE`,
 and the `/help` addendum.  2 new unit tests (view + live-tune every key +
 persistence + bad-value usage; settings listed in help/native set); tui2 suite
 291 passed; full suite 665 green (291+79+295).  E2E pty verified.
+
+## tui3: todo / progress pill (agent-maintained task list)
+
+**Todo/progress pills** (survey #4): the agent maintains a short live task
+list, surfaced as a `tasks N/M` pill in the status bar and viewable in full
+with `/todos`.  This is the one remaining survey item that needed an engine,
+so a small additive tool was added.
+
+**New additive tool** — `nbchat/tools/todo.py` (auto-discovered by the tools
+package; no existing tool touched): `todo(items)` sets the full list (an array
+of `{text, done}` objects; bare strings accepted; `[]` clears; capped at 25).
+It persists to a small JSON file (default `~/.nbchat/todos.json`, override
+`NBCHAT_TODO_FILE`) via shared `todo_path()` / `load_todos()` / `save_todos()`
+helpers the UI also uses, so tool and UI share one source of truth.  The tool
+is stateless w.r.t. the session and never blocks/crashes the loop on an I/O
+hiccup.  It is additive to the shared toolset, so v1 users also get it
+(`nbchat.tui` untouched otherwise).
+
+**Surface** — all in `nbchat/tui2/app.py`: `_todo_pill()` reads the list
+(cached ~0.4 s) and appends `tasks N/M` to the status bar via `_status_right()`;
+`_cmd_todos` prints the full list; a gentle `[TASK LIST]` nudge is appended to
+the system prompt at init so the LLM actually maintains the list.  Wired into
+the handlers, `_TUI2_NATIVE`, and `/help`.
+
+**Tests** — 5 new (tool set/load/clear/bad; pill reads the file; `/todos`
+renders the list + empty case; the note is in the system prompt; `/todos`
+listed in help/native).  tui2 suite 296 passed; full suite 670 green
+(296+79+295).  E2E pty verified (status-bar pill + `/todos` list, clean exit).

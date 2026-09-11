@@ -2944,6 +2944,57 @@ def test_settings_listed_in_help(monkeypatch, tmp_path):
     assert "/settings" in ChatApp._TUI2_NATIVE
     help_text = app._tui2_help_addendum()
     assert "/settings" in help_text
+def test_todo_tool_set_and_load(monkeypatch, tmp_path):
+    import json
+    import nbchat.tools.todo as td
+    monkeypatch.setenv("NBCHAT_TODO_FILE", str(tmp_path / "todos.json"))
+    from nbchat.core.tool_executor import run_tool
+    r = run_tool("todo", json.dumps({"items": [
+        {"text": "a", "done": True}, {"text": "b", "done": False}, "c"]}))
+    assert "1/3" in r
+    todos = td.load_todos()
+    assert len(todos) == 3 and todos[0]["done"] is True and todos[2]["text"] == "c"
+    assert run_tool("todo", json.dumps({"items": []})).startswith("Task list cleared")
+    assert td.load_todos() == []
+    assert "Failed to parse items" in run_tool("todo", json.dumps({"items": "nope"}))
+
+
+def test_todo_pill_reads_file(monkeypatch, tmp_path):
+    import nbchat.tools.todo as td
+    monkeypatch.setenv("NBCHAT_TODO_FILE", str(tmp_path / "todos.json"))
+    app, *_ = _make_chat_app()
+    assert app._todo_pill() == ""
+    td.save_todos([{"text": "a", "done": True}, {"text": "b", "done": False},
+                   {"text": "c", "done": False}])
+    app._todo_pill_cache = (0.0, "")
+    assert app._todo_pill() == "tasks 1/3"
+
+
+def test_todos_command(monkeypatch, tmp_path):
+    import nbchat.tools.todo as td
+    monkeypatch.setenv("NBCHAT_TODO_FILE", str(tmp_path / "todos.json"))
+    app, *_ = _make_chat_app()
+    assert "no active task list" in app._cmd_todos("")
+    td.save_todos([{"text": "step one", "done": True},
+                   {"text": "step two", "done": False}])
+    out = app._cmd_todos("")
+    assert "task list (1/2 done)" in out
+    assert "[x] step one" in out and "[ ] step two" in out
+
+
+def test_todo_note_in_system_prompt(monkeypatch, tmp_path):
+    monkeypatch.setenv("NBCHAT_TUI3_CONFIG", str(tmp_path / "c.json"))
+    monkeypatch.setenv("NBCHAT_TODO_FILE", str(tmp_path / "t.json"))
+    app, *_ = _make_chat_app()
+    assert "[TASK LIST]" in app.system_prompt
+
+
+def test_todos_listed_in_help(monkeypatch, tmp_path):
+    monkeypatch.setenv("NBCHAT_TUI3_CONFIG", str(tmp_path / "c.json"))
+    app, *_ = _make_chat_app()
+    from nbchat.tui2.app import ChatApp
+    assert "/todos" in ChatApp._TUI2_NATIVE
+    assert "/todos" in app._tui2_help_addendum()
 def _gitrepo(tmp_path):
     import subprocess as _sp
     d = tmp_path / "repo"

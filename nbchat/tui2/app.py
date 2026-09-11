@@ -169,6 +169,11 @@ class ChatApp(TerminalAgent):
         super().__init__(color=False)
         self.term = term
         self.events = events
+        # Todo/progress pill: nudge the LLM to keep a short task list
+        # (surfaced as a live pill in the status bar + the /todos command).
+        _tn = self._TODO_NOTE
+        if _tn and _tn not in self.system_prompt:
+            self.system_prompt += _tn
         # Always-on supervisor watchdog (v1 --supervisor parity).  Bound to
         # this agent; started/stopped by run().  ``None`` when disabled.
         self._supervisor_enabled = supervisor
@@ -1253,7 +1258,7 @@ class ChatApp(TerminalAgent):
                     "/team", "/browse", "/search", "/sup", "/voice",
                     "/fork", "/checkpoint", "/undo", "/find", "/diff",
                     "/export", "/plan", "/retry", "/queue", "/tpl", "/editor", "/gstatus", "/stash",
-                    "/rewind", "/pin", "/unpin", "/settings")
+                    "/rewind", "/pin", "/unpin", "/settings", "/todos")
 
     def _run_command(self, line: str) -> None:
         """Route a slash command.
@@ -1330,6 +1335,7 @@ class ChatApp(TerminalAgent):
             "  /rewind [n|restore]  drop the last N user turns (restore to undo)",
             "  /pin /unpin  pin/unpin this session (top of the picker)",
             "  /settings [k v]  view / live-tune TUI settings (theme, scroll, toasts) ",
+            "  /todos          show the live agent task list (progress pill)",
             "  @<path>      file completion (type @ + a filename, pick a match)",
             "  /compact    force a context summarisation now",
             "  /copy       copy last reply to the clipboard",
@@ -1388,6 +1394,7 @@ class ChatApp(TerminalAgent):
             "/pin": self._cmd_pin,
             "/unpin": self._cmd_unpin,
             "/settings": self._cmd_settings,
+            "/todos": self._cmd_todos,
         }
         fn = handlers.get(cmd)
         try:
@@ -2092,6 +2099,15 @@ class ChatApp(TerminalAgent):
         "turn plan mode off when ready."
     )
 
+    _TODO_NOTE = (
+        chr(10) + chr(10)
+        + "[TASK LIST] For a non-trivial, multi-step task, keep a short task "
+        + "list with the todo tool so the user can watch progress: pass the FULL "
+        + "list each time as an array of {text, done} objects (done = true when "
+        + "a step is finished), under ~8 items. Update it as you go and pass an "
+        + "empty array when the work is done."
+    )
+
     def _cmd_plan(self, arg: str = "") -> str:
         """``/plan [on|off]`` — toggle read-only research mode.
 
@@ -2751,6 +2767,37 @@ class ChatApp(TerminalAgent):
             return "risky tools -> " + ", ".join(sorted(tools))
         return f"unknown setting {key!r} (run /settings for the list)"
 
+    def _todo_pill(self) -> str:
+        """A live progress pill for the agent's task list (cached ~0.4 s)."""
+        now = time.monotonic()
+        cache = getattr(self, "_todo_pill_cache", None)
+        if cache is not None and now - cache[0] < 0.4:
+            return cache[1]
+        text = ""
+        try:
+            from nbchat.tools.todo import load_todos
+            todos = load_todos()
+            if todos:
+                done = sum(1 for t in todos if t.get("done"))
+                text = f"tasks {done}/{len(todos)}"
+        except Exception:
+            text = ""
+        self._todo_pill_cache = (now, text)
+        return text
+
+    def _cmd_todos(self, arg: str) -> str:
+        """``/todos`` — show the agent's current task list."""
+        from nbchat.tools.todo import load_todos
+        todos = load_todos()
+        if not todos:
+            return "no active task list (the agent sets one via the todo tool)"
+        done = sum(1 for t in todos if t.get("done"))
+        lines = [f"task list ({done}/{len(todos)} done):"]
+        for t in todos:
+            mark = "x" if t.get("done") else " "
+            lines.append(f"  [{mark}] {t.get('text', '')}")
+        return "\n".join(lines)
+
     def _open_picker(self) -> None:
         from nbchat.core import db
         self._modal_kind = "session"
@@ -3335,6 +3382,9 @@ class ChatApp(TerminalAgent):
         if g is not None:
             tag = ("goal" if not g.get("stopped") else "goal·done")
             parts.append(f"{tag} {g['done']}/{g['budget']}")
+        pill = self._todo_pill()
+        if pill:
+            parts.append(pill)
         return "  ".join(parts)
 
     def _build_frame(self) -> Frame:
