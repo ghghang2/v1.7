@@ -249,3 +249,45 @@ def test_approval_lines_is_tui3_override(monkeypatch, tmp_path):
     app, term, events = _make_tui3_app(monkeypatch, tmp_path)
     # The tui3 override is a distinct method (not the tui2 base method)
     assert Tui3ChatApp._approval_lines is not Tui2ChatApp._approval_lines
+
+
+# -- Phase 3: /budget (cost / token tracking) ------------------------------
+def test_budget_actual_tokens(monkeypatch, tmp_path):
+    from nbchat.core import team_metrics as _tm
+    _tm.reset_main_tokens()
+    _tm.record_tokens(1000)
+    _tm.record_tokens(250)
+    app, term, events = _make_tui3_app(monkeypatch, tmp_path)
+    app.session_id = "tui:budget"
+    out = app._cmd_budget("")
+    assert "1250" in out
+    assert "2 completions" in out
+    assert "this session" in out
+    assert "conversation size" in out
+
+
+def test_budget_reset(monkeypatch, tmp_path):
+    from nbchat.core import team_metrics as _tm
+    _tm.reset_main_tokens()
+    _tm.record_tokens(777)
+    app, term, events = _make_tui3_app(monkeypatch, tmp_path)
+    app.session_id = "tui:budget_reset"
+    out = app._cmd_budget("reset")
+    assert "reset" in out
+    # After reset, the actual tokens are zero
+    out2 = app._cmd_budget("")
+    assert "actual LLM tokens: 0" in out2
+
+
+def test_budget_dispatch(monkeypatch, tmp_path):
+    from nbchat.core import team_metrics as _tm
+    _tm.reset_main_tokens()
+    app, term, events = _make_tui3_app(monkeypatch, tmp_path)
+    app.session_id = "tui:budget_dispatch"
+    notes = []
+    app._note = lambda text: notes.append(text)
+    app._ui_refresh = lambda: None
+    app._run_command("/budget")
+    assert len(notes) == 1
+    assert "budget" in notes[0]
+    assert "/budget" in Tui3ChatApp._TUI3_NATIVE

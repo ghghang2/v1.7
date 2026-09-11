@@ -803,10 +803,28 @@ human-in-the-loop.
 - Safe: purely additive; the tui2 approval gate is unchanged. tui3 suite 19
   passed; tui2 376 + v1 79 (no regression).
 
+### Phase 3 - /budget (cost / token tracking) - DONE
+
+`/budget` shows the ACTUAL LLM token usage (across completions, from a new
+main-agent token meter), the per-session conversation summary, and an
+estimate of the current conversation's token footprint (chars / 4).
+`/budget reset` zeroes the meter. The token meter is per TUI instance (a
+close proxy for the current session).
+
+- nbchat/core/team_metrics.py: added a process-global `_MAIN_METER`
+  (separate from the /team run meter) + `main_token_stats()` +
+  `reset_main_tokens()`. `record_tokens` now reports to BOTH the main-agent
+  meter (always) and the active team meter (when a /team run is recording).
+  This is the RIGHT home for token tracking (the client already reports
+  `usage.total_tokens` on every LLM completion). 5 new tests in
+  tests/test_team_metrics_main.py.
+- nbchat/tui3/app.py: the `_cmd_budget` command (actual tokens + per-session
+  summary + estimate). 3 new tests.
+- Safe: the team run meter is unchanged (the main meter is additive). tui3
+  suite 22 passed; team_metrics main 5 passed; tui2 376 + v1 79 + core team 54
+  (no regression).
+
 ### Next phases (tracked)
 
-- **Phase 3 - `/budget`** (cost/token tracking + budgets): a cost/token view
-  with per-session totals and an optional token budget (inspired by the
-  harnesses cost tracking + LiteLLM budgets).
 - **Phase 4 - deep-agent plan loop** (strengthen `/plan`): a plan-act-reflect
   loop (inspired by LangGraph deep agents).

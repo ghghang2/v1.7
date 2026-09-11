@@ -496,9 +496,15 @@ python -m nbchat.tui --v3        # dispatch to the v3 app
   command), instead of just the tool name + a raw arg blob. The tui2
   approval gate is unchanged; this is a tui3-only rendering upgrade.
   Inspired by Google ADK tool confirmation + LangGraph human-in-the-loop.
+* **Phase 3 — `/budget`** (cost / token tracking): shows the ACTUAL LLM token
+  usage (across completions, from a new main-agent token meter), the
+  per-session conversation summary, and an estimate of the current
+  conversation's token footprint. `/budget reset` zeroes the meter. The token
+  meter is per TUI instance (a close proxy for the current session).
+  Inspired by the harnesses cost tracking + LiteLLM budgets.
 
-More phases (`/budget` cost tracking, a deeper plan-act-reflect loop) are
-tracked in `docs/research_multagent_harnesses.md` and `docs/tui3_roadmap.md`.
+More phases (a deeper plan-act-reflect loop) are tracked in
+`docs/research_multagent_harnesses.md` and `docs/tui3_roadmap.md`.
 
 ---
 

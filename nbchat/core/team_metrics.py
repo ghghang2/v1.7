@@ -71,6 +71,14 @@ class _TokenMeter:
 # reports each completion's token count into it via :func:`record_tokens`.
 _ACTIVE_METER: _TokenMeter | None = None
 
+# Process-global meter for the MAIN agent (the current TUI instance), separate
+# from the /team run's meter.  Every LLM completion reports its token count
+# here (as well as the active team meter, when a /team run is recording), so
+# a per-session ``/budget`` view (tui3 Phase 3) can read the ACTUAL token
+# usage instead of an estimate.  It is process-global (one per TUI instance),
+# which is a close proxy for the current session.
+_MAIN_METER: _TokenMeter = _TokenMeter()
+
 
 def _set_active_meter(meter: _TokenMeter | None) -> None:
     global _ACTIVE_METER
@@ -78,10 +86,34 @@ def _set_active_meter(meter: _TokenMeter | None) -> None:
 
 
 def record_tokens(total_tokens) -> None:
-    """Add *total_tokens* to the active run's meter (no-op when idle)."""
+    """Add *total_tokens* to the active run's meter and the main-agent meter.
+
+    The main-agent meter always accumulates (it backs the tui3 ``/budget``
+    view); the team run's meter only accumulates when a /team run is
+    recording.
+    """
+    _MAIN_METER.add(total_tokens)
     meter = _ACTIVE_METER
     if meter is not None:
         meter.add(total_tokens)
+
+
+def main_token_stats() -> dict:
+    """Return the main-agent token usage for this process.
+
+    A small dict ``{"total_tokens": int, "calls": int}`` (the LLM completions
+    that reported a token count).  Used by the tui3 ``/budget`` command.
+    """
+    with _MAIN_METER._lock:
+        return {"total_tokens": _MAIN_METER.total_tokens,
+                "calls": _MAIN_METER.calls}
+
+
+def reset_main_tokens() -> None:
+    """Reset the main-agent token meter (used by ``/budget reset``)."""
+    with _MAIN_METER._lock:
+        _MAIN_METER.total_tokens = 0
+        _MAIN_METER.calls = 0
 
 
 def _gpu_used_mib() -> float | None:

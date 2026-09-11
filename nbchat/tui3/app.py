@@ -61,7 +61,7 @@ class ChatApp(_Tui2ChatApp):
         """Dispatch a tui3-native slash command to its handler."""
         handlers = {
             "/trace": self._cmd_trace,
-            # "/budget": self._cmd_budget,  # Phase 3
+            "/budget": self._cmd_budget,
         }
         fn = handlers.get(cmd)
         if fn is None:
@@ -147,6 +147,51 @@ class ChatApp(_Tui2ChatApp):
         if not lines:
             return summary + "  (nothing matched the filter)"
         return summary + "\n" + "\n".join(lines)
+
+    # -- Phase 3: /budget (cost / token tracking) -------------------------
+    def _cmd_budget(self, arg: str) -> str:
+        """Show the token / cost usage for the current session.
+
+        ``/budget``            - the ACTUAL LLM token usage (from the
+          main-agent meter) + a per-session conversation summary + an
+          estimate of the current conversation's token footprint.
+        ``/budget reset``      - reset the main-agent token meter to zero.
+        """
+        if (arg or "").strip().lower() == "reset":
+            try:
+                from nbchat.core import team_metrics as _tm
+                _tm.reset_main_tokens()
+            except Exception as exc:
+                return "budget: reset failed: %s" % exc
+            return "budget: token meter reset to zero"
+
+        import nbchat.core.db as db
+        from nbchat.core import team_metrics as _tm
+
+        sid = self.session_id
+        stats = _tm.main_token_stats()
+        try:
+            rows = db.load_history(sid)
+        except Exception:
+            rows = []
+        n_user = sum(1 for r in rows if r[0] == "user")
+        n_assist = sum(1 for r in rows if r[0] == "assistant")
+        n_tool = sum(1 for r in rows if r[0] == "tool")
+        total_chars = sum(len(r[1] or "") for r in rows)
+        # Rough token estimate for the CURRENT conversation (chars / 4).
+        est_tokens = total_chars // 4
+        lines = []
+        lines.append("budget")
+        lines.append("  actual LLM tokens: %d  (across %d completion%s)" % (
+            stats["total_tokens"], stats["calls"],
+            "" if stats["calls"] == 1 else "s"))
+        lines.append("  this session:      %d you  %d nbchat  %d tools" % (
+            n_user, n_assist, n_tool))
+        lines.append("  conversation size: %d chars (~%d tokens est.)" % (
+            total_chars, est_tokens))
+        lines.append("  note: the token meter is per TUI instance (reset with "
+                     "/budget reset)")
+        return "\n".join(lines)
 
     # -- Phase 2: approval diff-preview (HITL upgrade) --------------------
     def _tool_description(self, tool: str) -> str:
