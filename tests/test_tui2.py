@@ -3128,3 +3128,131 @@ def test_plan_mode_bar_label(monkeypatch):
     assert "plan" in line.text
     app._plan_mode = False
     assert "plan" not in app._mode_bar(100).text
+
+
+# ── @-file completion (tui3) ─────────────────────────────────────────────
+
+def _fc_tree(tmp_path):
+    """A small file tree (incl. a .git dir that must be pruned)."""
+    for rel in ("alpha.py", "beta.txt", "gamma.py"):
+        (tmp_path / rel).write_text("x")
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "delta.py").write_text("x")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "config").write_text("[core]")
+    return tmp_path
+
+
+def _mk_key(name):
+    from nbchat.tui2.keys import Key
+    return Key(name=name)
+
+
+def test_filecomp_open_and_rank(monkeypatch, tmp_path):
+    tree = _fc_tree(tmp_path)
+    monkeypatch.chdir(tree)
+    app, _, _, _ = _make_chat_app()
+    app.editor.set_text("@al")
+    app._maybe_open_filecomp()
+    fc = app._filecomp
+    assert fc is not None
+    assert fc["query"] == "al"
+    assert fc["matches"][0] == "alpha.py"          # best fuzzy match first
+    assert fc["idx"] == 0
+    # .git must be pruned from the walked tree
+    assert all(".git" not in p for p in app._file_list())
+
+
+def test_filecomp_accept_replaces_token(monkeypatch, tmp_path):
+    tree = _fc_tree(tmp_path)
+    monkeypatch.chdir(tree)
+    app, _, _, _ = _make_chat_app()
+    app.editor.set_text("check @al")
+    app._maybe_open_filecomp()
+    app._filecomp_key(_mk_key("enter"))
+    assert app._filecomp is None
+    assert app.editor.text() == "check alpha.py"
+    assert app.editor.submitted is False           # enter accepted, did not send
+
+
+def test_filecomp_email_no_trigger(monkeypatch, tmp_path):
+    tree = _fc_tree(tmp_path)
+    monkeypatch.chdir(tree)
+    app, _, _, _ = _make_chat_app()
+    app.editor.set_text("mail user@example.com")
+    app._maybe_open_filecomp()
+    assert app._filecomp is None
+
+
+def test_filecomp_nav_and_esc(monkeypatch, tmp_path):
+    tree = _fc_tree(tmp_path)
+    monkeypatch.chdir(tree)
+    app, _, _, _ = _make_chat_app()
+    app.editor.set_text("@")
+    app._maybe_open_filecomp()
+    assert app._filecomp is not None
+    n = len(app._filecomp["matches"])
+    app._filecomp_key(_mk_key("down"))
+    assert app._filecomp["idx"] == min(1, n - 1)
+    app._filecomp_key(_mk_key("down"))
+    assert app._filecomp["idx"] == min(2, n - 1)
+    app._filecomp_key(_mk_key("up"))
+    assert app._filecomp["idx"] == min(1, n - 1)
+    app._filecomp_key(_mk_key("esc"))
+    assert app._filecomp is None
+
+
+def test_filecomp_tab_accepts(monkeypatch, tmp_path):
+    tree = _fc_tree(tmp_path)
+    monkeypatch.chdir(tree)
+    app, _, _, _ = _make_chat_app()
+    app.editor.set_text("@be")
+    app._maybe_open_filecomp()
+    app._filecomp_key(_mk_key("tab"))
+    assert app._filecomp is None
+    assert app.editor.text() == "beta.txt"
+
+
+def test_filecomp_frame_height(monkeypatch, tmp_path):
+    tree = _fc_tree(tmp_path)
+    monkeypatch.chdir(tree)
+    app, term, _, _ = _make_chat_app()
+    app.editor.set_text("@a")
+    app._maybe_open_filecomp()
+    fr = app._build_frame()
+    assert len(fr.lines) == term.height
+    # the completion box is rendered above the message editor
+    joined = "\n".join(ln.text for ln in fr.lines)
+    assert "alpha.py" in joined
+    assert "message" in joined
+
+
+def test_filecomp_delete_at_closes(monkeypatch, tmp_path):
+    tree = _fc_tree(tmp_path)
+    monkeypatch.chdir(tree)
+    app, _, _, _ = _make_chat_app()
+    app.editor.set_text("@a")
+    app._maybe_open_filecomp()
+    assert app._filecomp is not None
+    # Backspace twice: delete 'a' then '@' -> token gone -> modal closes.
+    app.editor.handle("backspace")
+    app._maybe_open_filecomp()
+    assert app._filecomp is not None            # '@' still present
+    app.editor.handle("backspace")
+    app._maybe_open_filecomp()
+    assert app._filecomp is None
+
+
+def test_editor_replace_range_records_undo():
+    from nbchat.tui2.editor import LineEditor
+    ed = LineEditor()
+    ed.set_text("hello world")
+    ed.replace_range(0, 5, "goodbye")
+    assert ed.lines[ed.cursor_line] == "goodbye world"
+    assert ed.cursor_col == 7
+    ed.undo()
+    assert ed.lines[ed.cursor_line] == "hello world"
+    # Clamping out-of-range bounds is safe.
+    ed.replace_range(-5, 999, "X")
+    assert ed.lines[ed.cursor_line] == "X"

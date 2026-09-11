@@ -298,6 +298,19 @@ class LineEditor:
         if before != text:
             self._record(_Edit(0, 0, before, text))
 
+    def replace_range(self, start: int, end: int, text: str) -> None:
+        """Replace ``[start, end)`` on the current line with *text*
+        and place the cursor just after the inserted text.  Records an
+        undo point.  Used for @-file completion."""
+        def do() -> None:
+            line = self.lines[self.cursor_line]
+            s = max(0, min(start, len(line)))
+            e = max(s, min(end, len(line)))
+            self.lines[self.cursor_line] = line[:s] + text + line[e:]
+            self.cursor_col = s + len(text)
+        self._apply(do)
+        self._clamp_cursor()
+
     def clear(self) -> None:
         if self.lines == [""] and not self._undo:
             return

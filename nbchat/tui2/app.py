@@ -36,6 +36,7 @@ from . import chat as chatc
 from .components import Box, Container, Loader, StatusLine, Text, _SPINNER_FRAMES, blank
 from .editor import LineEditor
 from .frame import Frame, Line, Segment, Style
+from .fuzzy import fuzzy_rank
 from .theme import DARK
 from . import theme
 from .keys import Key
@@ -270,6 +271,12 @@ class ChatApp(TerminalAgent):
         self._logsearch = None
         self._search_matches = []
         self._search_idx = 0
+        # @-file completion (tui3): active while an ``@token`` sits
+        # before the cursor.  ``_filecomp`` = {query, matches, idx} or None;
+        # ``_file_list_cache`` = (cwd, [rel paths]) so the tree is walked
+        # once per cwd, not per keystroke.
+        self._filecomp = None
+        self._file_list_cache = None
         # Click / drag-to-copy (tui3 wave 3b): a mouse press in the log
         # region records the anchor frame row; a release copies the range
         # [anchor .. release] (a single click copies one line).  The copy
@@ -743,6 +750,13 @@ class ChatApp(TerminalAgent):
         if key.name == "ctrl+r":
             self._open_search()
             return
+        # @-file completion modal (tui3): while open it captures the
+        # nav/accept keys (up/down/enter/tab/esc); printable chars and
+        # backspace fall through to the editor (which grows/shrinks the
+        # @token) and _maybe_open_filecomp re-ranks live below.
+        if self._filecomp is not None and self._filecomp_key(key):
+            self._ui_refresh()
+            return
         # Arrow-key history recall: Up walks to older inputs, Down walks
         # back toward the newest and then restores the in-progress draft.
         if key.name == "up":
@@ -786,10 +800,13 @@ class ChatApp(TerminalAgent):
         self.editor.handle(key.name, _key_text(key))
         if self.editor.submitted:
             self.editor.submitted = False
+            self._filecomp = None  # submitting closes any completion
             text = self.editor.text().strip()
             self.editor.clear()
             if text:
                 self._submit(text)
+        else:
+            self._maybe_open_filecomp()
         self._ui_refresh()
 
     def _submit(self, text: str) -> None:
@@ -1044,6 +1061,7 @@ class ChatApp(TerminalAgent):
             "  /diff [--stat] [label]  review tracked-file changes (colorized)",
             "  /export [path]  save this session as a markdown file",
             "  /plan [on|off]  read-only research mode (blocks file edits)",
+            "  @<path>      file completion (type @ + a filename, pick a match)",
             "  /compact    force a context summarisation now",
             "  /copy       copy last reply to the clipboard",
             "  /btw <q>    side question, kept out of this session",
@@ -1057,6 +1075,7 @@ class ChatApp(TerminalAgent):
             "  Ctrl+L      session picker (bare /load = picker)",
             "  Ctrl+P      command palette    Ctrl+R reverse search",
             "  Ctrl+O      browse mode (j/k scroll the log)",
+            "  @<name>     file completion (up/down pick, Enter/Tab, Esc)",
             "  PgUp/PgDn   scrollback         Home/End top/bottom",
         ]
         return nl.join(rows)
@@ -2270,6 +2289,145 @@ class ChatApp(TerminalAgent):
         self.editor.handle("paste", text)
         self._ui_refresh()
 
+    # ── @-file completion (tui3) ─────────────────────────────────────────
+
+    def _active_at_token(self):
+        """Return ``(start, end, query)`` for the active ``@token`` on the
+        current editor line, or None.  The token is the run of
+        non-whitespace from the last ``@`` (preceded by line-start or
+        whitespace) up to the cursor.  An ``@`` inside an email
+        (``user@x``) is not a token start because it is not preceded by
+        whitespace."""
+        ed = self.editor
+        line = ed.lines[ed.cursor_line]
+        col = ed.cursor_col
+        seg = line[:col]
+        at = seg.rfind("@")
+        if at == -1:
+            return None
+        query = seg[at + 1:]
+        if " " in query or "\t" in query:
+            return None
+        if at > 0 and not line[at - 1].isspace():
+            return None
+        return at, col, query
+
+    def _file_list(self):
+        """Relative file+dir paths under cwd, walked once per cwd (cached).
+        Directories carry a trailing ``/``.  Hidden and VCS/build dirs are
+        pruned; the walk is capped so a huge tree never hangs a keystroke."""
+        import os as _os
+        cwd = _os.getcwd()
+        cache = self._file_list_cache
+        if cache is not None and cache[0] == cwd:
+            return cache[1]
+        ignore = {".git", "node_modules", "__pycache__", ".venv", "venv",
+                  "dist", "build", ".idea", ".pytest_cache", ".mypy_cache",
+                  ".ruff_cache", ".tox", ".eggs"}
+        paths: list = []
+        cap = 20000
+        for root, dirs, files in _os.walk(cwd):
+            dirs[:] = [d for d in dirs
+                       if d not in ignore and not d.startswith(".")]
+            rel = _os.path.relpath(root, cwd)
+            base = "" if rel == "." else rel.replace(_os.sep, "/")
+            prefix = base + "/" if base else ""
+            for d in dirs:
+                if len(paths) >= cap:
+                    break
+                paths.append(prefix + d + "/")
+            for f in files:
+                if len(paths) >= cap:
+                    break
+                paths.append(prefix + f)
+        self._file_list_cache = (cwd, paths)
+        return paths
+
+    def _filecomp_cap(self):
+        h = self.term.height
+        return max(3, min(6, h - 12))
+
+    def _file_matches(self, query):
+        paths = self._file_list()
+        cap = self._filecomp_cap()
+        q = (query or "").strip()
+        if q:
+            ranked = fuzzy_rank(q, paths, limit=cap)
+            return [p for p, _m in ranked][:cap]
+        return paths[:cap]
+
+    def _maybe_open_filecomp(self):
+        tok = self._active_at_token()
+        if tok is None:
+            if self._filecomp is not None:
+                self._filecomp = None
+            return
+        start, end, query = tok
+        matches = self._file_matches(query)
+        fc = self._filecomp
+        if fc is None:
+            self._filecomp = {"query": query, "matches": matches,
+                              "idx": 0, "start": start, "end": end}
+        else:
+            fc["query"] = query
+            fc["matches"] = matches
+            fc["start"] = start
+            fc["end"] = end
+            if fc["idx"] >= len(matches):
+                fc["idx"] = max(0, len(matches) - 1)
+
+    def _filecomp_key(self, key):
+        fc = self._filecomp
+        name = key.name
+        if name in ("up", "k"):
+            fc["idx"] = max(0, fc["idx"] - 1)
+            return True
+        if name in ("down", "j"):
+            fc["idx"] = min(max(0, len(fc["matches"]) - 1), fc["idx"] + 1)
+            return True
+        if name in ("enter", "tab"):
+            self._filecomp_accept()
+            return True
+        if name in ("escape", "esc"):
+            self._filecomp = None
+            return True
+        return False  # let it reach the editor (grows/shrinks the @token)
+
+    def _filecomp_accept(self):
+        fc = self._filecomp
+        self._filecomp = None
+        if not fc or not fc.get("matches"):
+            return
+        idx = min(fc["idx"], len(fc["matches"]) - 1)
+        chosen = fc["matches"][idx]
+        ed = self.editor
+        tok = self._active_at_token()
+        if tok is None:
+            ed.replace_range(ed.cursor_col, ed.cursor_col, chosen)
+        else:
+            start, end, _q = tok
+            ed.replace_range(start, end, chosen)
+
+    def _filecomp_render(self, w):
+        fc = self._filecomp
+        if fc is None or not fc.get("matches"):
+            return []
+        inner = max(w - 4, 8)
+        cap = self._filecomp_cap()
+        matches = fc["matches"][:cap]
+        title = "@" + fc["query"] if fc.get("query") else "@ files"
+        lines = []
+        for i, pth in enumerate(matches):
+            shown = pth if len(pth) <= inner - 2 else pth[:inner - 2]
+            if i == fc["idx"]:
+                lines.append(Line(segments=[
+                    Segment("\u276f ", DARK.accent),
+                    Segment(" " + shown, DARK.accent),
+                ]))
+            else:
+                lines.append(_to_lines("   " + shown, inner)[0])
+        return Box(title=title, lines=lines, clip=True).render(w)
+
     def _scroll_log(self, delta: int) -> None:
         """PgUp/PgDn: page through the conversation log (lines up from the
         bottom).  The offset is clamped to the current content height."""
@@ -2457,13 +2615,16 @@ class ChatApp(TerminalAgent):
         # height, capped to the terminal).
         if self._approval is not None:
             picker_rows = []
+            fc_rows = []
             bottom_h = 5
         elif self._picker is not None:
             picker_rows = self._picker.render(w)
+            fc_rows = []
             bottom_h = min(len(picker_rows), max(5, h - 6))
         else:
             picker_rows = []
-            bottom_h = 3
+            fc_rows = self._filecomp_render(w)
+            bottom_h = 3 + len(fc_rows)
         # In-TUI toasts (transient; rendered just above the input box).
         self._notify.prune()
         toast_lines = self._notify.render_one(w)
@@ -2501,6 +2662,7 @@ class ChatApp(TerminalAgent):
                 shown = shown[:bottom_h - 1] + [shown[-1]]
             rows.extend(shown)
         else:
+            rows.extend(fc_rows)  # @-completion box (above the editor)
             rows.extend(Box(
                 title="message", lines=self._editor_lines(),
                 clip=True,

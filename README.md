@@ -208,6 +208,10 @@ shell command (`!ls`); `!!` also stores the output for later.
   tool gate and a read-only note is added to the system prompt, so the agent
   researches and proposes a plan instead of editing.  The mode bar shows
   `plan`.  Pairs with the safety suite (`/checkpoint` → `/diff` → `/undo`).
+- `@<file>` — file completion.  Type `@` then a filename; a fuzzy-ranked
+  box appears above the editor: `↑`/`↓` pick, `Enter`/`Tab` inserts the path
+  in place of the `@`-token (undoable), `Esc` cancels.  The `@` inside an
+  email address is ignored; directories carry a trailing `/`.
 - `/hotkeys` — the keybinding reference.
 - `/copy` — copies the last assistant message to the clipboard (OSC 52;
   silent no-op where the terminal lacks clipboard support).

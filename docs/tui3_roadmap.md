@@ -225,3 +225,5 @@ note to the system prompt (removed cleanly on exit), and (3) shows `plan` in
 the mode bar.  Safe: it only ever blocks tools and annotates — it can never
 crash or corrupt state.  The "explore without risk" companion to the
 `/checkpoint` → `/diff` → `/undo` safety workflow.
+
+**@-file completion:** type `@` then a filename to get a fuzzy-ranked box of matching paths above the editor.  `↑`/`↓` move the selection, `Enter`/`Tab` replaces the `@`-token with the chosen path (via a new additive `LineEditor.replace_range()` that records an undo point), and `Esc` cancels.  Detection lives in `_active_at_token` (the `@` must be at a token start, so `user@example.com` is ignored); the cwd tree is walked once per cwd and cached (`_file_list`, pruning `.git`/`node_modules`/hidden dirs and capping at 20k), ranked with the existing `fuzzy_rank`. Printable chars and backspace pass through to the editor and re-rank live; the completion box is a `Box` rendered above the message editor and is height-capped so the frame stays exactly `term.height`.  The "reference a file by path" primitive the model/user both want in a coding harness.
