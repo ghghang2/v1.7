@@ -2055,6 +2055,58 @@ def test_ctl_result(tmp_path):
         assert r["data"]["session"] == "s1"
     finally:
         srv.stop()
+def test_ctl_log_command(tmp_path):
+    import os
+    from nbchat.tui2 import ctl
+    path = str(tmp_path / "ctl.sock")
+    msgs = [{"role": "user", "text": "hi"}, {"role": "assistant", "text": "hello"}]
+    srv = ctl.ControlServer(
+        path,
+        dispatch=lambda fn: None,
+        status_fn=lambda: {"busy": False},
+        sessions_fn=lambda: [],
+        log_fn=lambda limit: {"session": "s1",
+                              "messages": msgs[-limit:] if limit else msgs},
+    )
+    assert srv.start()
+    try:
+        r = ctl.call(path, "log")
+        assert r["ok"] and len(r["data"]["messages"]) == 2
+        assert r["data"]["messages"][0]["role"] == "user"
+        # with a limit (arg="1") it caps to the last message
+        r2 = ctl.call(path, "log", "1")
+        assert r2["ok"] and len(r2["data"]["messages"]) == 1
+        assert r2["data"]["messages"][0]["role"] == "assistant"
+        # bad limit arg -> treated as 0 (all)
+        r3 = ctl.call(path, "log", "xyz")
+        assert r3["ok"] and len(r3["data"]["messages"]) == 2
+    finally:
+        srv.stop()
+
+def test_ctl_log_unsupported(tmp_path):
+    from nbchat.tui2 import ctl
+    srv, path = _ctl_server(tmp_path)  # no log_fn -> unsupported
+    try:
+        r = ctl.call(path, "log")
+        assert not r["ok"] and "unsupported" in r["error"]
+    finally:
+        srv.stop()
+
+def test_log_fn_caps_messages():
+    # The _log closure caps to the last N messages.  Exercise the same
+    # logic with a fake history (mirrors the db.get_history shape).
+    from nbchat.core import db
+    hist = [(1, "user", "a"), (2, "assistant", "b"), (3, "user", "c"), (4, "assistant", "d")]
+    def _log(limit=0):
+        msgs = [{"role": role, "text": content} for _s, role, content in hist if content]
+        if limit and limit > 0:
+            msgs = msgs[-limit:]
+        return {"session": "s1", "messages": msgs}
+    assert len(_log(0)["messages"]) == 4  # no limit -> all
+    assert len(_log(2)["messages"]) == 2  # capped to the last 2
+    assert _log(2)["messages"][0]["role"] == "user"  # the last two are c, d
+    assert _log(2)["messages"][1]["text"] == "d"
+
 
 
 # ── tui3 wave 6: headless / background agent (--bg + nbchat-ctl bg) ────

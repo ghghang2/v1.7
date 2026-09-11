@@ -4276,6 +4276,23 @@ class ChatApp(TerminalAgent):
             except Exception:
                 return {"session": sid, "text": ""}
 
+        def _log(limit: int = 0) -> list:
+            # Read-only: the recent conversation for this session (capped).
+            # Feeds the "reattach" view (watch a background agent's output).
+            from nbchat.core import db
+            sid = self.session_id
+            try:
+                msgs = []
+                for _s, role, content in db.get_history(sid):
+                    if not content:
+                        continue
+                    msgs.append({"role": role, "text": content})
+                if limit and limit > 0:
+                    msgs = msgs[-limit:]
+                return {"session": sid, "messages": msgs}
+            except Exception:
+                return {"session": sid, "messages": []}
+
         def _theme(name: str) -> None:
             out = self._cmd_theme(name)
             if out:
@@ -4294,6 +4311,7 @@ class ChatApp(TerminalAgent):
             status_fn=_status,
             sessions_fn=_sessions,
             result_fn=_result,
+            log_fn=_log,
             theme_fn=_theme,
             send_fn=_send,
             quit_fn=_quit,

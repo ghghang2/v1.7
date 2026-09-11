@@ -54,12 +54,14 @@ class ControlServer:
                  theme_fn: Optional[Callable] = None,
                  send_fn: Optional[Callable] = None,
                  quit_fn: Optional[Callable] = None,
-                 result_fn: Optional[Callable] = None) -> None:
+                 result_fn: Optional[Callable] = None,
+                 log_fn: Optional[Callable] = None) -> None:
         self.path = path
         self.dispatch = dispatch          # fn(closure) -> enqueue on UI thread
         self.status_fn = status_fn        # fn() -> dict   (read-only)
         self.sessions_fn = sessions_fn    # fn() -> list   (read-only)
         self.result_fn = result_fn        # fn() -> dict   (read-only)
+        self.log_fn = log_fn              # fn(limit) -> list  (read-only)
         self.theme_fn = theme_fn          # fn(name) on UI thread
         self.send_fn = send_fn            # fn(text) on UI thread
         self.quit_fn = quit_fn            # fn() on UI thread
@@ -160,6 +162,15 @@ class ControlServer:
                 if self.result_fn is None:
                     return {"ok": False, "error": "result unsupported"}
                 return {"ok": True, "data": self.result_fn()}
+            if cmd == "log":
+                if self.log_fn is None:
+                    return {"ok": False, "error": "log unsupported"}
+                # arg may be an int (max messages) or empty -> default.
+                try:
+                    limit = int(str(arg).strip()) if str(arg).strip() else 0
+                except ValueError:
+                    limit = 0
+                return {"ok": True, "data": self.log_fn(limit)}
             if cmd == "theme":
                 if self.theme_fn is None:
                     return {"ok": False, "error": "theme unsupported"}
@@ -295,7 +306,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     import sys
     argv = list(argv if argv is not None else sys.argv[1:])
     if not argv or argv[0] in ("-h", "--help", "help"):
-        print("usage: python -m nbchat.tui2.ctl <status|sessions|result|theme|send|quit> [arg]")
+        print("usage: python -m nbchat.tui2.ctl <status|sessions|result|log|theme|send|quit> [arg]")
+        print("       log [N] -> the recent conversation for the session (N = max messages)")
         print("       python -m nbchat.tui2.ctl bg [--session ID] [initial prompt...]")
         return 0 if argv else 2
     cmd = argv[0].lower()

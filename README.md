@@ -421,6 +421,14 @@ shell command (`!ls`); `!!` also stores the output for later.
   Read-only commands answer synchronously; mutating ones are enqueued onto
   the UI thread and acked immediately (`{"queued": true}`), so a control
   client can never block or crash the TUI.
+
+  `log [N]` returns the recent conversation for the session (N = max
+  messages) — the "reattach" read path, so a client can watch a background
+  agent's output without a second terminal:
+
+  ```
+  NBCHAT_CTL_SOCKET=~/.nbchat/tui2-bg.sock python -m nbchat.tui2.ctl log 20
+  ```
 - **Graceful terminal disconnect.**  When the terminal drops (SSH drop /
   terminal closed -> `SIGHUP`) during a running turn, the TUI flags the
   disconnect and, on exit, gives the in-flight turn a bounded chance (default

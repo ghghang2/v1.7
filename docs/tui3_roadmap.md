@@ -676,3 +676,25 @@ during a running turn no longer loses the work.
   " half. 5 tests (no-op when no SIGHUP; joins a live turn; no-op when no
   turn; kill switch; handler sets flag). tui2 suite 367 passed; full suite
   741 green (367+79+295).
+
+## tui3: control-socket `log` command (reattach read path, herdr #10)
+
+**`log` command** - the read path of the "reattach" half of herdr #10 (a
+safe, scoped slice). The `--bg` mode already keeps the agent alive headless
+(driven via the control socket); this adds a way to READ the running
+agent's conversation, so a client can watch a background agent's output
+without a second terminal.
+
+- tui2/ctl.py:
+  - `ControlServer.__init__` gains an optional `log_fn` (read-only).
+  - `_process` handles `log [N]` (N = max messages; bad/empty N -> all).
+  - CLI usage updated; `nbchat-ctl log [N]` works via the generic path.
+- tui2/app.py:
+  - `_log(limit)` closure in `_start_control` - reads the session
+    conversation from the DB (capped), returns `{"session", "messages"}`.
+  - Wired as `log_fn` on the `ControlServer`.
+- Safe: purely additive, read-only (a DB read); never touches the UI thread;
+  an absent `log_fn` -> `{"ok": false, "error": "log unsupported"}` (old
+  behaviour for servers built without it). 3 tests (command dispatch +
+  limit parsing; unsupported when no log_fn; the cap logic). tui2 suite 370
+  passed; full suite 744 green (370+79+295).
