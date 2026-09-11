@@ -357,3 +357,118 @@ def test_reflect_dispatch_starts_thread(monkeypatch, tmp_path):
         _time.sleep(0.02)
     assert started["n"] >= 1
     assert "/reflect" in Tui3ChatApp._TUI3_NATIVE
+
+
+# -- Candidate A: /verify (verifier-driven process score) -----------------
+def _seed_verify(db, sid):
+    """Seed a session with JSON tool results (the real tool flow)."""
+    db.log_message(sid, "user", "please run the test suite and fix failures")
+    db.log_tool_msg(sid, "vt1", "run_command", "cmd=pytest",
+                    '{"stdout": "collected 5", "stderr": "", "exit_code": 1}')
+    db.log_tool_msg(sid, "vt2", "run_tests", "cmd=pytest",
+                    '{"passed": 3, "failed": 2, "errors": 0, "output": "3 failed"}')
+    db.log_message(sid, "assistant", "two tests are failing; fixing them now")
+
+
+def test_verify_empty(monkeypatch, tmp_path):
+    import nbchat.core.db as db
+    app, term, events = _make_tui3_app(monkeypatch, tmp_path)
+    app.session_id = "tui:verr"
+    out = app._cmd_verify("")
+    assert "no test/build/lint results" in out
+
+
+def test_verify_run_tests_score(monkeypatch, tmp_path):
+    import nbchat.core.db as db
+    app, term, events = _make_tui3_app(monkeypatch, tmp_path)
+    sid = "tui:vtests"
+    _seed_verify(db, sid)
+    app.session_id = sid
+    out = app._cmd_verify("")
+    # The MOST RECENT verifier is run_tests (3 passed, 2 failed) -> 60%
+    assert "verifier score  60%" in out
+    assert "source: run_tests" in out
+    assert "passed 3" in out
+    assert "failed 2" in out
+    assert "NOT clean" in out
+
+
+def test_verify_clean_run_tests(monkeypatch, tmp_path):
+    import nbchat.core.db as db
+    app, term, events = _make_tui3_app(monkeypatch, tmp_path)
+    sid = "tui:vclean"
+    db.log_message(sid, "user", "run the tests")
+    db.log_tool_msg(sid, "vc1", "run_tests", "cmd=pytest",
+                    '{"passed": 15, "failed": 0, "errors": 0, "output": "15 passed"}')
+    app.session_id = sid
+    out = app._cmd_verify("")
+    assert "verifier score  100%" in out
+    assert "clean - all checks passed" in out
+
+
+def test_verify_run_command_exit_code(monkeypatch, tmp_path):
+    import nbchat.core.db as db
+    app, term, events = _make_tui3_app(monkeypatch, tmp_path)
+    sid = "tui:vcmd"
+    db.log_message(sid, "user", "build the project")
+    db.log_tool_msg(sid, "vb1", "run_command", "cmd=make",
+                    '{"stdout": "done", "stderr": "", "exit_code": 0}')
+    app.session_id = sid
+    out = app._cmd_verify("")
+    assert "source: run_command" in out
+    assert "verifier score  100%" in out
+    assert "exit-code based" in out
+
+
+def test_verify_pill_run_tests_failing(monkeypatch, tmp_path):
+    import nbchat.core.db as db
+    app, term, events = _make_tui3_app(monkeypatch, tmp_path)
+    sid = "tui:vpill1"
+    _seed_verify(db, sid)
+    app.session_id = sid
+    pill = app._verify_pill()
+    # 2 failed + 0 errors -> "tests 2F"
+    assert pill == "tests 2F"
+
+
+def test_verify_pill_run_tests_clean(monkeypatch, tmp_path):
+    import nbchat.core.db as db
+    app, term, events = _make_tui3_app(monkeypatch, tmp_path)
+    sid = "tui:vpill2"
+    db.log_message(sid, "user", "run the tests")
+    db.log_tool_msg(sid, "vp2", "run_tests", "cmd=pytest",
+                    '{"passed": 15, "failed": 0, "errors": 0, "output": "15 passed"}')
+    app.session_id = sid
+    pill = app._verify_pill()
+    assert pill == "tests 15/15"
+
+
+def test_verify_pill_run_command(monkeypatch, tmp_path):
+    import nbchat.core.db as db
+    app, term, events = _make_tui3_app(monkeypatch, tmp_path)
+    sid = "tui:vpill3"
+    db.log_message(sid, "user", "build")
+    db.log_tool_msg(sid, "vp3", "run_command", "cmd=make",
+                    '{"stdout": "ok", "stderr": "", "exit_code": 0}')
+    app.session_id = sid
+    assert app._verify_pill() == "check ok"
+
+
+def test_status_right_appends_verify_pill(monkeypatch, tmp_path):
+    import nbchat.core.db as db
+    app, term, events = _make_tui3_app(monkeypatch, tmp_path)
+    sid = "tui:vpill4"
+    _seed_verify(db, sid)
+    app.session_id = sid
+    line = app._status_right()
+    assert "tests 2F" in line
+
+
+def test_verify_dispatch_intercepted(monkeypatch, tmp_path):
+    import nbchat.core.db as db
+    app, term, events = _make_tui3_app(monkeypatch, tmp_path)
+    captured = []
+    app._note = lambda text: captured.append(text)
+    app._run_command("/verify")
+    assert captured
+    assert "verifier score" in captured[0] or "no test/build/lint" in captured[0]

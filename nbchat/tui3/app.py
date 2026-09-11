@@ -17,6 +17,7 @@ tui3 feature wave (implemented in phases, each tested + committed + pushed):
 from __future__ import annotations
 
 import sys
+import time
 
 from typing import List
 
@@ -38,7 +39,7 @@ class ChatApp(_Tui2ChatApp):
     """
 
     #: tui3-native slash commands (intercepted before the tui2 dispatch).
-    _TUI3_NATIVE = ("/trace", "/budget", "/reflect")
+    _TUI3_NATIVE = ("/trace", "/budget", "/reflect", "/verify")
 
     def __init__(self, term, events, *args, **kwargs):
         super().__init__(term, events, *args, **kwargs)
@@ -63,6 +64,7 @@ class ChatApp(_Tui2ChatApp):
             "/trace": self._cmd_trace,
             "/budget": self._cmd_budget,
             "/reflect": self._cmd_reflect,
+            "/verify": self._cmd_verify,
         }
         fn = handlers.get(cmd)
         if fn is None:
@@ -316,6 +318,135 @@ class ChatApp(_Tui2ChatApp):
         return Box(title="approve tool", lines=lines, clip=True).render(w)
 
 
+
+    # -- Candidate A: /verify (verifier-driven process score) --------------
+    # Inspired by T1 (Terminal Agent RL: per-task verifiers as dense process
+    # rewards), Proof-Carrying Cognition (the verification gap), and
+    # LLM-as-a-Judge Is Not an Oracle (gate on deterministic verification,
+    # not the LLM judge).
+    def _verify_data(self) -> dict:
+        """Read the most recent test/build/lint tool results from the DB.
+
+        Returns a dict with keys: ``passed``, ``failed``, ``errors``,
+        ``total``, ``clean``, ``source``, ``error``.  ``source`` is the
+        tool that produced the result (``run_tests``, ``run_command``, or
+        ``none``); ``clean`` is True when the latest verifier shows no
+        failures.  Walks the history most-recent-first so the score always
+        reflects the LATEST verifier result.
+        """
+        import json
+
+        import nbchat.core.db as db
+
+        sid = self.session_id
+        out = {"passed": 0, "failed": 0, "errors": 0, "total": 0,
+               "clean": False, "source": "none", "error": ""}
+        try:
+            rows = db.load_history(sid)
+        except Exception as exc:
+            out["error"] = str(exc)
+            return out
+        for row in reversed(rows):
+            try:
+                role, content, tool_id, tool_name, tool_args, error_flag = row
+            except Exception:
+                continue
+            if role != "tool":
+                continue
+            if tool_name == "run_tests":
+                try:
+                    data = json.loads(content)
+                except Exception:
+                    data = None
+                if isinstance(data, dict) and "passed" in data:
+                    passed = int(data.get("passed", 0) or 0)
+                    failed = int(data.get("failed", 0) or 0)
+                    errors = int(data.get("errors", 0) or 0)
+                    out.update({
+                        "passed": passed, "failed": failed, "errors": errors,
+                        "total": passed + failed + errors,
+                        "clean": (failed == 0 and errors == 0 and passed > 0),
+                        "source": "run_tests",
+                    })
+                    return out
+            elif tool_name == "run_command":
+                # A build/lint shell command: use the exit code / error flag.
+                ok = not bool(error_flag)
+                try:
+                    data = json.loads(content)
+                    if isinstance(data, dict) and "exit_code" in data:
+                        ok = (int(data.get("exit_code") or 0) == 0)
+                except Exception:
+                    pass
+                out.update({
+                    "passed": 1 if ok else 0, "failed": 0 if ok else 1,
+                    "errors": 0, "total": 1, "clean": bool(ok),
+                    "source": "run_command",
+                })
+                return out
+        return out
+
+    def _cmd_verify(self, arg: str) -> str:
+        """Show the verifier-driven process score for the current session.
+
+        ``/verify`` reads the DB for the most recent ``run_tests`` tool
+        result (or, failing that, the most recent ``run_command`` result)
+        and reports a 0-100 verifier score + the pass/fail breakdown.  This
+        is the T1 recipe: the score is driven by MEASURED outcomes (tests
+        passing, exit codes), never by the model self-reporting progress.
+        """
+        d = self._verify_data()
+        if d.get("error"):
+            return "verify: failed to load history: %s" % d["error"]
+        if d["source"] == "none":
+            return ("verify: no test/build/lint results yet in this session "
+                    "(run the run_tests tool to populate the score)")
+        score = int(round(100.0 * d["passed"] / d["total"])) if d["total"] else 0
+        lines = []
+        lines.append("verifier score  %d%%   (source: %s)" % (score, d["source"]))
+        if d["source"] == "run_tests":
+            lines.append("  passed %d   failed %d   errors %d   total %d"
+                         % (d["passed"], d["failed"], d["errors"], d["total"]))
+        else:
+            lines.append("  %s   (exit-code based)"
+                         % ("OK" if d["clean"] else "FAILED"))
+        if d["clean"]:
+            lines.append("  clean - all checks passed")
+        else:
+            lines.append("  NOT clean - fix the failures before proceeding")
+        return chr(10).join(lines)
+
+    def _verify_pill(self) -> str:
+        """A live status-line pill showing the latest verifier result."""
+        now = time.monotonic()
+        cache = getattr(self, "_verify_pill_cache", None)
+        if cache is not None and now - cache[0] < 0.4:
+            return cache[1]
+        text = ""
+        try:
+            d = self._verify_data()
+            if d["source"] == "run_tests" and d["total"] > 0:
+                if d["failed"] or d["errors"]:
+                    text = "tests %dF" % (d["failed"] + d["errors"])
+                else:
+                    text = "tests %d/%d" % (d["passed"], d["total"])
+            elif d["source"] == "run_command":
+                text = "check " + ("ok" if d["clean"] else "FAIL")
+        except Exception:
+            text = ""
+        self._verify_pill_cache = (now, text)
+        return text
+
+    def _status_right(self) -> str:
+        """The tui2 status line with the tui3 verifier pill appended."""
+        base = super()._status_right()
+        try:
+            pill = self._verify_pill()
+            if pill:
+                base = (base + "  " + pill) if base else pill
+        except Exception:
+            pass
+        return base
 
 def run(argv: list | None = None) -> int:
     """``python -m nbchat.tui3`` entry point.
