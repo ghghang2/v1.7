@@ -39,7 +39,7 @@ class ChatApp(_Tui2ChatApp):
     """
 
     #: tui3-native slash commands (intercepted before the tui2 dispatch).
-    _TUI3_NATIVE = ("/trace", "/budget", "/reflect", "/verify", "/health")
+    _TUI3_NATIVE = ("/trace", "/budget", "/reflect", "/verify", "/health", "/audit")
 
     def __init__(self, term, events, *args, **kwargs):
         super().__init__(term, events, *args, **kwargs)
@@ -66,6 +66,7 @@ class ChatApp(_Tui2ChatApp):
             "/reflect": self._cmd_reflect,
             "/verify": self._cmd_verify,
             "/health": self._cmd_health,
+            "/audit": self._cmd_audit,
         }
         fn = handlers.get(cmd)
         if fn is None:
@@ -591,6 +592,108 @@ class ChatApp(_Tui2ChatApp):
             text = ""
         self._health_pill_cache = (now, text)
         return text
+
+    # -- Candidate C: /audit (provenance / audit panel) -------------------
+    # Inspired by Audit Without Verification (accountability layers RELAY,
+    # don't CHECK - filed reports are the primary artifact) + the "memory
+    # is agent-owned local data with provenance" theme (res-labs).
+    def _classify_claim(self, row) -> str:
+        """Classify a tool row by VERIFICATION STATUS.
+
+        Returns one of: ``verified`` (backed by an objective signal - a
+        clean test result or a zero exit code), ``unverified`` (errored, or
+        a test/exit-code result that FAILED), or ``relayed`` (a text summary
+        with no objective check).  Only ``run_tests`` and ``run_command``
+        carry an objective signal; every other tool is ``relayed``.
+        """
+        import json
+
+        try:
+            role, content, tool_id, tool_name, tool_args, error_flag = row
+        except Exception:
+            return "relayed"
+        if role != "tool":
+            return "relayed"
+        if error_flag:
+            return "unverified"
+        if tool_name == "run_tests":
+            try:
+                data = json.loads(content)
+            except Exception:
+                data = None
+            if isinstance(data, dict) and "passed" in data:
+                passed = int(data.get("passed", 0) or 0)
+                failed = int(data.get("failed", 0) or 0)
+                errors = int(data.get("errors", 0) or 0)
+                return "verified" if (passed > 0 and failed == 0 and errors == 0) else "unverified"
+            return "relayed"
+        if tool_name == "run_command":
+            try:
+                data = json.loads(content)
+            except Exception:
+                data = None
+            if isinstance(data, dict) and "exit_code" in data:
+                return "verified" if (int(data.get("exit_code") or 0) == 0) else "unverified"
+            return "relayed"
+        return "relayed"
+
+    def _cmd_audit(self, arg: str) -> str:
+        """Show the provenance / audit panel for the current session.
+
+        ``/audit`` reads the DB history and tags every tool call by
+        VERIFICATION STATUS - verified (backed by an objective signal: a
+        clean test result or a zero exit code), relayed (a text summary with
+        no objective check), or unverified (errored / no result).  This
+        defends against "Audit Without Verification": it shows HOW MUCH of
+        the session's claims are actually checked vs. merely relayed.
+        """
+        import nbchat.core.db as db
+
+        sid = self.session_id
+        try:
+            rows = db.load_history(sid)
+        except Exception as exc:
+            return "audit: failed to load history: %s" % exc
+        if not rows:
+            return "audit: no history for this session yet"
+        n_verified = n_relayed = n_unverified = 0
+        recent = []
+        for row in rows:
+            try:
+                role = row[0]
+            except Exception:
+                continue
+            if role != "tool":
+                continue
+            status = self._classify_claim(row)
+            if status == "verified":
+                n_verified += 1
+            elif status == "unverified":
+                n_unverified += 1
+            else:
+                n_relayed += 1
+            try:
+                tool_name = row[3]
+            except Exception:
+                tool_name = "?"
+            recent.append((tool_name, status))
+        total = n_verified + n_relayed + n_unverified
+        if total == 0:
+            return "audit: no tool calls in this session yet"
+        lines = []
+        lines.append("provenance  %d tool calls" % total)
+        lines.append("  verified   %d   (objective: clean tests / exit 0)" % n_verified)
+        lines.append("  relayed    %d   (text summary, no objective check)" % n_relayed)
+        lines.append("  unverified %d   (errored / failed check)" % n_unverified)
+        if recent:
+            lines.append("  recent claims:")
+            for tool_name, status in recent[-5:]:
+                lines.append("    [%s] %s" % (status, tool_name))
+        if n_unverified > 0:
+            lines.append("  NOTE: %d unverified claim(s) - work the agent could not confirm" % n_unverified)
+        elif n_relayed > 0 and n_verified == 0:
+            lines.append("  NOTE: every claim is relayed (no objective check yet) - run the tests")
+        return chr(10).join(lines)
 
 def run(argv: list | None = None) -> int:
     """``python -m nbchat.tui3`` entry point.

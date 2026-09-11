@@ -570,3 +570,72 @@ def test_status_right_appends_health_pill(monkeypatch, tmp_path):
     # Both the verifier pill (tests 9F) AND the health pill (ROT 10%) appear.
     assert "tests 9F" in line
     assert "ROT 10%" in line
+
+
+# -- Candidate C: /audit (provenance / audit panel) -----------------------
+def test_audit_empty(monkeypatch, tmp_path):
+    import nbchat.core.db as db
+    app, term, events = _make_tui3_app(monkeypatch, tmp_path)
+    app.session_id = "tui:aempty"
+    out = app._cmd_audit("")
+    assert "no history" in out
+
+
+def test_audit_classification_counts(monkeypatch, tmp_path):
+    import nbchat.core.db as db
+    app, term, events = _make_tui3_app(monkeypatch, tmp_path)
+    sid = "tui:acounts"
+    db.log_message(sid, "user", "run the tests and build")
+    # A verified claim (clean tests).
+    db.log_tool_msg(sid, "ac1", "run_tests", "cmd=pytest",
+                    '{"passed": 10, "failed": 0, "errors": 0}')
+    # A relayed claim (a text summary, no objective check).
+    db.log_tool_msg(sid, "ac2", "repo_overview", "path=.", "12 files, 3 dirs")
+    # An unverified claim (a failed test run).
+    db.log_tool_msg(sid, "ac3", "run_tests", "cmd=pytest",
+                    '{"passed": 3, "failed": 7, "errors": 0}')
+    # An unverified claim (a failing command, non-zero exit code).
+    db.log_tool_msg(sid, "ac4", "run_command", "cmd=make",
+                    '{"exit_code": 2, "output": "make failed"}')
+    app.session_id = sid
+    out = app._cmd_audit("")
+    assert "provenance  4 tool calls" in out
+    assert "verified   1" in out
+    assert "relayed    1" in out
+    assert "unverified 2" in out
+
+
+def test_audit_relayed_only_note(monkeypatch, tmp_path):
+    import nbchat.core.db as db
+    app, term, events = _make_tui3_app(monkeypatch, tmp_path)
+    sid = "tui:arelayed"
+    db.log_message(sid, "user", "look at the repo")
+    db.log_tool_msg(sid, "ar1", "repo_overview", "path=.", "5 files")
+    app.session_id = sid
+    out = app._cmd_audit("")
+    assert "relayed    1" in out
+    assert "every claim is relayed" in out
+
+
+def test_audit_unverified_note(monkeypatch, tmp_path):
+    import nbchat.core.db as db
+    app, term, events = _make_tui3_app(monkeypatch, tmp_path)
+    sid = "tui:aunv"
+    db.log_message(sid, "user", "run the tests")
+    db.log_tool_msg(sid, "au1", "run_tests", "cmd=pytest",
+                    '{"passed": 1, "failed": 9, "errors": 0}')
+    app.session_id = sid
+    out = app._cmd_audit("")
+    assert "unverified 1" in out
+    assert "1 unverified claim" in out
+
+
+def test_audit_dispatch_intercepted(monkeypatch, tmp_path):
+    import nbchat.core.db as db
+    app, term, events = _make_tui3_app(monkeypatch, tmp_path)
+    captured = []
+    app._note = lambda text: captured.append(text)
+    app.session_id = "tui:adispatch"
+    app._run_command("/audit")
+    assert captured
+    assert "audit" in captured[0]
