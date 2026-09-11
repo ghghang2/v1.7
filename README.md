@@ -195,6 +195,10 @@ shell command (`!ls`); `!!` also stores the output for later.
   content, across **all** sessions by default (append `session` to search only
   the current one).  Each hit shows the session, role, and a snippet; the
   current session is marked `*`.  Open a hit with `/load <sid>`.
+- `/diff [--stat] [label]` — review tracked-file changes as a colorized diff
+  (`+` green / `-` red).  Bare `/diff` shows the working tree vs `HEAD`;
+  `/diff --stat` shows the per-file summary; `/diff <label>` diffs against a
+  `/checkpoint`.  Pairs with `/undo` (review, then revert).
 - `/hotkeys` — the keybinding reference.
 - `/copy` — copies the last assistant message to the clipboard (OSC 52;
   silent no-op where the terminal lacks clipboard support).

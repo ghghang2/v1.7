@@ -970,7 +970,7 @@ class ChatApp(TerminalAgent):
                     "/refine", "/lessons", "/memory", "/btw", "/approve",
                     "/goal", "/notify", "/theme", "/monitor", "/inbox",
                     "/team", "/browse", "/search", "/sup", "/voice",
-                    "/fork", "/checkpoint", "/undo", "/find")
+                    "/fork", "/checkpoint", "/undo", "/find", "/diff")
 
     def _run_command(self, line: str) -> None:
         """Route a slash command.
@@ -1035,6 +1035,7 @@ class ChatApp(TerminalAgent):
             "  /checkpoint [label]   record a restorable snapshot of the tree",
             "  /undo [label]         preview (no label) / revert tracked files",
             "  /find <query>         search messages across all sessions",
+            "  /diff [--stat] [label]  review tracked-file changes (colorized)",
             "  /compact    force a context summarisation now",
             "  /copy       copy last reply to the clipboard",
             "  /btw <q>    side question, kept out of this session",
@@ -1078,6 +1079,7 @@ class ChatApp(TerminalAgent):
             "/checkpoint": self._cmd_checkpoint,
             "/undo": self._cmd_undo,
             "/find": self._cmd_find,
+            "/diff": self._cmd_diff,
         }
         fn = handlers.get(cmd)
         try:
@@ -1420,6 +1422,70 @@ class ChatApp(TerminalAgent):
             tail = "  … (capped at 25)" + tail
         lines.append(tail)
         return chr(10).join(lines)
+
+    # ── /diff (tui3: review tracked-file changes, colorized) ────────────
+
+    _DIFF_MAX_LINES = 200
+
+    def _cmd_diff(self, arg: str) -> str:
+        """``/diff [--stat] [label]`` — review tracked-file changes.
+
+        * ``/diff``            working tree vs ``HEAD``
+        * ``/diff --stat``     summary only (files + added/removed counts)
+        * ``/diff <label>``    working tree vs checkpoint ``<label>``
+
+        The unified diff is rendered as a colorized block (``+`` green,
+        ``-`` red) reusing the agent tool-diff renderer.  Read-only.
+        """
+        from . import undo as _undo
+        cwd = os.getcwd()
+        if not _undo.is_git_repo(cwd):
+            return "diff: this directory is not a git work tree"
+        a = (arg or "").strip()
+        stat_only = False
+        label = ""
+        toks = a.split()
+        if toks and toks[0].lower() in ("--stat", "-s", "stat"):
+            stat_only = True
+            toks = toks[1:]
+        if toks:
+            label = " ".join(toks)
+        if label:
+            if label.lower() in ("last", "latest"):
+                cp = _undo.latest_checkpoint(self.session_id)
+            else:
+                cp = _undo.find_checkpoint(self.session_id, label)
+            if not cp:
+                avail = ", ".join(
+                    c["label"] for c in _undo.list_checkpoints(self.session_id)[-6:]) or "none"
+                return f"diff: no checkpoint named '{label}' (available: {avail})"
+            source, title = cp.get("source"), f"working tree vs checkpoint '{cp.get('label')}'"
+        else:
+            source, title = "HEAD", "working tree vs HEAD"
+        git_args = ["diff", "--stat" if stat_only else "--unified=3", source]
+        rc, out = _undo._git(cwd, *git_args)
+        if rc != 0:
+            return f"diff: git diff failed: {out.strip()[:200]}"
+        body = out.splitlines()
+        if not body:
+            self._note(f"diff: {title} — no tracked-file changes")
+            return f"diff: {title} — no tracked-file changes"
+        files = _undo._git(cwd, "diff", "--name-only", source)[1].splitlines()
+        files = [f for f in files if f.strip()]
+        truncated = len(body) > self._DIFF_MAX_LINES
+        shown = body[:self._DIFF_MAX_LINES]
+        if truncated:
+            shown.append(f"… ({len(body) - self._DIFF_MAX_LINES} more lines; "
+                         f"use /diff --stat for a summary)")
+        self.log.add(chatc.ChatMessage(
+            role="assistant",
+            blocks=[chatc.ChatBlock(kind="tool", name="diff", title=title,
+                                    status="done", body=shown,
+                                    diff=not stat_only)],
+        ))
+        nfiles = len(files)
+        return (f"diff: {title} — {nfiles} file(s) changed"
+                + ("" if stat_only else "  ·  /undo reverts tracked files"))
 
     # ── /team (tui3: multi-agent team runs, output relayed off-thread) ──
 

@@ -203,3 +203,10 @@ full-text search over `chat_log` content (newest first, capped at 25 hits).
 Backed by `nbchat.core.db.search_messages()` (a small additive read-only query
 helper).  The current session is marked `*`; append `session` to restrict the
 search to it.  Jump to a hit with `/load <sid>`.
+
+**Diff review:** `/diff [--stat] [label]` — read-only, colorized unified diff of
+tracked-file changes (reuses the agent tool-diff renderer: `+` green, `-` red).
+Bare `/diff` = working tree vs `HEAD`; `--stat` = per-file summary; `<label>` =
+against a `/checkpoint` (or `last`).  This is the "review" step of the
+`/checkpoint` → `/diff` → `/undo` safety workflow.  Capped at 200 lines with a
+truncation hint (use `--stat` for large diffs).

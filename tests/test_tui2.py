@@ -2949,3 +2949,74 @@ def test_cmd_find_no_matches(monkeypatch):
     dbmod.search_messages = lambda q, limit=30, session_id=None: []
     out = app._cmd_find("zzzqqq")
     assert "no messages" in out
+
+
+# ── /diff (colorized git-diff review) ──────────────────────────────────
+
+def test_diff_real_git_shows_changed_file(tmp_path, monkeypatch):
+    u = _patch_cp_store(tmp_path, monkeypatch)
+    d = _gitrepo(tmp_path)
+    (d / "f.txt").write_text("v2\n")          # dirty the tree
+    app, _, _, _ = _make_chat_app()
+    monkeypatch.chdir(d)
+    monkeypatch.setattr(app, "_note", lambda t: None)
+    out = app._cmd_diff("")
+    assert "1 file(s) changed" in out and "vs HEAD" in out
+    last = app.log.messages[-1]
+    blk = last.blocks[0]
+    assert blk.kind == "tool" and blk.name == "diff" and blk.diff is True
+    assert any(l.startswith("+") for l in blk.body) and any(l.startswith("-") for l in blk.body)
+
+
+def test_diff_stat_not_colored_as_diff(tmp_path, monkeypatch):
+    u = _patch_cp_store(tmp_path, monkeypatch)
+    d = _gitrepo(tmp_path)
+    (d / "f.txt").write_text("v2\n")
+    app, _, _, _ = _make_chat_app()
+    monkeypatch.chdir(d)
+    monkeypatch.setattr(app, "_note", lambda t: None)
+    out = app._cmd_diff("--stat")
+    assert "file(s) changed" in out
+    assert app.log.messages[-1].blocks[0].diff is False
+
+
+def test_diff_no_changes(tmp_path, monkeypatch):
+    u = _patch_cp_store(tmp_path, monkeypatch)
+    d = _gitrepo(tmp_path)                       # clean tree
+    app, _, _, _ = _make_chat_app()
+    monkeypatch.chdir(d)
+    monkeypatch.setattr(app, "_note", lambda t: None)
+    out = app._cmd_diff("")
+    assert "no tracked-file changes" in out
+
+
+def test_diff_vs_checkpoint(tmp_path, monkeypatch):
+    u = _patch_cp_store(tmp_path, monkeypatch)
+    d = _gitrepo(tmp_path)
+    (d / "f.txt").write_text("v2\n")
+    app, _, _, _ = _make_chat_app()
+    u.take_checkpoint(str(d), app.session_id, label="cp1")
+    (d / "f.txt").write_text("v3\n")            # change after checkpoint
+    monkeypatch.chdir(d)
+    monkeypatch.setattr(app, "_note", lambda t: None)
+    out = app._cmd_diff("cp1")
+    assert "checkpoint" in out and "cp1" in out
+    assert app.log.messages[-1].blocks[0].diff is True
+
+
+def test_diff_not_git(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    import nbchat.tui2.undo as u
+    monkeypatch.setattr(u, "is_git_repo", lambda cwd: False)
+    out = app._cmd_diff("")
+    assert "not a git work tree" in out
+
+
+def test_diff_unknown_checkpoint(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    import nbchat.tui2.undo as u
+    monkeypatch.setattr(u, "is_git_repo", lambda cwd: True)
+    monkeypatch.setattr(u, "find_checkpoint", lambda sid, lab: None)
+    monkeypatch.setattr(u, "list_checkpoints", lambda sid: [{"label": "auto"}])
+    out = app._cmd_diff("nope")
+    assert "no checkpoint named" in out and "auto" in out
