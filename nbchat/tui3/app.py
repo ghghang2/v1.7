@@ -38,7 +38,7 @@ class ChatApp(_Tui2ChatApp):
     """
 
     #: tui3-native slash commands (intercepted before the tui2 dispatch).
-    _TUI3_NATIVE = ("/trace", "/budget")
+    _TUI3_NATIVE = ("/trace", "/budget", "/reflect")
 
     def __init__(self, term, events, *args, **kwargs):
         super().__init__(term, events, *args, **kwargs)
@@ -62,6 +62,7 @@ class ChatApp(_Tui2ChatApp):
         handlers = {
             "/trace": self._cmd_trace,
             "/budget": self._cmd_budget,
+            "/reflect": self._cmd_reflect,
         }
         fn = handlers.get(cmd)
         if fn is None:
@@ -192,6 +193,67 @@ class ChatApp(_Tui2ChatApp):
         lines.append("  note: the token meter is per TUI instance (reset with "
                      "/budget reset)")
         return "\n".join(lines)
+
+    # -- Phase 4: /reflect (deep-agent plan loop - reflect step) -----------
+    def _cmd_reflect(self, arg: str) -> str:
+        """Reflect on the current session (the reflect step of a plan loop).
+
+        Asks the LLM (on an isolated throwaway agent) to reflect on the recent
+        conversation: what has been accomplished, what remains, and the next
+        concrete step.  Runs in a background thread so it never blocks the UI;
+        the reflection is appended to the log when it arrives.  The side
+        question is kept out of the current session history (a throwaway ``refl:``
+        session), so it does not pollute the context.
+        """
+        if self.busy:
+            return "reflect: wait for the current turn to finish first"
+        import threading
+        t = threading.Thread(target=self._reflect_worker,
+                             name="reflect", daemon=True)
+        t.start()
+        return "reflect: analyzing the session..."
+
+    def _reflect_worker(self) -> None:
+        """Make the reflection LLM call and append the result to the log."""
+        import nbchat.core.db as db
+        sid = self.session_id
+        try:
+            rows = db.load_history(sid)
+        except Exception as exc:
+            self._note("reflect: failed to load history: %s" % exc)
+            return
+        if not rows:
+            self._note("reflect: no history to reflect on yet")
+            return
+        # Build a concise transcript of the recent conversation.
+        parts = []
+        for role, content, _tid, tool_name, _ta, _err in rows[-60:]:
+            c = (content or "").strip().replace("\n", " ")
+            if len(c) > 200:
+                c = c[:197] + "..."
+            if role == "user":
+                parts.append("user: " + c)
+            elif role == "assistant":
+                parts.append("assistant: " + c)
+            elif role == "tool":
+                parts.append("tool(%s): %s" % (tool_name, c[:80]))
+        transcript = "\n".join(parts)
+        prompt = (
+            "Here is the recent conversation for the current task:\n\n"
+            + transcript + "\n\n"
+            + "Reflect on the progress. State: (1) what has been "
+            + "accomplished, (2) what remains, (3) the single next concrete "
+            + "step. Be concise (under 200 words)."
+        )
+        try:
+            reply = self._send_side_question(prompt)
+        except Exception as exc:
+            self._note("reflect: failed: %s" % exc)
+            return
+        if not reply:
+            self._note("reflect: (no reply from the model)")
+            return
+        self._note("reflect: " + reply)
 
     # -- Phase 2: approval diff-preview (HITL upgrade) --------------------
     def _tool_description(self, tool: str) -> str:

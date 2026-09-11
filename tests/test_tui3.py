@@ -291,3 +291,69 @@ def test_budget_dispatch(monkeypatch, tmp_path):
     assert len(notes) == 1
     assert "budget" in notes[0]
     assert "/budget" in Tui3ChatApp._TUI3_NATIVE
+
+
+# -- Phase 4: /reflect (deep-agent plan loop - reflect step) ---------------
+def test_reflect_busy(monkeypatch, tmp_path):
+    app, term, events = _make_tui3_app(monkeypatch, tmp_path)
+    app.session_id = "tui:reflect_busy"
+    app._turn_active = True  # busy
+    out = app._cmd_reflect("")
+    assert "wait" in out
+
+
+def test_reflect_empty_history(monkeypatch, tmp_path):
+    import nbchat.core.db as db
+    app, term, events = _make_tui3_app(monkeypatch, tmp_path)
+    app.session_id = "tui:reflect_empty"
+    notes = []
+    app._note = lambda text: notes.append(text)
+    app._reflect_worker()
+    assert any("no history" in n for n in notes)
+
+
+def test_reflect_worker_transcript(monkeypatch, tmp_path):
+    import nbchat.core.db as db
+    app, term, events = _make_tui3_app(monkeypatch, tmp_path)
+    sid = "tui:reflect_worker"
+    db.log_message(sid, "user", "please fix the failing test")
+    db.log_tool_msg(sid, "t1", "run_tests", "cmd=pytest", "FAILED=1")
+    db.log_message(sid, "assistant", "I fixed the failing assertion.")
+    # Stub the LLM call to capture the prompt.
+    captured = {}
+
+    def fake_send(prompt):
+        captured["prompt"] = prompt
+        return "Reflection: (1) fixed the test, (2) nothing left, (3) done."
+
+    app._send_side_question = fake_send
+    app.session_id = sid
+    notes = []
+    app._note = lambda text: notes.append(text)
+    app._reflect_worker()
+    # The prompt includes the recent conversation.
+    assert "please fix the failing test" in captured["prompt"]
+    assert "run_tests" in captured["prompt"]
+    # The reflection is appended to the log.
+    assert any("Reflection:" in n for n in notes)
+
+
+def test_reflect_dispatch_starts_thread(monkeypatch, tmp_path):
+    app, term, events = _make_tui3_app(monkeypatch, tmp_path)
+    app.session_id = "tui:reflect_dispatch"
+    # Stub the worker so no real LLM call happens.
+    started = {"n": 0}
+
+    def fake_worker():
+        started["n"] += 1
+
+    app._reflect_worker = fake_worker
+    out = app._cmd_reflect("")
+    assert "analyzing" in out
+    import time as _time
+    for _ in range(50):
+        if started["n"] >= 1:
+            break
+        _time.sleep(0.02)
+    assert started["n"] >= 1
+    assert "/reflect" in Tui3ChatApp._TUI3_NATIVE

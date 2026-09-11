@@ -824,7 +824,25 @@ close proxy for the current session).
   suite 22 passed; team_metrics main 5 passed; tui2 376 + v1 79 + core team 54
   (no regression).
 
+### Phase 4 (safe slice) - /reflect (deep-agent plan loop, reflect step) - DONE
+
+`/reflect` asks the LLM (on an isolated throwaway agent, kept out of the
+session history via a `refl:`-prefixed side question) to reflect on the recent
+conversation: what has been accomplished, what remains, and the single next
+concrete step. It runs in a background thread (never blocks the UI); the
+reflection is appended to the log when it arrives. This is the SAFE slice of a
+plan-act-reflect loop (the "reflect" step). Inspired by LangGraph deep agents.
+
+- nbchat/tui3/app.py: the `_cmd_reflect` handler (checks busy, starts the
+  thread) + the `_reflect_worker` (builds a concise transcript of the recent
+  conversation, makes the LLM call via the existing `_send_side_question`
+  mechanism, appends the reflection). 4 new tests.
+- Safe: reuses the existing `_send_side_question` mechanism (no new LLM
+  plumbing); the side question is kept out of the session history. tui3 suite
+  26 passed; tui2 376 + v1 79 (no regression).
+
 ### Next phases (tracked)
 
-- **Phase 4 - deep-agent plan loop** (strengthen `/plan`): a plan-act-reflect
-  loop (inspired by LangGraph deep agents).
+- **Phase 4 (full) - deep-agent plan loop**: the full plan-act-reflect loop
+  (autonomous multi-step execution with re-planning). A larger, more invasive
+  change (it modifies the agent turn logic).

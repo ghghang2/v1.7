@@ -502,8 +502,16 @@ python -m nbchat.tui --v3        # dispatch to the v3 app
   conversation's token footprint. `/budget reset` zeroes the meter. The token
   meter is per TUI instance (a close proxy for the current session).
   Inspired by the harnesses cost tracking + LiteLLM budgets.
+* **Phase 4 — `/reflect`** (deep-agent plan loop, reflect step): asks the LLM
+  (on an isolated throwaway agent, kept out of the session history) to reflect
+  on the recent conversation - what has been accomplished, what remains, and
+  the single next concrete step. Runs in a background thread (never blocks the
+  UI); the reflection is appended to the log when it arrives. The safe slice of
+  a plan-act-reflect loop (the "reflect" step). Inspired by LangGraph deep
+  agents.
 
-More phases (a deeper plan-act-reflect loop) are tracked in
+The full plan-act-reflect loop (autonomous multi-step execution with
+re-planning) is a larger, more invasive change tracked in
 `docs/research_multagent_harnesses.md` and `docs/tui3_roadmap.md`.
 
 ---
