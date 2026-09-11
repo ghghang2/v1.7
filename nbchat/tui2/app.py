@@ -67,6 +67,7 @@ KEYMAP = {
         ("ctrl+r", "reverse search input history"),
         ("pgup/pgdn", "scroll the log up / down"),
         ("wheel", "scroll the log (mouse)"),
+        ("click/drag", "copy one / a range of log lines"),
         ("home/end", "jump to the top / bottom of the log"),
         ("!<cmd>", "run a shell command (!! stores output)"),
     ),
@@ -188,6 +189,14 @@ class ChatApp(TerminalAgent):
         self._logsearch = None
         self._search_matches = []
         self._search_idx = 0
+        # Click / drag-to-copy (tui3 wave 3b): a mouse press in the log
+        # region records the anchor frame row; a release copies the range
+        # [anchor .. release] (a single click copies one line).  The copy
+        # is taken from the last rendered frame so no log-index math is
+        # needed.
+        self._sel_anchor = None  # 1-based frame row, or None
+        self._last_frame_rows: list = []
+        self._last_log_end = 0  # 1-based last row of the log/live region
 
         self._goal = None
         self._goal_budget = 20  # default auto-continue turn budget
@@ -542,13 +551,15 @@ class ChatApp(TerminalAgent):
         # Mouse (tui3 wave 3): wheel scrolls the log in any mode; button
         # press/release are consumed for now (click-select is a follow-up).
         if key.name == "wheel-up":
+            self._sel_anchor = None  # view is moving; drop any pending sel
             self._scroll_log(3)
             return
         if key.name == "wheel-down":
+            self._sel_anchor = None
             self._scroll_log(-3)
             return
         if key.name in ("mouse-press", "mouse-release"):
-            self._ui_refresh()
+            self._mouse_select(key)
             return
         # Browse mode (tui3): Ctrl+O toggles it; while active it captures
         # keys for reading/scrolling the log instead of the editor.
@@ -1547,6 +1558,53 @@ class ChatApp(TerminalAgent):
             "ok", write=self._term_write)
         self._ui_refresh()
 
+    def _mouse_select(self, key) -> None:
+        """Click / drag-to-copy over the log region (tui3 wave 3b).
+
+        A press records the anchor frame row; a release copies the line
+        range [anchor .. release] (a single click copies one line).  The
+        text is read from the last rendered frame, so no log-index math is
+        needed and it always matches what the user saw.
+        """
+        row = self._mouse_row(key)
+        in_region = row is not None and 2 <= row <= self._last_log_end
+        if key.name == "mouse-press":
+            if in_region:
+                self._sel_anchor = row
+            else:
+                self._sel_anchor = None
+            self._ui_refresh()
+            return
+        # mouse-release
+        if self._sel_anchor is None or not in_region:
+            self._sel_anchor = None
+            return
+        lo, hi = sorted((self._sel_anchor, row))
+        self._sel_anchor = None
+        if hi < 1 or lo > len(self._last_frame_rows):
+            return
+        lines = self._last_frame_rows[lo - 1:hi]
+        text = "\n".join(self._row_text(r) for r in lines).strip()
+        if not text:
+            return
+        self._copy_to_clipboard(text)
+        n = len(lines)
+        self._notify.push(
+            "copied", "line" if n == 1 else f"{n} lines",
+            "ok", write=self._term_write)
+        self._ui_refresh()
+
+    @staticmethod
+    def _mouse_row(key) -> int:
+        """Parse the 1-based row out of a mouse key payload (``col,row``)."""
+        payload = getattr(key, "payload", None)
+        if not payload or "," not in payload:
+            return None
+        try:
+            return int(payload.split(",", 1)[1])
+        except ValueError:
+            return None
+
     def _status_right(self) -> str:
         parts: list = []
         if self._ctx_budget > 0:
@@ -1628,6 +1686,10 @@ class ChatApp(TerminalAgent):
             left=f"turns: {self._turns}   {scroll_tag}{status_left}",
             right=status_right,
         ).render(w)[0])
+        # Remember the rendered rows + where the log/live region ends so a
+        # mouse click (1-based row) can be mapped to a copyable line.
+        self._last_frame_rows = rows[:h]
+        self._last_log_end = 1 + region
         return Frame(lines=rows[:h], width=w, height=h)
 
     def _approval_lines(self, w: int):

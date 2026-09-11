@@ -31,8 +31,8 @@ these warrant **tui3** rather than piling onto tui2:
 **Build order** (follows herdr's, adjusted for what tui2 already has):
 1 → 2 → 3 → (4, 5 in parallel) → 6 → 7.  **Shipped so far:** wave 1
 (keymap + browse + mode bar), wave 2 (in-log search + visual copy),
-wave 3 (mouse wheel scroll).  Next: click-to-select, then config/settings
-and theming.
+wave 3 (mouse wheel scroll) + 3b (click / drag-to-copy).  Next:
+config/settings and theming.
 
 ## tui3 wave 1 (this pass)
 
@@ -86,5 +86,17 @@ Both are self-contained in `app.py` (no new files, no core changes).  The
   (click-to-select is a later wave).  The `↑N` indicator (already present for
   PgUp scrollback) shows how far the log is scrolled from the bottom.
 
-Waves 4+ (click-to-select, config/settings, theming, socket API, detach)
-proceed in the build order above.
+**tui3 wave 3b — click / drag-to-copy over the log** (completes the mouse
+story, purely additive): a mouse **press** in the log region records the
+anchor frame row; a **release** copies the line range `[anchor .. release]`
+(a single click copies one line) to the clipboard, with a small "copied"
+toast.  The text is read from the *last rendered frame* (`_last_frame_rows`,
+populated in `_build_frame`), so no log-index math is needed and it always
+matches what the user saw.  The press is only honoured inside the log/live
+region (rows `2 .. 1+region`, stored as `_last_log_end`); clicks on the
+header / editor / status are ignored.  A wheel scroll drops any pending
+anchor (the view is moving).  `KEYMAP["normal"]` documents "click/drag →
+copy one / a range of log lines".
+
+Waves 4+ (config/settings, theming, socket API, detach) proceed in the
+build order above.

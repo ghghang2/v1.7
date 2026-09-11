@@ -338,6 +338,16 @@ in any mode (normal or browse); button press/release are consumed for now
 (click-to-select is a later wave). The existing `↑N` indicator shows how far
 the log is scrolled from the bottom.
 
+**tui3 wave 3b — click / drag-to-copy over the log:** a mouse **press** in
+the log/live region records the anchor frame row; a **release** copies the
+line range `[anchor .. release]` (a single click = one line) to the
+clipboard with a small "copied" toast.  The text is read from the last
+rendered frame (`_last_frame_rows`, populated in `_build_frame`) so no
+log-index math is needed and it always matches what the user saw.  Presses
+outside the log region (header / editor / status, rows beyond `_last_log_end`)
+are ignored, and a wheel scroll drops any pending anchor. `KEYMAP["normal"]`
+documents the binding.
+
 ---
 
 ## Not addressed (out of scope for this pass, tracked in the port tracker)

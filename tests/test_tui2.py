@@ -1783,3 +1783,81 @@ def test_wheel_scrolls_log_and_click_consumed():
     assert app.editor.text() == ""
     app._on_input(Key("mouse-release", "10,5"))
     assert app.editor.text() == ""
+
+
+# ── tui3 wave 3b: click / drag-to-copy over the log ───────────────────
+
+def _content_rows(app):
+    """1-based frame rows in the log region that carry non-empty text."""
+    rows = []
+    for r in range(2, app._last_log_end + 1):
+        if app._row_text(app._last_frame_rows[r - 1]).strip():
+            rows.append(r)
+    return rows
+
+
+def test_mouse_click_copies_single_line():
+    from nbchat.tui2 import chat as chatc
+    app, *_ = _make_chat_app()
+    for i in range(12):
+        app.log.add(chatc.ChatMessage(role="user", text=f"uniq line {i}"))
+    app._build_frame()
+    rows = _content_rows(app)
+    assert rows, "need at least one content row"
+    target = rows[0]
+    captured = {}
+    app._copy_to_clipboard = lambda t: captured.setdefault("text", t)
+    app._on_input(Key("mouse-press", f"10,{target}"))
+    app._on_input(Key("mouse-release", f"10,{target}"))
+    assert "text" in captured, "click should copy a line"
+    expected = app._row_text(app._last_frame_rows[target - 1]).strip()
+    assert expected in captured["text"]
+    # a toast confirms the copy
+    assert app._notify._queue
+
+
+def test_mouse_drag_copies_line_range():
+    from nbchat.tui2 import chat as chatc
+    app, *_ = _make_chat_app()
+    for i in range(12):
+        app.log.add(chatc.ChatMessage(role="user", text=f"range line {i}"))
+    app._build_frame()
+    rows = _content_rows(app)
+    assert len(rows) >= 2
+    lo_row, hi_row = rows[0], rows[-1]
+    captured = {}
+    app._copy_to_clipboard = lambda t: captured.setdefault("text", t)
+    app._on_input(Key("mouse-press", f"5,{lo_row}"))
+    app._on_input(Key("mouse-release", f"5,{hi_row}"))
+    assert "text" in captured
+    # every line in the range is present, in order
+    for r in range(lo_row, hi_row + 1):
+        line = app._row_text(app._last_frame_rows[r - 1]).strip()
+        if line:
+            assert line in captured["text"]
+
+
+def test_mouse_click_outside_log_is_ignored():
+    from nbchat.tui2 import chat as chatc
+    app, *_ = _make_chat_app()
+    for i in range(6):
+        app.log.add(chatc.ChatMessage(role="user", text=f"x {i}"))
+    app._build_frame()
+    captured = {}
+    app._copy_to_clipboard = lambda t: captured.setdefault("text", t)
+    # header row (1) and a row below the log region should be ignored
+    app._on_input(Key("mouse-press", "10,1"))
+    app._on_input(Key("mouse-release", "10,1"))
+    assert "text" not in captured
+    below = app._last_log_end + 2
+    app._on_input(Key("mouse-press", f"10,{below}"))
+    app._on_input(Key("mouse-release", f"10,{below}"))
+    assert "text" not in captured
+
+
+def test_mouse_row_payload_parse():
+    app, *_ = _make_chat_app()
+    assert app._mouse_row(Key("mouse-press", "10,5")) == 5
+    assert app._mouse_row(Key("mouse-release", "3,42")) == 42
+    assert app._mouse_row(Key("mouse-press", None)) is None
+    assert app._mouse_row(Key("mouse-press", "bad")) is None
