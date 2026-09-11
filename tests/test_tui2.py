@@ -2874,3 +2874,78 @@ def test_gated_one_auto_checkpoint_per_window(monkeypatch):
     finally:
         app._remove_approval_gate()
     assert calls == ["make_change_to_file", "create_file"]
+
+
+# ── /find (cross-session full-text search) ─────────────────────────────
+
+def test_db_search_messages(monkeypatch, tmp_path):
+    import sqlite3
+    import nbchat.core.db as dbmod
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE chat_log (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, content TEXT)")
+    rows = [
+        ("tui:aaa", "user", "hello checkpoint world"),
+        ("tui:bbb", "assistant", "I made a checkpoint"),
+        ("tui:aaa", "user", "unrelated message"),
+        ("tui:ccc", "user", "CHECKPOINT in caps"),
+    ]
+    for i, (sid, role, c) in enumerate(rows):
+        conn.execute("INSERT INTO chat_log (id, session_id, role, content) VALUES (?,?,?,?)",
+                     (i + 1, sid, role, c))
+    monkeypatch.setattr(dbmod, "_connect", lambda: conn)
+    hits = dbmod.search_messages("checkpoint")
+    assert {h[0] for h in hits} == {"tui:aaa", "tui:bbb", "tui:ccc"}  # case-insensitive
+    assert hits[0][0] == "tui:ccc"  # newest first (id 4)
+    hits2 = dbmod.search_messages("checkpoint", session_id="tui:aaa")
+    assert {h[0] for h in hits2} == {"tui:aaa"}
+    assert dbmod.search_messages("   ") == []
+    conn.close()
+
+
+def test_cmd_find_all_sessions(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    import nbchat.core.db as dbmod
+    dbmod.search_messages = lambda q, limit=30, session_id=None: [
+        ("tui:aaa11111", "user", "hello there general"),
+        ("tui:bbb22222", "assistant", "hi back at you"),
+    ]
+    out = app._cmd_find("hello")
+    assert "2 match(es)" in out and "all sessions" in out
+    assert "aaa" in out and "bbb" in out
+    assert "/load" in out
+
+
+def test_cmd_find_marks_current_session(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    import nbchat.core.db as dbmod
+    sid = app.session_id
+    dbmod.search_messages = lambda q, limit=30, session_id=None: [(sid, "user", "the current one")]
+    out = app._cmd_find("current")
+    assert "* " in out and "the current one" in out
+
+
+def test_cmd_find_session_scope(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    import nbchat.core.db as dbmod
+    seen = {}
+    def fake(q, limit=30, session_id=None):
+        seen["session_id"] = session_id
+        return []
+    dbmod.search_messages = fake
+    out = app._cmd_find("x session")
+    assert seen["session_id"] == app.session_id  # restricted to current
+    assert "no messages" in out and "this session" in out
+
+
+def test_cmd_find_empty(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    out = app._cmd_find("   ")
+    assert "give a search term" in out
+
+
+def test_cmd_find_no_matches(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    import nbchat.core.db as dbmod
+    dbmod.search_messages = lambda q, limit=30, session_id=None: []
+    out = app._cmd_find("zzzqqq")
+    assert "no messages" in out

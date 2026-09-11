@@ -191,6 +191,10 @@ shell command (`!ls`); `!!` also stores the output for later.
   tracked files to that checkpoint via `git restore --source=…` (untracked
   files are left alone).  Reverting is itself reversible: take a fresh
   `/checkpoint` first.
+- `/find <query> [session]` — case-insensitive full-text search over message
+  content, across **all** sessions by default (append `session` to search only
+  the current one).  Each hit shows the session, role, and a snippet; the
+  current session is marked `*`.  Open a hit with `/load <sid>`.
 - `/hotkeys` — the keybinding reference.
 - `/copy` — copies the last assistant message to the clipboard (OSC 52;
   silent no-op where the terminal lacks clipboard support).

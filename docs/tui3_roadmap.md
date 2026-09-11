@@ -197,3 +197,9 @@ data the user did not ask to touch).  `/undo` with no label previews; applying
 requires naming a checkpoint.  Checkpoints are stored in
 `~/.nbchat/tui3-checkpoints.json` (override `NBCHAT_TUI3_CHECKPOINTS`) and one
 is recorded automatically before the first file edit of each turn.
+
+**Cross-session search:** `/find <query> [session]` — read-only, case-insensitive
+full-text search over `chat_log` content (newest first, capped at 25 hits).
+Backed by `nbchat.core.db.search_messages()` (a small additive read-only query
+helper).  The current session is marked `*`; append `session` to restrict the
+search to it.  Jump to a hit with `/load <sid>`.

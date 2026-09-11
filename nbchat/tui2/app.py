@@ -970,7 +970,7 @@ class ChatApp(TerminalAgent):
                     "/refine", "/lessons", "/memory", "/btw", "/approve",
                     "/goal", "/notify", "/theme", "/monitor", "/inbox",
                     "/team", "/browse", "/search", "/sup", "/voice",
-                    "/fork", "/checkpoint", "/undo")
+                    "/fork", "/checkpoint", "/undo", "/find")
 
     def _run_command(self, line: str) -> None:
         """Route a slash command.
@@ -1034,6 +1034,7 @@ class ChatApp(TerminalAgent):
             "  /fork [n]   branch this conversation into a new session",
             "  /checkpoint [label]   record a restorable snapshot of the tree",
             "  /undo [label]         preview (no label) / revert tracked files",
+            "  /find <query>         search messages across all sessions",
             "  /compact    force a context summarisation now",
             "  /copy       copy last reply to the clipboard",
             "  /btw <q>    side question, kept out of this session",
@@ -1076,6 +1077,7 @@ class ChatApp(TerminalAgent):
             "/fork": self._cmd_fork,
             "/checkpoint": self._cmd_checkpoint,
             "/undo": self._cmd_undo,
+            "/find": self._cmd_find,
         }
         fn = handlers.get(cmd)
         try:
@@ -1381,6 +1383,43 @@ class ChatApp(TerminalAgent):
         ok, summary = _undo.apply(cwd, cp, dry=False)
         self._note(("✓ " if ok else "✗ ") + summary)
         return summary
+
+    # ── /find (tui3: cross-session full-text search over chat history) ──
+
+    def _cmd_find(self, arg: str) -> str:
+        """``/find <query> [session]`` — search messages (all sessions by
+        default; append ``session`` to search only the current one)."""
+        import nbchat.core.db as _db
+        a = (arg or "").strip()
+        if not a:
+            return "find: give a search term, e.g. /find checkpoint"
+        local_only = False
+        if a.split()[-1].lower() in ("session", "-s", "--session"):
+            local_only = True
+            a = a.rsplit(None, 1)[0].strip()
+        if not a:
+            return "find: give a search term, e.g. /find checkpoint"
+        try:
+            hits = _db.search_messages(
+                a, limit=25,
+                session_id=self.session_id if local_only else None)
+        except Exception as exc:
+            return f"find: search failed ({type(exc).__name__}: {exc})"
+        if not hits:
+            scope = "this session" if local_only else "any session"
+            return f"find: no messages matching '{a}' in {scope}"
+        scope = "(this session)" if local_only else "(all sessions)"
+        lines = [f"find: {len(hits)} match(es) for '{a}' {scope}"]
+        for sid, role, snip in hits:
+            short = (sid or "").rsplit(":", 1)[-1][:10]
+            cur = "*" if sid == self.session_id else " "
+            oneline = " ".join((snip or "").split())
+            lines.append(f"{cur} {short}  {role:<9}  {oneline[:100]}")
+        tail = "  ·  /load <full sid> to open a match"
+        if len(hits) >= 25:
+            tail = "  … (capped at 25)" + tail
+        lines.append(tail)
+        return chr(10).join(lines)
 
     # ── /team (tui3: multi-agent team runs, output relayed off-thread) ──
 

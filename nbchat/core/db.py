@@ -461,6 +461,29 @@ def get_history(session_id: str) -> list[tuple]:
             (session_id,),
         ).fetchall()
 
+def search_messages(query: str, *, limit: int = 30,
+                    session_id: str | None = None) -> list[tuple]:
+    """Case-insensitive search over ``chat_log`` content.  Read-only.
+
+    Returns ``(session_id, role, snippet)`` tuples, newest first, up to
+    *limit* rows.  *session_id* restricts the search to one session; ``None``
+    searches every session.  An empty/whitespace query returns ``[]``.
+    """
+    if not query or not query.strip():
+        return []
+    like = "%" + query.strip() + "%"
+    sql = ("SELECT session_id, role, substr(content, 1, 140) FROM chat_log "
+           "WHERE content LIKE ?")
+    args: list = [like]
+    if session_id:
+        sql += " AND session_id = ?"
+        args.append(session_id)
+    sql += " ORDER BY id DESC LIMIT ?"
+    args.append(int(limit))
+    with _connect() as conn:
+        rows = conn.execute(sql, args).fetchall()
+    return [(r[0], r[1], r[2]) for r in rows]
+
 
 def get_session_ids() -> list[str]:
     with _connect() as conn:
