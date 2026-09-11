@@ -209,10 +209,15 @@ shell command (`!ls`); `!!` also stores the output for later.
   ```
   python -m nbchat.tui2.ctl status            # busy / session / model / turns / theme
   python -m nbchat.tui2.ctl sessions          # list tui: sessions
+  python -m nbchat.tui2.ctl result            # last assistant reply (this session)
   python -m nbchat.tui2.ctl theme light       # switch the colour theme
   python -m nbchat.tui2.ctl send "hello"      # submit a message
   python -m nbchat.tui2.ctl quit              # request a clean exit
   ```
+
+  Together these support a **headless / background agent** loop: submit a
+  task with `send`, poll `status` until `busy` is false, then read the
+  answer with `result` (and `quit` when done).
 
   Read-only commands answer synchronously; mutating ones are enqueued onto
   the UI thread and acked immediately (`{"queued": true}`), so a control

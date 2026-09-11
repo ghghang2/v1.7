@@ -53,11 +53,13 @@ class ControlServer:
                  sessions_fn: Callable,
                  theme_fn: Optional[Callable] = None,
                  send_fn: Optional[Callable] = None,
-                 quit_fn: Optional[Callable] = None) -> None:
+                 quit_fn: Optional[Callable] = None,
+                 result_fn: Optional[Callable] = None) -> None:
         self.path = path
         self.dispatch = dispatch          # fn(closure) -> enqueue on UI thread
         self.status_fn = status_fn        # fn() -> dict   (read-only)
         self.sessions_fn = sessions_fn    # fn() -> list   (read-only)
+        self.result_fn = result_fn        # fn() -> dict   (read-only)
         self.theme_fn = theme_fn          # fn(name) on UI thread
         self.send_fn = send_fn            # fn(text) on UI thread
         self.quit_fn = quit_fn            # fn() on UI thread
@@ -154,6 +156,10 @@ class ControlServer:
                 return {"ok": True, "data": self.status_fn()}
             if cmd == "sessions":
                 return {"ok": True, "data": self.sessions_fn()}
+            if cmd == "result":
+                if self.result_fn is None:
+                    return {"ok": False, "error": "result unsupported"}
+                return {"ok": True, "data": self.result_fn()}
             if cmd == "theme":
                 if self.theme_fn is None:
                     return {"ok": False, "error": "theme unsupported"}
@@ -199,7 +205,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     import sys
     argv = list(argv if argv is not None else sys.argv[1:])
     if not argv or argv[0] in ("-h", "--help", "help"):
-        print("usage: python -m nbchat.tui2.ctl <status|sessions|theme|send|quit> [arg]")
+        print("usage: python -m nbchat.tui2.ctl <status|sessions|result|theme|send|quit> [arg]")
         return 0 if argv else 2
     cmd = argv[0].lower()
     arg = argv[1] if len(argv) > 1 else ""

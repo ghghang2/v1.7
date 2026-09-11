@@ -2033,3 +2033,24 @@ def test_ctl_main_no_running_tui(tmp_path, capsys):
         assert rc == 1  # no socket present
     finally:
         os.environ.pop("NBCHAT_CTL_SOCKET", None)
+
+
+def test_ctl_result(tmp_path):
+    import os
+    from nbchat.tui2 import ctl
+    path = str(tmp_path / "ctl.sock")
+    calls = []
+    srv = ctl.ControlServer(
+        path,
+        dispatch=lambda fn: calls.append(fn),
+        status_fn=lambda: {"busy": False},
+        sessions_fn=lambda: [],
+        result_fn=lambda: {"session": "s1", "text": "the answer"},
+    )
+    assert srv.start()
+    try:
+        r = ctl.call(path, "result")
+        assert r["ok"] and r["data"]["text"] == "the answer"
+        assert r["data"]["session"] == "s1"
+    finally:
+        srv.stop()

@@ -132,8 +132,10 @@ optional): a running TUI binds a local Unix socket
 `NBCHAT_NO_CTL=1`) that an external process drives with
 `python -m nbchat.tui2.ctl <cmd> [arg]`.  Protocol is newline-delimited
 JSON: request `{"cmd", "arg"}`, response `{"ok", ...}`.  Commands:
-`status` (busy/session/model/turns/theme), `sessions`, `theme <name>`,
-`send <text>`, `quit`.  Read-only commands answer on the socket thread
+`status` (busy/session/model/turns/theme), `sessions`, `result` (last
+assistant reply for the current session), `theme <name>`, `send <text>`,
+`quit`.  These support a headless / background-agent loop: `send` a task,
+poll `status` until `busy` is false, read `result`, then `quit`.  Read-only commands answer on the socket thread
 (scalar/atomic reads + read-only db); mutating ones enqueue a closure onto
 the UI thread via a new `"call"` event type in the render loop
 (`events.put("call", fn)`) and ack `{"queued": true}` immediately — so a

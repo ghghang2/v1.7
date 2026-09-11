@@ -1854,6 +1854,19 @@ class ChatApp(TerminalAgent):
             except Exception:
                 return []
 
+        def _result() -> dict:
+            # Read-only: the most recent assistant reply for this session
+            # (closes the send -> status -> result background loop).
+            from nbchat.core import db
+            sid = self.session_id
+            try:
+                for _s, role, content in reversed(db.get_history(sid)):
+                    if role == "assistant" and content:
+                        return {"session": sid, "text": content}
+                return {"session": sid, "text": ""}
+            except Exception:
+                return {"session": sid, "text": ""}
+
         def _theme(name: str) -> None:
             out = self._cmd_theme(name)
             if out:
@@ -1871,6 +1884,7 @@ class ChatApp(TerminalAgent):
             dispatch=lambda fn: self.events.put("call", fn),
             status_fn=_status,
             sessions_fn=_sessions,
+            result_fn=_result,
             theme_fn=_theme,
             send_fn=_send,
             quit_fn=_quit,

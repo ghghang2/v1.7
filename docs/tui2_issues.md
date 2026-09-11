@@ -372,8 +372,10 @@ concrete `Theme` objects for lookup.
 binds a local Unix socket (`~/.nbchat/tui2-ctl.sock`; override
 `NBCHAT_CTL_SOCKET`, disable `NBCHAT_NO_CTL=1`) driven by
 `python -m nbchat.tui2.ctl <cmd> [arg]` (newline-delimited JSON).  Commands:
-`status`, `sessions`, `theme <name>`, `send <text>`, `quit`.  Read-only
-commands answer on the socket thread; mutating ones enqueue a closure onto
+`status`, `sessions`, `result` (last assistant reply for the current
+session, enabling a headless send→status→result background loop),
+`theme <name>`, `send <text>`, `quit`.  Read-only commands answer on the
+socket thread; mutating ones enqueue a closure onto
 the UI thread via a new `"call"` event type in the render loop and ack
 `{"queued": true}` immediately, so a control client can never block or
 crash the TUI.  The server is a daemon thread; `ControlServer.stop()`
