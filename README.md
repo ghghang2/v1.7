@@ -212,6 +212,11 @@ shell command (`!ls`); `!!` also stores the output for later.
   box appears above the editor: `↑`/`↓` pick, `Enter`/`Tab` inserts the path
   in place of the `@`-token (undoable), `Esc` cancels.  The `@` inside an
   email address is ignored; directories carry a trailing `/`.
+- **Auto-compact** — when the context window crosses a threshold (default
+  80% of the budget), the session is compacted automatically right after the
+  turn finishes (off the render path; a dim note confirms it).  Toggle/tune with
+  `NBCHAT_AUTO_COMPACT` (`0`/`off` disables, a float like `0.6` sets the threshold);
+  `/context` shows the current setting.
 - `/hotkeys` — the keybinding reference.
 - `/copy` — copies the last assistant message to the clipboard (OSC 52;
   silent no-op where the terminal lacks clipboard support).

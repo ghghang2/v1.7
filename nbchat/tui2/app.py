@@ -202,6 +202,8 @@ class ChatApp(TerminalAgent):
         self._status_detail = ""
         self._ctx_used = 0.0
         self._ctx_budget = 0.0
+        self._auto_compact_due = False
+        self._auto_compact_frac, self._auto_compact_enabled = self._auto_compact_cfg()
         self._tok_times: list = []
         self._turns = 0
         self._turn_mutated = False  # auto-checkpoint once per edit-window
@@ -373,7 +375,82 @@ class ChatApp(TerminalAgent):
     def _status_window(self, estimated_tokens: int, budget: int) -> None:
         self._ctx_used = float(estimated_tokens)
         self._ctx_budget = float(budget)
+        # Auto-compact trigger: flag that the window is over the
+        # threshold; the actual compact runs at a safe post-turn point
+        # (_finalize_turn) so it never interrupts an in-flight turn.
+        if self._ctx_budget > 0:
+            self._auto_compact_due = ((self._ctx_used / self._ctx_budget)
+                                      >= self._auto_compact_frac)
+        else:
+            self._auto_compact_due = False
         self._ui_refresh()
+
+    @staticmethod
+    def _auto_compact_cfg():
+        """(threshold, enabled) for auto-compact from NBCHAT_AUTO_COMPACT.
+
+        Default (unset): enabled at 0.80 of the context budget.  A float in
+        (0, 1] sets the threshold (and enables); ``0``/``off``/``false``
+        disables it; ``1``/``on``/``true`` enables at the 0.80 default.
+        """
+        import os as _os
+        raw = (_os.environ.get("NBCHAT_AUTO_COMPACT", "") or "").strip().lower()
+        if raw in ("", "1", "on", "true", "yes"):
+            return 0.80, True
+        if raw in ("0", "off", "false", "no"):
+            return 0.80, False
+        try:
+            frac = float(raw)
+        except ValueError:
+            return 0.80, True
+        if frac <= 0.0:
+            return 0.80, False
+        return min(frac, 1.0), True
+
+    def _maybe_auto_compact(self) -> None:
+        """Compact the context off-thread when it crossed the threshold.
+
+        Called from _finalize_turn (post-turn, nothing chaining a new turn).
+        Skips when disabled, not flagged, or a turn is already running.
+        Never raises; the note is delivered on the UI thread via a "call".
+        """
+        if not (self._auto_compact_enabled and self._auto_compact_due):
+            return
+        if self.busy:
+            return  # a new turn is already running; try again next turn
+        self._auto_compact_due = False  # handle this flag now
+        events = self.events
+
+        def _worker():
+            # Let the just-finished turn release the send lock first.
+            import time as _t
+            for _ in range(30):
+                if not self.busy:
+                    break
+                _t.sleep(0.1)
+            if self.busy:
+                return  # a new turn started; defer to its finalize
+            try:
+                rep = self.force_compact("auto: context near budget")
+            except Exception as exc:
+                note = f"auto-compact: skipped ({type(exc).__name__})"
+                events.put("call", lambda n=note: self._note(n))
+                return
+            if not rep.get("compacted"):
+                note = f"auto-compact: {rep.get('reason', 'nothing to compact')}"
+                events.put("call", lambda n=note: self._note(n))
+                return
+            try:
+                from nbchat.tui.status import _humanise as _h
+                note = (f"auto-compact: {rep['before_rows']}\u2192{rep['window_rows']} "
+                        f"rows \u00b7 ~{_h(rep['before_tokens'])}"
+                        f"\u2192~{_h(rep['after_tokens'])} tok "
+                        f"(budget {_h(rep['budget'])})")
+            except Exception:
+                note = "auto-compact: context compacted to the budget"
+            events.put("call", lambda n=note: self._note(n))
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _print_user(self, text: str) -> None:
         self.log.add(chatc.ChatMessage(role="user", text=text))
@@ -607,6 +684,10 @@ class ChatApp(TerminalAgent):
             self._notify.push("turn complete", "", "ok",
                               write=self._term_write)
             self._ui_refresh()
+            # Auto-compact: the turn fully wound down and nothing is
+            # chaining a new turn — if the context window is over the
+            # threshold, compact now (off the worker thread).
+            self._maybe_auto_compact()
 
     def _interrupt(self) -> None:
         if self.busy:
@@ -1148,6 +1229,11 @@ class ChatApp(TerminalAgent):
         except Exception:
             pass
         lines.append(f"turns {self._turns}")
+        if self._auto_compact_enabled:
+            lines.append(f"auto-compact on @ {self._auto_compact_frac:.0%} "
+                         f"(NBCHAT_AUTO_COMPACT)")
+        else:
+            lines.append("auto-compact off (NBCHAT_AUTO_COMPACT=0)")
         return "\n".join(lines)
 
     def _cmd_monitor(self, arg: str) -> str:

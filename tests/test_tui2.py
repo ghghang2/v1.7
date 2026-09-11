@@ -3256,3 +3256,74 @@ def test_editor_replace_range_records_undo():
     # Clamping out-of-range bounds is safe.
     ed.replace_range(-5, 999, "X")
     assert ed.lines[ed.cursor_line] == "X"
+
+
+# ── auto-compact (context-over-threshold) ─────────────────────────
+def test_auto_compact_cfg_default():
+    from nbchat.tui2.app import ChatApp
+    assert ChatApp._auto_compact_cfg() == (0.8, True)
+
+def test_auto_compact_cfg_variants(monkeypatch):
+    from nbchat.tui2.app import ChatApp
+    monkeypatch.setenv("NBCHAT_AUTO_COMPACT", "0")
+    assert ChatApp._auto_compact_cfg() == (0.8, False)
+    monkeypatch.setenv("NBCHAT_AUTO_COMPACT", "off")
+    assert ChatApp._auto_compact_cfg() == (0.8, False)
+    monkeypatch.setenv("NBCHAT_AUTO_COMPACT", "0.6")
+    assert ChatApp._auto_compact_cfg() == (0.6, True)
+    monkeypatch.setenv("NBCHAT_AUTO_COMPACT", "1.5")
+    assert ChatApp._auto_compact_cfg() == (1.0, True)  # capped at 1.0
+    monkeypatch.setenv("NBCHAT_AUTO_COMPACT", "garbage")
+    assert ChatApp._auto_compact_cfg() == (0.8, True)  # fallback
+
+def test_status_window_flags_auto_compact_due():
+    app, _, _, _ = _make_chat_app()
+    app._auto_compact_frac = 0.8
+    app._status_window(85, 100)
+    assert app._auto_compact_due is True
+    app._status_window(50, 100)
+    assert app._auto_compact_due is False
+
+def test_finalize_turn_triggers_auto_compact(monkeypatch):
+    import time
+    app, _, _, _ = _make_chat_app()
+    calls = []
+    def fake_fc(instructions=""):
+        calls.append(instructions)
+        return {"compacted": False, "reason": "test"}
+    monkeypatch.setattr(app, "force_compact", fake_fc)
+    app._auto_compact_enabled = True
+    app._auto_compact_frac = 0.8
+    app._ctx_used, app._ctx_budget = 90.0, 100.0
+    app._auto_compact_due = True
+    app._redirect = None
+    app._finalize_turn()
+    for _ in range(60):
+        if calls:
+            break
+        time.sleep(0.05)
+    assert calls, "force_compact was not triggered by _finalize_turn"
+    assert "auto" in calls[0]
+
+def test_auto_compact_disabled_skips(monkeypatch):
+    import time
+    app, _, _, _ = _make_chat_app()
+    calls = []
+    monkeypatch.setattr(
+        app, "force_compact",
+        lambda instructions="": calls.append(instructions)
+        or {"compacted": False, "reason": "x"})
+    app._auto_compact_enabled = False
+    app._auto_compact_due = True
+    app._redirect = None
+    app._finalize_turn()
+    time.sleep(0.3)
+    assert not calls, "disabled auto-compact must not call force_compact"
+
+def test_context_shows_auto_compact_state():
+    app, _, _, _ = _make_chat_app()
+    app._auto_compact_enabled = True
+    app._auto_compact_frac = 0.8
+    assert "auto-compact on" in app._cmd_context("")
+    app._auto_compact_enabled = False
+    assert "auto-compact off" in app._cmd_context("")
