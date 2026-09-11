@@ -1958,3 +1958,78 @@ def test_theme_status_lists_available():
             assert t.name in out
     finally:
         theme.set_active("dark")
+
+
+# ── tui3 wave 6: external control socket ─────────────────────────────
+
+def _ctl_server(tmp_path, dispatch=None, status=None, sessions=None):
+    import os
+    from nbchat.tui2 import ctl
+    path = str(tmp_path / "ctl.sock")
+    dispatch = dispatch if dispatch is not None else (lambda fn: None)
+    status = status if status is not None else (lambda: {"busy": False})
+    sessions = sessions if sessions is not None else (lambda: [])
+    srv = ctl.ControlServer(
+        path,
+        dispatch=dispatch,
+        status_fn=status,
+        sessions_fn=sessions,
+        theme_fn=lambda n: None,
+        send_fn=lambda t: None,
+        quit_fn=lambda: None,
+    )
+    assert srv.start()
+    return srv, path
+
+
+def test_ctl_status_and_sessions(tmp_path):
+    from nbchat.tui2 import ctl
+    srv, path = _ctl_server(tmp_path,
+                            status=lambda: {"busy": True, "model": "m"},
+                            sessions=lambda: [{"session": "s1", "title": "t"}])
+    try:
+        r = ctl.call(path, "status")
+        assert r["ok"] and r["data"]["busy"] is True and r["data"]["model"] == "m"
+        r2 = ctl.call(path, "sessions")
+        assert r2["ok"] and r2["data"] == [{"session": "s1", "title": "t"}]
+    finally:
+        srv.stop()
+
+
+def test_ctl_mutating_commands_dispatch(tmp_path):
+    from nbchat.tui2 import ctl
+    calls = []
+    srv, path = _ctl_server(tmp_path,
+                            dispatch=lambda fn: calls.append(fn))
+    try:
+        assert ctl.call(path, "theme", "light")["queued"] is True
+        assert ctl.call(path, "send", "hi there")["queued"] is True
+        assert ctl.call(path, "quit")["queued"] is True
+        assert len(calls) == 3
+        # execute the queued closures: theme, send, quit
+        calls[0]()  # theme
+        calls[1]()  # send
+        calls[2]()  # quit
+    finally:
+        srv.stop()
+
+
+def test_ctl_unknown_command(tmp_path):
+    from nbchat.tui2 import ctl
+    srv, path = _ctl_server(tmp_path)
+    try:
+        r = ctl.call(path, "bogus")
+        assert r["ok"] is False and "unknown command" in r["error"]
+    finally:
+        srv.stop()
+
+
+def test_ctl_main_no_running_tui(tmp_path, capsys):
+    import os
+    from nbchat.tui2 import ctl
+    os.environ["NBCHAT_CTL_SOCKET"] = str(tmp_path / "nope.sock")
+    try:
+        rc = ctl.main(["status"])
+        assert rc == 1  # no socket present
+    finally:
+        os.environ.pop("NBCHAT_CTL_SOCKET", None)

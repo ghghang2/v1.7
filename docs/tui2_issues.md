@@ -368,6 +368,18 @@ with the new colours), fires a toast, and saves the choice to the settings
 file (a new `theme` key, applied at startup).  `LIGHT` / `PRIME` stay
 concrete `Theme` objects for lookup.
 
+**tui3 wave 6 — external control socket (`nbchat-ctl`):** a running TUI
+binds a local Unix socket (`~/.nbchat/tui2-ctl.sock`; override
+`NBCHAT_CTL_SOCKET`, disable `NBCHAT_NO_CTL=1`) driven by
+`python -m nbchat.tui2.ctl <cmd> [arg]` (newline-delimited JSON).  Commands:
+`status`, `sessions`, `theme <name>`, `send <text>`, `quit`.  Read-only
+commands answer on the socket thread; mutating ones enqueue a closure onto
+the UI thread via a new `"call"` event type in the render loop and ack
+`{"queued": true}` immediately, so a control client can never block or
+crash the TUI.  The server is a daemon thread; `ControlServer.stop()`
+unlinks the socket on exit; every socket operation is wrapped so a
+control-client problem cannot take the TUI down.
+
 ---
 
 ## Not addressed (out of scope for this pass, tracked in the port tracker)

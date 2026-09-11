@@ -202,7 +202,22 @@ shell command (`!ls`); `!!` also stores the output for later.
   (`/notify`), the tool-approval gate and its risky-tool list (`/approve`),
   the mouse-wheel scroll tick, and the active theme (`/theme`).  They load
   at startup and save on each toggle and on exit.
-- The larger tui3 scope (socket API, detach) is tracked in
+- **External control socket (`nbchat-ctl`)** — a running TUI listens on a
+  local Unix socket (`~/.nbchat/tui2-ctl.sock`; override `NBCHAT_CTL_SOCKET`,
+  disable `NBCHAT_NO_CTL=1`) that a script or another process can drive:
+
+  ```
+  python -m nbchat.tui2.ctl status            # busy / session / model / turns / theme
+  python -m nbchat.tui2.ctl sessions          # list tui: sessions
+  python -m nbchat.tui2.ctl theme light       # switch the colour theme
+  python -m nbchat.tui2.ctl send "hello"      # submit a message
+  python -m nbchat.tui2.ctl quit              # request a clean exit
+  ```
+
+  Read-only commands answer synchronously; mutating ones are enqueued onto
+  the UI thread and acked immediately (`{"queued": true}`), so a control
+  client can never block or crash the TUI.
+- The remaining tui3 scope (detachable background agent) is tracked in
   `docs/tui3_roadmap.md`.
 
 The v1 print-based REPL is unchanged and remains the default; v2 is

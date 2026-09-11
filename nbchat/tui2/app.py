@@ -1822,6 +1822,61 @@ class ChatApp(TerminalAgent):
 
     # ── entry point ─────────────────────────────────────────────────────
 
+    def _start_control(self):
+        """Start the optional external control socket (tui3 wave 6).
+
+        Returns the running :class:`ControlServer`, or ``None`` when
+        disabled (``NBCHAT_NO_CTL=1``) or when binding fails.  Read-only
+        commands are answered on the socket thread; mutating ones are
+        enqueued onto the UI thread via the ``"call"`` event.
+        """
+        from . import ctl
+        if not ctl.enabled():
+            return None
+
+        def _status() -> dict:
+            from . import theme as _theme
+            return {
+                "busy": bool(self.busy),
+                "session": self.session_id,
+                "model": self.model_name,
+                "turns": int(self._turns),
+                "theme": _theme.current().name,
+            }
+
+        def _sessions() -> list:
+            from nbchat.core import db
+            try:
+                return [
+                    {"session": r.get("session_id"), "title": r.get("title")}
+                    for r in db.list_sessions_with_title("tui:")
+                ]
+            except Exception:
+                return []
+
+        def _theme(name: str) -> None:
+            out = self._cmd_theme(name)
+            if out:
+                self._note(out)
+            self._ui_refresh()
+
+        def _send(text: str) -> None:
+            self._submit(text)
+
+        def _quit() -> None:
+            self.events.put("quit")
+
+        server = ctl.ControlServer(
+            ctl.socket_path(),
+            dispatch=lambda fn: self.events.put("call", fn),
+            status_fn=_status,
+            sessions_fn=_sessions,
+            theme_fn=_theme,
+            send_fn=_send,
+            quit_fn=_quit,
+        )
+        return server if server.start() else None
+
     def run(self) -> int:
         # Redirect stderr to a log file for the session: the conversation
         # loop\'s logging warnings (mid-stream retries, …) would otherwise
@@ -1836,6 +1891,9 @@ class ChatApp(TerminalAgent):
             sys.stderr = stderr_file
         except Exception:
             stderr_file = None
+        # Optional external control socket (tui3 wave 6): lets an external
+        # process / nbchat-ctl drive this TUI.  Best-effort; never blocks.
+        control = self._start_control()
         try:
             with self.term:
                 self._install_approval_gate()
@@ -1843,6 +1901,11 @@ class ChatApp(TerminalAgent):
         except KeyboardInterrupt:
             pass
         finally:
+            if control is not None:
+                try:
+                    control.stop()
+                except Exception:
+                    pass
             self._save_cfg()
             self._remove_approval_gate()
             sys.stderr = saved_stderr

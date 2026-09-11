@@ -277,6 +277,14 @@ class TUIApp:
                         quit_requested = True
                     elif kind == "render":
                         render_requested = True
+                    elif kind == "call" and callable(payload):
+                        # A closure to run on the UI thread (e.g. an
+                        # external control-socket command).  Never let a
+                        # bad closure take the render loop down.
+                        try:
+                            payload()
+                        except Exception:
+                            pass
                 if quit_requested:
                     self.stop()
                     break

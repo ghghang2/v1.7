@@ -33,8 +33,8 @@ these warrant **tui3** rather than piling onto tui2:
 (keymap + browse + mode bar), wave 2 (in-log search + visual copy),
 wave 3 (mouse wheel scroll) + 3b (click / drag-to-copy),
 wave 4 (persistent user settings), wave 5
-(colour theming via the `_ThemeRef` proxy).  Next: JSON socket API +
-`nbchat-ctl`, then detachable background agent.
+(colour theming via the `_ThemeRef` proxy), wave 6 (external control
+socket + `nbchat-ctl`).  Next: detachable background agent.
 
 ## tui3 wave 1 (this pass)
 
@@ -126,4 +126,19 @@ persists the choice (`config.py` gained a `theme` key, applied at startup
 via `config.set_theme_active`).  `LIGHT` / `PRIME` remain concrete `Theme`
 objects for `get_theme` / `all_themes`.
 
-Waves 6+ (socket API, detach) proceed in the build order above.
+**tui3 wave 6 — external control socket (`nbchat-ctl`)** (defensive,
+optional): a running TUI binds a local Unix socket
+(`~/.nbchat/tui2-ctl.sock`; override `NBCHAT_CTL_SOCKET`, disable
+`NBCHAT_NO_CTL=1`) that an external process drives with
+`python -m nbchat.tui2.ctl <cmd> [arg]`.  Protocol is newline-delimited
+JSON: request `{"cmd", "arg"}`, response `{"ok", ...}`.  Commands:
+`status` (busy/session/model/turns/theme), `sessions`, `theme <name>`,
+`send <text>`, `quit`.  Read-only commands answer on the socket thread
+(scalar/atomic reads + read-only db); mutating ones enqueue a closure onto
+the UI thread via a new `"call"` event type in the render loop
+(`events.put("call", fn)`) and ack `{"queued": true}` immediately — so a
+control client can never block or crash the TUI.  The server is a daemon
+thread; every socket op is wrapped; `ControlServer.stop()` unlinks the
+socket on exit.
+
+Waves 7+ (detachable background agent) proceed in the build order above.
