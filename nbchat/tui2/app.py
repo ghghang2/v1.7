@@ -1393,6 +1393,12 @@ class ChatApp(TerminalAgent):
         if cmd == "/load" and not arg:
             self._open_picker()
             return
+        if cmd == "/sessions" and not arg:
+            # Bare /sessions opens the fuzzy session picker (consistent with
+            # bare /load), instead of the v1 text list.  /sessions <id> still
+            # falls through to v1 (load by id).
+            self._open_picker()
+            return
         if cmd == "/name":
             line = "/title " + arg if arg else "/title"
         elif cmd in self._TUI2_NATIVE:
@@ -1470,7 +1476,7 @@ class ChatApp(TerminalAgent):
             "  /lessons    /memory  /refine   continual-harness",
             "  !<cmd>      run a shell command ( !! stores output )",
             "  Ctrl+T      show / hide thinking blocks",
-            "  Ctrl+L      session picker (bare /load = picker)",
+            "  Ctrl+L      session picker (bare /load or /sessions = picker)",
             "  Ctrl+P      command palette    Ctrl+R reverse search",
             "  Ctrl+O      browse mode (j/k scroll the log)",
             "  @<name>     file completion (up/down pick, Enter/Tab, Esc)",
@@ -3441,7 +3447,7 @@ class ChatApp(TerminalAgent):
         ("/lessons",           "applied refinement lessons"),
         ("/memory",            "L1 core + L2 episodic memory"),
         ("/btw ",              "throwaway side question"),
-        ("/sessions",          "list saved tui sessions"),
+        ("/sessions",          "session picker (bare) or list by id"),
         ("/load ",             "load a session by id"),
         ("/new",               "start a fresh session"),
         ("/save",              "save the current session"),

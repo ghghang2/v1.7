@@ -2504,6 +2504,24 @@ def test_status_clock_does_not_break_other_segments(monkeypatch):
     assert _re.search(r"\d{2}:\d{2}:\d{2}", out)
 
 
+def test_sessions_bare_opens_picker():
+    app, *_ = _make_chat_app()
+    assert app._picker is None
+    app._run_command("/sessions")
+    assert app._picker is not None
+    assert app._modal_kind == "session"
+
+def test_sessions_picker_same_as_load():
+    # bare /sessions and bare /load both open the identical session picker
+    app, *_ = _make_chat_app()
+    app._run_command("/sessions")
+    picker_sessions = app._picker_sessions
+    app._picker = None
+    app._run_command("/load")
+    assert app._picker is not None
+    assert app._picker_sessions == picker_sessions
+
+
 
 
 

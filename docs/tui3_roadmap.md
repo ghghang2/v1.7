@@ -572,3 +572,19 @@ updates live at zero cost.
 - **Tests** - 3 new (off by default - no `HH:MM:SS` pattern; on - the pattern is
   present; on - other segments like `tok/s` still render alongside it).  tui2
   suite 345 passed; full suite 719 green (345+79+295).
+
+## tui3: bare /sessions opens the session picker (tui2-only)
+
+**Bare `/sessions` = picker** — a consistency polish.  In tui2, no-arg
+`/load` already opened the fuzzy session picker (Ctrl+L), but no-arg
+`/sessions` fell through to the v1 text list.  Now bare `/sessions` opens the
+same picker (consistent with `/load` and Ctrl+L); `/sessions <id>` still
+falls through to v1 (list by id), so nothing is removed.
+
+- **`_run_command`** (tui2/app.py) - a no-arg `/sessions` branch added right
+  after the existing no-arg `/load` branch: both call `self._open_picker()` and
+  return.  The tui2 `/help` Ctrl+L line and the Ctrl+P palette label for
+  `/sessions` were updated to reflect the picker.
+- **Tests** - 2 new (bare `/sessions` opens the session modal picker; the picker
+  it opens is identical to the one `/load` opens).  tui2 suite 347 passed; full
+  suite 721 green (347+79+295).

@@ -305,8 +305,11 @@ shell command (`!ls`); `!!` also stores the output for later.
   silently. The gate is the difference from `/goal`: you keep a hand on the
   wheel without retyping the objective.
 - `/name <title>` — alias for v1's `/title`.
-- Bare `/load` (no id) opens the **session picker**: type to fuzzy-filter,
-  `↑/↓` move, `Enter` loads, `Esc`/`Ctrl+C` cancel.
+- Bare `/load` (no id) — or bare `/sessions` — opens the **session picker**:
+  type to fuzzy-filter, `↑/↓` move, `Enter` loads, `Esc`/`Ctrl+C` cancel.
+  Pinned sessions sort to the top; each row shows title, message count and
+  last-used time.  (In tui2, `/sessions` with no argument opens the picker
+  instead of the old text list; `/sessions <id>` still lists by id.)
 - `!cmd` / `!!cmd` — run a local shell command and show its output as a
   bordered panel (exit code in the title); `!!` also stores the combined
   output on the app for later reference.
