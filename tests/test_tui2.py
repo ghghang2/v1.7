@@ -2428,6 +2428,57 @@ def test_team_stats_breakdown(monkeypatch):
         except OSError: pass
 
 
+def test_window_title_passthrough_noop():
+    # In passthrough (non-TTY) mode the title write is skipped entirely.
+    app, *_ = _make_chat_app()
+    app._turn_thread = None
+    # default term is passthrough; ensure no crash and no write side effect
+    app._refresh_window_title()  # should be a no-op, must not raise
+
+class _CapTerm:
+    def __init__(self):
+        self._passthrough = False
+        self.written = []
+    def _write(self, data):
+        self.written.append(data)
+
+def test_window_title_real():
+    import types
+    app, *_ = _make_chat_app()
+    term = _CapTerm()
+    app._tui.term = term
+    app._turn_thread = None
+    app._refresh_window_title()
+    assert len(term.written) == 1
+    seq = term.written[0]
+    assert seq.startswith(chr(27) + "]2;")
+    assert seq.endswith(chr(7))
+    assert "nbchat" in seq
+    # not working -> no [working]
+    assert "[working]" not in seq
+
+def test_window_title_working():
+    import threading
+    app, *_ = _make_chat_app()
+    term = _CapTerm()
+    app._tui.term = term
+    t = threading.Thread(target=lambda: threading.Event().wait(1.0), daemon=True)
+    t.start()
+    app._turn_thread = t
+    app._refresh_window_title()
+    seq = term.written[-1]
+    assert "[working]" in seq
+
+def test_window_title_env_off(monkeypatch):
+    app, *_ = _make_chat_app()
+    term = _CapTerm()
+    app._tui.term = term
+    app._turn_thread = None
+    monkeypatch.setenv("NBCHAT_TUI3_WINDOW_TITLE", "0")
+    app._refresh_window_title()
+    assert term.written == []  # env kill switch disables it
+
+
 
 
 

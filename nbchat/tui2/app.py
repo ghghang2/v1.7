@@ -461,6 +461,7 @@ class ChatApp(TerminalAgent):
         self._redirect = None
         self._turns = 0
         self._populate_history()
+        self._refresh_window_title()
 
     # ── agent hook overrides (print → render tree) ──────────────────────
 
@@ -841,6 +842,7 @@ class ChatApp(TerminalAgent):
         self._turn_thread.start()
 
     def _turn_worker(self, text: str) -> None:
+        self._refresh_window_title()
         try:
             self.send(text)
         except KeyboardInterrupt:
@@ -978,6 +980,8 @@ class ChatApp(TerminalAgent):
             self._maybe_auto_compact()
             # Steering queue: run the next queued follow-up, if any.
             self._process_next_queued()
+            # Window title: reflect the settled (idle) state.
+            self._refresh_window_title()
 
     def _interrupt(self) -> None:
         if self.busy:
@@ -3056,6 +3060,29 @@ class ChatApp(TerminalAgent):
         except Exception:
             pass
 
+    def _refresh_window_title(self) -> None:
+        """Set the terminal window/tab title (OSC 2) to the current session
+        plus working state.  A side-channel escape written straight to the
+        terminal (never part of the diffed frame), so it is safe at any point
+        and cannot corrupt rendering.  No-op in passthrough (non-TTY) mode and
+        when ``NBCHAT_TUI3_WINDOW_TITLE=0``.
+        """
+        if os.environ.get("NBCHAT_TUI3_WINDOW_TITLE") == "0":
+            return
+        term = getattr(self._tui, "term", None)
+        if term is None or getattr(term, "_passthrough", False):
+            return
+        sid = self.session_id or ""
+        short = sid.rsplit(":", 1)[-1][:8] if sid else ""
+        working = self._turn_thread is not None and self._turn_thread.is_alive()
+        title = "nbchat" + ((" " + short) if short else "")
+        if working:
+            title += " [working]"
+        try:
+            term._write("\033]2;" + title + "\007")
+        except Exception:
+            pass
+
     def _live_rows(self, w: int) -> List[Line]:
         """The in-flight turn: thinking blocks, tool panels, answer text."""
         if not (self._stream_blocks or self._stream_text):
@@ -4295,6 +4322,7 @@ class ChatApp(TerminalAgent):
             with self.term:
                 self._apply_auto_theme()
                 self._install_approval_gate()
+                self._refresh_window_title()
                 self._tui.start()
         except KeyboardInterrupt:
             pass

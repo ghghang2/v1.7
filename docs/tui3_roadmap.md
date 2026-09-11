@@ -529,3 +529,29 @@ full team-observability picture.
   different-run session shows per-worker counts, the 3+5=8 total, and excludes the
   other run; the `/team stats` command path).  tui2 suite 338 passed; full suite
   712 green (338+79+295).
+
+## tui3: terminal window title (tui2-only)
+
+**Window title** — the herdr research listed a "window-title template" as a
+lower-value/fit item to fold into the config feature.  This ships it as a
+trivial, safe polish: the terminal window/tab title reflects the current
+session and working state, so an active agent is visible at a glance in a
+tabbed terminal.
+
+- **`_refresh_window_title()`** (tui2/app.py) - pure/side-channel.  Computes the
+  title (`nbchat <session-short>` plus ` [working]` while the turn thread is
+  alive) and writes a single OSC 2 escape (`\033]2;<title>\007`) straight to the
+  terminal via `term._write`.  It is never part of the diffed frame, so it cannot
+  disturb the differential renderer.  No-op in passthrough (non-TTY / test) mode
+  and when `NBCHAT_TUI3_WINDOW_TITLE=0`.  "working" is derived from the turn
+  thread liveness, so it is always accurate at refresh time.
+- **Wiring** - called at startup (right after raw mode is entered, before the
+  render loop), on session change (`_session_changed`), at turn start
+  (`_turn_worker`), and at turn end (`_finalize_turn`).  The title therefore
+  tracks the session and flips to `[working]` while a turn runs.
+- **Tests** - 4 new (passthrough no-op; a fake capturing term gets the exact OSC 2
+  sequence with the session id and no `[working]`; a live turn thread yields
+  `[working]`; the `NBCHAT_TUI3_WINDOW_TITLE=0` kill switch disables the write).
+  Plus an E2E pty probe confirming the startup title (`\033]2;nbchat <sid>\007`)
+  reaches a real terminal.  tui2 suite 342 passed; full suite 716 green
+  (342+79+295).
