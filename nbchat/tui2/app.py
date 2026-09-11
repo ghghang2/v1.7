@@ -50,6 +50,36 @@ _TOOL_TEXT_RE = re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL)
 # Cap on visible tool-result lines inside a panel (v1 shows ~the same).
 _TOOL_RESULT_LINES = 8
 
+# ── Keymap substrate (tui3 wave 1) ────────────────────────────────────
+# Single source of truth for the keybindings.  It generates BOTH the
+# ``/hotkeys`` reference and the on-screen **mode bar**, so the two can
+# never desync.  Each mode is a tuple of ``(key, description)`` rows.
+KEYMAP = {
+    "normal": (
+        ("enter", "send message"),
+        ("ctrl+d", "send (quit when input empty)"),
+        ("esc", "interrupt turn / close modal"),
+        ("ctrl+c", "interrupt (busy) or quit (idle)"),
+        ("ctrl+o", "toggle browse mode"),
+        ("ctrl+t", "show / hide thinking blocks"),
+        ("ctrl+l", "session picker (or bare /load)"),
+        ("ctrl+p", "command palette"),
+        ("ctrl+r", "reverse search input history"),
+        ("pgup/pgdn", "scroll the log up / down"),
+        ("home/end", "jump to the top / bottom of the log"),
+        ("!<cmd>", "run a shell command (!! stores output)"),
+    ),
+    "browse": (
+        ("j / k", "scroll down / up"),
+        ("pgup / pgdn", "page down / up"),
+        ("home / end", "jump to the top / bottom"),
+        ("esc / ctrl+o", "leave browse mode"),
+    ),
+}
+
+# How many key hints the mode bar shows for the active mode.
+_MODEBAR_HINTS = 5
+
 
 class ChatApp(TerminalAgent):
     """A full conversation app: agent + chat log + input line.
@@ -145,6 +175,10 @@ class ChatApp(TerminalAgent):
         # user runs ``/goal stop``.
         # In-TUI notification stack (toasts + BEL + optional sound).
         self._notify = NotifyStack()
+
+        # Browse mode (tui3): a key-capturing mode for reading/scrolling the
+        # log without typing into the editor.  Toggled with Ctrl+O.
+        self._browse = False
 
         self._goal = None
         self._goal_budget = 20  # default auto-continue turn budget
@@ -496,6 +530,45 @@ class ChatApp(TerminalAgent):
         if self._picker is not None:
             self._picker_key(key)
             return
+        # Browse mode (tui3): Ctrl+O toggles it; while active it captures
+        # keys for reading/scrolling the log instead of the editor.
+        if key.name == "ctrl+o":
+            self._browse = not self._browse
+            if not self._browse:
+                self.log.offset = 0  # snap back to the bottom on exit
+            self._ui_refresh()
+            return
+        if self._browse:
+            if key.name in ("escape", "esc"):
+                self._browse = False
+                self.log.offset = 0
+                self._ui_refresh()
+                return
+            if key.name == "j":
+                self._scroll_log(-1)  # down / newer
+                return
+            if key.name == "k":
+                self._scroll_log(1)   # up / older
+                return
+            if key.name == "pageup":
+                self._scroll_log(max(5, (self.term.height - 8) // 2))
+                return
+            if key.name == "pagedown":
+                self._scroll_log(-max(5, (self.term.height - 8) // 2))
+                return
+            if key.name == "home":
+                w = self.term.width
+                total = len(self.log._all_rows(w))
+                self.log.offset = max(0, total - max(self.term.height - 8, 2))
+                self._ui_refresh()
+                return
+            if key.name == "end":
+                self.log.offset = 0
+                self._ui_refresh()
+                return
+            # Any other key is consumed (not typed into the editor).
+            self._ui_refresh()
+            return
         if key.name == "ctrl+t":
             self._toggle_thinking()
             return
@@ -785,6 +858,7 @@ class ChatApp(TerminalAgent):
             "  Ctrl+T      show / hide thinking blocks",
             "  Ctrl+L      session picker (bare /load = picker)",
             "  Ctrl+P      command palette    Ctrl+R reverse search",
+            "  Ctrl+O      browse mode (j/k scroll the log)",
             "  PgUp/PgDn   scrollback         Home/End top/bottom",
         ]
         return nl.join(rows)
@@ -845,24 +919,16 @@ class ChatApp(TerminalAgent):
         return "\n".join(lines)
 
     def _cmd_hotkeys(self, arg: str) -> str:
-        rows = [
-            ("enter", "send message"),
-            ("ctrl+d", "send (quit when input empty)"),
-            ("esc", "interrupt turn / cancel modal"),
-            ("ctrl+c", "interrupt (busy) or quit (idle)"),
-            ("ctrl+t", "show / hide thinking blocks"),
-            ("ctrl+l", "session picker (or bare /load)"),
-            ("pgup/pgdn", "scroll the conversation up / down"),
-            ("home/end", "jump to the top / bottom of the log"),
-            ("ctrl+p", "command palette (fuzzy find)"),
-            ("ctrl+r", "reverse search of submitted input"),
-            ("!<cmd>", "run a shell command (!! stores output)"),
-            ("a", "always-approve a pending tool"),
-            ("/help", "list slash commands (+ TUI v2 extras)"),
-        ]
-        out = ["hotkeys:"]
-        for k, desc in rows:
-            out.append(f"  {k:<9} {desc}")
+        """Generated from the single ``KEYMAP`` source of truth."""
+        out = ["hotkeys (normal mode):"]
+        for k, desc in KEYMAP["normal"]:
+            out.append(f"  {k:<11} {desc}")
+        out.append("extra:")
+        out.append("  " + " " * 9 + "a            always-approve a pending tool")
+        out.append("  " + " " * 9 + "/help        list slash commands (+ TUI v2 extras)")
+        out.append("hotkeys (browse mode, Ctrl+O):")
+        for k, desc in KEYMAP["browse"]:
+            out.append(f"  {k:<11} {desc}")
         return "\n".join(out)
 
     def _cmd_copy(self, arg: str) -> str:
@@ -1377,9 +1443,10 @@ class ChatApp(TerminalAgent):
         self._notify.prune()
         toast_lines = self._notify.render_one(w)
         toast_h = len(toast_lines)
-        # Fixed chrome: 1 header + toast_h + 1 rule + bottom_h + 1 status.
-        region = max(h - bottom_h - header_h - 2 - toast_h, 2)
-        log_rows = max(h - bottom_h - header_h - 4 - toast_h, 2)
+        # Fixed chrome: 1 header + toast_h + 1 rule + bottom_h + 1 modebar
+        # + 1 status.
+        region = max(h - bottom_h - header_h - 3 - toast_h, 2)
+        log_rows = max(h - bottom_h - header_h - 5 - toast_h, 2)
         self.log.rows = log_rows
 
         body = self.log.render(w)
@@ -1414,6 +1481,7 @@ class ChatApp(TerminalAgent):
                 clip=True,
             ).render(w))
         scroll_tag = f"\u2191{self.log.offset} " if self.log.offset else ""
+        rows.append(self._mode_bar(w))
         rows.append(StatusLine(
             left=f"turns: {self._turns}   {scroll_tag}{status_left}",
             right=status_right,
@@ -1448,6 +1516,22 @@ class ChatApp(TerminalAgent):
             self.term.stdout.flush()
         except Exception:
             pass
+
+    def _mode_bar(self, w: int) -> Line:
+        """The contextual mode bar (tui3): active mode + its key hints,
+        generated from the single ``KEYMAP`` source of truth."""
+        mode = "browse" if self._browse else "normal"
+        hints = " · ".join(f"{k} {d}" for k, d in KEYMAP[mode][: _MODEBAR_HINTS])
+        label = ("browse" if self._browse else "normal")
+        text = f" mode: {label}   {hints}"
+        if len(text) > w:
+            text = text[: w - 1] + "…"
+        return Line([
+            Segment("│", DARK.border),
+            Segment(text, DARK.status if not self._browse else DARK.warn),
+            Segment(" " * max(w - 2 - len(text), 0), DARK.status),
+            Segment("│", DARK.border),
+        ])
 
     def _editor_lines(self):
         return self.editor.render(width=self.term.width - 4) \

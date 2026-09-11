@@ -31,6 +31,7 @@ from nbchat.tui2 import (
     render_frame,
 )
 from nbchat.tui2.notify import NotifyStack
+from nbchat.tui2.app import KEYMAP
 
 CYAN = Style(fg=36)
 BOLD = Style(bold=True)
@@ -975,7 +976,10 @@ def test_run_command_routes_tui2_native_not_to_v1(monkeypatch):
     app, *_ = _make_chat_app()
     app._run_command("/hotkeys")
     assert "line" not in called  # never delegated to v1
-    assert any("hotkeys:" in (m.text or "") for m in app.log.messages)
+    txt = " ".join(m.text or "" for m in app.log.messages)
+    assert "hotkeys (normal mode)" in txt
+    assert "browse mode" in txt  # generated from the KEYMAP source of truth
+    assert "ctrl+o" in txt
 
 
 def test_force_compact_nothing_to_evict():
@@ -1574,3 +1578,66 @@ def test_help_addendum_lists_tui2_extras():
     assert "TUI v2 extras" in add
     for tok in ("/goal", "/notify", "/approve", "/compact", "Ctrl+P"):
         assert tok in add
+
+
+# ── tui3 wave 1: keymap substrate + browse mode + mode bar ────────────
+
+def _frame_text(app):
+    frame = app._build_frame()
+    return "\n".join("".join(s.text for s in ln.segments)
+                      for ln in frame.lines), frame
+
+
+def test_mode_bar_renders_and_switches():
+    app, term, *_ = _make_chat_app()
+    text, frame = _frame_text(app)
+    assert "mode: normal" in text
+    assert len(frame.lines) == term.height
+    app._browse = True
+    text, frame = _frame_text(app)
+    assert "mode: browse" in text
+    assert len(frame.lines) == term.height  # height still exact
+
+
+def test_hotkeys_generated_from_keymap():
+    app, *_ = _make_chat_app()
+    out = app._cmd_hotkeys("")
+    # every normal-mode KEYMAP row appears, and the browse section too
+    for k, _d in KEYMAP["normal"]:
+        assert k in out
+    assert "browse mode" in out
+    for k, _d in KEYMAP["browse"]:
+        assert k in out
+
+
+def test_browse_toggle_and_scroll():
+    from nbchat.tui2 import chat as chatc
+    app, *_ = _make_chat_app()
+    # give the log enough content to scroll
+    for i in range(60):
+        app.log.add(chatc.ChatMessage(role="user", text=f"line {i}"))
+    app._scroll_log(0)  # ensure offset valid
+    assert app._browse is False
+    app._on_input(Key("ctrl+o"))
+    assert app._browse is True
+    off0 = app.log.offset
+    app._on_input(Key("k"))  # up / older -> offset grows by one
+    assert app.log.offset == off0 + 1
+    app._on_input(Key("j"))  # down / newer -> offset shrinks by one
+    assert app.log.offset == off0
+    app._on_input(Key("k"))
+    up = app.log.offset
+    app._on_input(Key("k"))
+    assert app.log.offset == up + 1
+    # a normal letter is consumed, NOT typed into the editor
+    app._on_input(Key("x"))
+    assert app.editor.text() == ""
+    # esc leaves browse and snaps to the bottom
+    app._on_input(Key("escape"))
+    assert app._browse is False
+    assert app.log.offset == 0
+    # ctrl+o also leaves browse
+    app._on_input(Key("ctrl+o"))
+    assert app._browse is True
+    app._on_input(Key("ctrl+o"))
+    assert app._browse is False

@@ -174,11 +174,23 @@ shell command (`!ls`); `!!` also stores the output for later.
   **reverse search** over the input history; pick a line and it is re-entered
   for editing.
 
+**TUI v3 — keymap substrate + browse mode** (on the same engine):
+
+- A **mode bar** (one line above the status line) shows the active mode and
+  its key hints.  Both the mode bar and `/hotkeys` are generated from a
+  single data-driven `KEYMAP`, so they can never desync.
+- **Browse mode** — press `Ctrl+O` to read/scroll the log without typing:
+  `j`/`k` step down/up, `PgUp`/`PgDn` page, `Home`/`End` jump; `Esc` (or
+  `Ctrl+O`) leaves and snaps back to the bottom.  The larger tui3 scope
+  (in-log search, visual copy, mouse, theming, config, socket API, detach)
+  is tracked in `docs/tui3_roadmap.md`.
+
 The v1 print-based REPL is unchanged and remains the default; v2 is
 opt-in via the flag above.  Voice / email / supervisor / team surfaces
 start from the v1 entry point (their status output is print-based); the
 chat, sessions and commands work in v2.  See `docs/tui2_issues.md` for the
-2026-07-10 fix log and `docs/prime_tui_port_tracker.md` for the port plan.
+2026-07-10 fix log, `docs/tui3_roadmap.md` for the v3 plan, and
+`docs/prime_tui_port_tracker.md` for the port plan.
 
 ---
 

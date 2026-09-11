@@ -299,6 +299,20 @@ the channels; `/notify test [kind]` fires a sample. `/help` now appends a
 "TUI v2 extras" addendum listing the tui2-native commands, and `/hotkeys`
 covers the new bindings.
 
+**tui3 wave 1 — keymap substrate + browse mode + mode bar:** a single
+data-driven `KEYMAP` (module-level in `app.py`) is the source of truth for
+both the `/hotkeys` reference and the new **mode bar** — one line above the
+status line showing the active mode and its key hints — so the two can
+never desync. **Browse mode** is toggled with `Ctrl+O` (a free key;
+`Ctrl+B` is the editor's backward): while active it captures keys so the
+log can be read without typing — `j`/`k` step down/up one line,
+`PgUp`/`PgDn` page, `Home`/`End` jump to the top/bottom, and `Esc` (or
+`Ctrl+O`) leaves the mode and snaps the offset back to the bottom. The
+frame budget accounts for the extra mode-bar line (the log region shrinks
+by one). The remaining tui3 scope (in-log `/` search, `v` visual copy,
+mouse, theming, user config, JSON socket API, detachable agent) is scoped
+in `docs/tui3_roadmap.md`.
+
 ---
 
 ## Not addressed (out of scope for this pass, tracked in the port tracker)
