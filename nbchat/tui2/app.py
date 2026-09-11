@@ -203,6 +203,9 @@ class ChatApp(TerminalAgent):
         self._ctx_budget = 0.0
         self._tok_times: list = []
         self._turns = 0
+        self._turn_mutated = False  # auto-checkpoint once per edit-window
+        self._file_mutating_tools = {"create_file", "make_change_to_file",
+                                     "run_command"}
         self._loader = Loader("ready")
 
         # Live streaming turn.  Blocks accumulate in chronological order;
@@ -473,6 +476,7 @@ class ChatApp(TerminalAgent):
     # ── turn worker ─────────────────────────────────────────────────────
 
     def _start_turn(self, text: str) -> None:
+        self._turn_mutated = False  # fresh edit-window: allow an auto-checkpoint
         self.log.offset = 0  # the user just sent a message: follow the reply
         if self._turn_thread is not None and self._turn_thread.is_alive():
             # Mid-stream interjection (v1 semantics): stop the running turn
@@ -883,6 +887,9 @@ class ChatApp(TerminalAgent):
 
         def _gated(tool_name: str, args_json: str,
                    timeout: int | None = None) -> str:
+            if tool_name in app._file_mutating_tools and not app._turn_mutated:
+                app._auto_checkpoint(tool_name)  # best-effort, never raises
+                app._turn_mutated = True
             if app._approval_enabled and tool_name in app._risky_tools:
                 if not app._prompt_approval(tool_name, args_json):
                     return (f"User DECLINED to run '{tool_name}'. Do not "
@@ -963,7 +970,7 @@ class ChatApp(TerminalAgent):
                     "/refine", "/lessons", "/memory", "/btw", "/approve",
                     "/goal", "/notify", "/theme", "/monitor", "/inbox",
                     "/team", "/browse", "/search", "/sup", "/voice",
-                    "/fork")
+                    "/fork", "/checkpoint", "/undo")
 
     def _run_command(self, line: str) -> None:
         """Route a slash command.
@@ -1025,6 +1032,8 @@ class ChatApp(TerminalAgent):
             "  /sup [q]    supervisor state query / watchdog status",
             "  /voice      Alfred voice-bridge status (--voice)",
             "  /fork [n]   branch this conversation into a new session",
+            "  /checkpoint [label]   record a restorable snapshot of the tree",
+            "  /undo [label]         preview (no label) / revert tracked files",
             "  /compact    force a context summarisation now",
             "  /copy       copy last reply to the clipboard",
             "  /btw <q>    side question, kept out of this session",
@@ -1065,6 +1074,8 @@ class ChatApp(TerminalAgent):
             "/sup": self._cmd_sup,
             "/voice": self._cmd_voice,
             "/fork": self._cmd_fork,
+            "/checkpoint": self._cmd_checkpoint,
+            "/undo": self._cmd_undo,
         }
         fn = handlers.get(cmd)
         try:
@@ -1318,6 +1329,58 @@ class ChatApp(TerminalAgent):
         self._note(f"forked into {self.session_id} ({where}); "
                    f"original {prev} is untouched")
         return f"fork: branched {where} -> {self.session_id}"
+
+    # ── /checkpoint + /undo (tui3: safe git-backed code revert) ────────
+
+    def _auto_checkpoint(self, tool_name: str) -> None:
+        """Best-effort pre-edit checkpoint, once per edit-window (silent)."""
+        try:
+            from . import undo as _undo
+            cwd = os.getcwd()
+            if not _undo.is_git_repo(cwd):
+                return
+            cp = _undo.take_checkpoint(cwd, self.session_id, label="auto")
+            if cp:
+                self._status_set("checkpt", cp["sha"])
+        except Exception:
+            pass
+
+    def _cmd_checkpoint(self, arg: str) -> str:
+        """``/checkpoint [label]`` — record a restorable snapshot of the tree."""
+        from . import undo as _undo
+        cwd = os.getcwd()
+        if not _undo.is_git_repo(cwd):
+            return "checkpoint: this directory is not a git work tree"
+        cp = _undo.take_checkpoint(cwd, self.session_id, label=(arg or "").strip())
+        if not cp:
+            return "checkpoint: failed to record (git error?)"
+        return (f"checkpoint '{cp['label']}' recorded at {cp['sha']} "
+                f"({cp['note']}); restore with /undo {cp['label']}")
+
+    def _cmd_undo(self, arg: str) -> str:
+        """``/undo [label]`` — preview (no label) or revert tracked files."""
+        from . import undo as _undo
+        cwd = os.getcwd()
+        lst = _undo.list_checkpoints(self.session_id)
+        a = (arg or "").strip()
+        if not a:
+            if not lst:
+                return ("undo: no checkpoints for this session yet — run "
+                        "/checkpoint first (one is also recorded automatically "
+                        "before the first file edit of a turn)")
+            cp = lst[-1]
+            avail = ", ".join(c["label"] for c in lst[-6:])
+            return (f"undo (preview): checkpoints: {avail}\n"
+                    f"latest '{cp['label']}' @ {cp['sha']} — {cp['note']}\n"
+                    + _undo.preview(cwd, cp)
+                    + f"\nto apply: /undo {cp['label']}")
+        cp = _undo.find_checkpoint(self.session_id, a)
+        if not cp:
+            avail = ", ".join(c["label"] for c in lst[-6:]) or "none"
+            return f"undo: no checkpoint named '{a}' (available: {avail})"
+        ok, summary = _undo.apply(cwd, cp, dry=False)
+        self._note(("✓ " if ok else "✗ ") + summary)
+        return summary
 
     # ── /team (tui3: multi-agent team runs, output relayed off-thread) ──
 

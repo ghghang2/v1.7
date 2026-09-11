@@ -2703,3 +2703,174 @@ def test_fork_out_of_range(monkeypatch):
     out = app._cmd_fork("99")
     assert "message(s)" in out
     assert "/fork 1..3" in out
+
+
+# ── /checkpoint + /undo (git-backed code revert) ───────────────────────
+
+def _gitrepo(tmp_path):
+    import subprocess as _sp
+    d = tmp_path / "repo"
+    d.mkdir()
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+    def sh(*a):
+        _sp.run(["git", *a], cwd=d, check=True, capture_output=True, text=True, env=env)
+    sh("init", "-q"); sh("config", "user.name", "t"); sh("config", "user.email", "t@t")
+    (d / "f.txt").write_text("v1\n")
+    sh("add", "."); sh("commit", "-qm", "init")
+    return d
+
+def _patch_cp_store(tmp_path, monkeypatch):
+    import nbchat.tui2.undo as u
+    monkeypatch.setenv("NBCHAT_TUI3_CHECKPOINTS", str(tmp_path / "cps.json"))
+    return u
+
+def test_undo_checkpoint_and_restore(tmp_path, monkeypatch):
+    u = _patch_cp_store(tmp_path, monkeypatch)
+    d = _gitrepo(tmp_path)
+    (d / "f.txt").write_text("v2\n")          # dirty tree
+    cp = u.take_checkpoint(str(d), "sessA", label="cp1")
+    assert cp and cp["label"] == "cp1"
+    (d / "f.txt").write_text("v3\n")          # further change
+    ok, summ = u.apply(str(d), cp, dry=False)
+    assert ok, summ
+    assert (d / "f.txt").read_text() == "v2\n"  # restored to checkpoint
+
+
+def test_undo_clean_tree_falls_back_to_head(tmp_path, monkeypatch):
+    u = _patch_cp_store(tmp_path, monkeypatch)
+    d = _gitrepo(tmp_path)                      # clean tree (== HEAD)
+    cp = u.take_checkpoint(str(d), "sessB", label="clean")
+    assert cp and cp["note"] == "HEAD (clean tree)"
+    import subprocess as _sp
+    head = _sp.run(["git", "rev-parse", "HEAD"], cwd=d, capture_output=True,
+                   text=True).stdout.strip()
+    assert cp["source"] == head
+
+
+def test_undo_not_git_repo_returns_none(tmp_path, monkeypatch):
+    u = _patch_cp_store(tmp_path, monkeypatch)
+    assert u.is_git_repo(str(tmp_path)) is False
+    assert u.take_checkpoint(str(tmp_path), "sessC") is None
+
+
+def test_undo_find_checkpoint_last_and_label(tmp_path, monkeypatch):
+    u = _patch_cp_store(tmp_path, monkeypatch)
+    d = _gitrepo(tmp_path)
+    u.take_checkpoint(str(d), "s", label="one")
+    (d / "f.txt").write_text("x\n")
+    u.take_checkpoint(str(d), "s", label="two")
+    assert u.find_checkpoint("s", "last")["label"] == "two"
+    assert u.find_checkpoint("s", "one")["label"] == "one"
+    assert u.find_checkpoint("s", "missing") is None
+    assert u.latest_checkpoint("s")["label"] == "two"
+
+
+def test_undo_apply_refuses_cwd_mismatch(tmp_path, monkeypatch):
+    u = _patch_cp_store(tmp_path, monkeypatch)
+    d = _gitrepo(tmp_path)
+    cp = u.take_checkpoint(str(d), "s", label="cp")
+    other = tmp_path / "else"; other.mkdir()
+    ok, summ = u.apply(str(other), cp, dry=False)
+    assert not ok and "different directory" in summ
+
+
+def test_undo_preview_no_diff(tmp_path, monkeypatch):
+    u = _patch_cp_store(tmp_path, monkeypatch)
+    d = _gitrepo(tmp_path)
+    (d / "f.txt").write_text("v2\n")
+    cp = u.take_checkpoint(str(d), "s", label="cp")
+    pv = u.preview(str(d), cp)
+    assert "no tracked-file differences" in pv
+
+
+def test_cmd_checkpoint_non_git(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    import nbchat.tui2.undo as u
+    monkeypatch.setattr(u, "is_git_repo", lambda cwd: False)
+    out = app._cmd_checkpoint("")
+    assert "not a git work tree" in out
+
+
+def test_cmd_checkpoint_ok(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    import nbchat.tui2.undo as u
+    monkeypatch.setattr(u, "is_git_repo", lambda cwd: True)
+    monkeypatch.setattr(u, "take_checkpoint",
+                        lambda cwd, sid, label="": {"label": label or "c1",
+                        "sha": "abc123", "note": "working tree (tracked files)"})
+    out = app._cmd_checkpoint("mylabel")
+    assert "recorded" in out and "mylabel" in out and "abc123" in out
+
+
+def test_cmd_undo_no_checkpoints(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    import nbchat.tui2.undo as u
+    monkeypatch.setattr(u, "list_checkpoints", lambda sid: [])
+    out = app._cmd_undo("")
+    assert "no checkpoints" in out
+
+
+def test_cmd_undo_preview(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    import nbchat.tui2.undo as u
+    cp = {"label": "auto", "sha": "abc123", "note": "working tree (tracked files)"}
+    monkeypatch.setattr(u, "list_checkpoints", lambda sid: [cp])
+    monkeypatch.setattr(u, "preview", lambda cwd, c: "1 tracked file(s) would change:\n  f.txt")
+    out = app._cmd_undo("")
+    assert "preview" in out and "f.txt" in out and "/undo auto" in out
+
+
+def test_cmd_undo_apply(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    import nbchat.tui2.undo as u
+    cp = {"label": "auto", "sha": "abc123", "note": "n", "cwd": os.getcwd()}
+    monkeypatch.setattr(u, "list_checkpoints", lambda sid: [cp])
+    monkeypatch.setattr(u, "find_checkpoint", lambda sid, lab: cp)
+    monkeypatch.setattr(u, "apply", lambda cwd, c, dry=False: (True, "restored OK"))
+    out = app._cmd_undo("auto")
+    assert "restored OK" in out
+
+
+def test_cmd_undo_unknown_label(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    import nbchat.tui2.undo as u
+    monkeypatch.setattr(u, "list_checkpoints", lambda sid: [{"label": "auto"}])
+    monkeypatch.setattr(u, "find_checkpoint", lambda sid, lab: None)
+    out = app._cmd_undo("nope")
+    assert "no checkpoint named" in out and "auto" in out
+
+
+def test_auto_checkpoint_records_auto(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    import nbchat.tui2.undo as u
+    calls = {}
+    monkeypatch.setattr(u, "is_git_repo", lambda cwd: True)
+    monkeypatch.setattr(u, "take_checkpoint",
+        lambda cwd, sid, label="": calls.setdefault("label", label) or {"label": label, "sha": "abc"})
+    app._auto_checkpoint("make_change_to_file")
+    assert calls["label"] == "auto"
+
+
+def test_auto_checkpoint_silent_when_not_git(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    import nbchat.tui2.undo as u
+    monkeypatch.setattr(u, "is_git_repo", lambda cwd: False)
+    app._auto_checkpoint("make_change_to_file")  # must not raise
+
+
+def test_gated_one_auto_checkpoint_per_window(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    import nbchat.core.tool_executor as te
+    calls = []
+    app._auto_checkpoint = lambda tool: calls.append(tool)
+    monkeypatch.setattr(te, "run_tool", lambda name, args, timeout=None: "ok")
+    app._install_approval_gate()
+    try:
+        te.run_tool("make_change_to_file", "{}")  # window 1 first -> checkpoint
+        te.run_tool("create_file", "{}")          # window 1 second -> no
+        app._turn_mutated = False                 # new turn
+        te.run_tool("create_file", "{}")          # window 2 first -> checkpoint
+    finally:
+        app._remove_approval_gate()
+    assert calls == ["make_change_to_file", "create_file"]

@@ -188,3 +188,12 @@ built entirely on the existing `nbchat.core.db` engine (`load_history` +
 `replace_session_history` + `save_session_title`), and carries the in-flight
 task list so the branch keeps its to-dos.  The app switches to the fork and
 remembers it as the current session; the fork is titled `fork <src> …`.
+
+**Code revert (rewind):** `/checkpoint [label]` + `/undo [label]` — safe,
+git-backed working-tree snapshots.  A checkpoint is `git stash create`
+(non-destructive; `HEAD` on a clean tree) and `/undo` restores tracked files
+with `git restore --source=…` (untracked files untouched, so it cannot delete
+data the user did not ask to touch).  `/undo` with no label previews; applying
+requires naming a checkpoint.  Checkpoints are stored in
+`~/.nbchat/tui3-checkpoints.json` (override `NBCHAT_TUI3_CHECKPOINTS`) and one
+is recorded automatically before the first file edit of each turn.

@@ -181,6 +181,16 @@ shell command (`!ls`); `!!` also stores the output for later.
   including your Nth message, so you can steer the branch differently from
   the point you asked it.  The original session is left completely untouched
   and the app switches to the fork (the fork is titled `fork <src> …`).
+- `/checkpoint [label]` — record a restorable snapshot of the working tree
+  (tracked files) via `git stash create` (a non-destructive record; falls back
+  to `HEAD` on a clean tree).  A checkpoint is also recorded automatically
+  before the first file edit of a turn, so a botched agent edit is always
+  revertible.
+- `/undo [label]` — with no label it is **preview only** (lists checkpoints
+  and shows what restoring the latest would change); with a label it restores
+  tracked files to that checkpoint via `git restore --source=…` (untracked
+  files are left alone).  Reverting is itself reversible: take a fresh
+  `/checkpoint` first.
 - `/hotkeys` — the keybinding reference.
 - `/copy` — copies the last assistant message to the clipboard (OSC 52;
   silent no-op where the terminal lacks clipboard support).
