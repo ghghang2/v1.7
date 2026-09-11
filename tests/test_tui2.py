@@ -2707,6 +2707,129 @@ def test_fork_out_of_range(monkeypatch):
 
 # ── /checkpoint + /undo (git-backed code revert) ───────────────────────
 
+def _stateful_db(monkeypatch, initial_rows):
+    """Patch the tui2 DB with a mutable in-memory history + meta store."""
+    import nbchat.core.db as dbmod
+    state = {"rows": [tuple(r) for r in initial_rows], "meta": {}}
+    monkeypatch.setattr(dbmod, "load_history",
+                        lambda sid, limit=None: [tuple(r) for r in state["rows"]])
+    def fake_replace(sid, hist):
+        state["rows"] = [tuple(r) for r in hist]
+    monkeypatch.setattr(dbmod, "replace_session_history", fake_replace)
+    monkeypatch.setattr(
+        dbmod, "_meta_set",
+        lambda sid, key, value: state["meta"].__setitem__(key, value))
+    monkeypatch.setattr(dbmod, "_meta_get",
+                        lambda sid, key: state["meta"].get(key, ""))
+    monkeypatch.setattr(dbmod, "load_task_log", lambda sid: [])
+    monkeypatch.setattr(dbmod, "load_turn_summaries", lambda sid: [])
+    return state
+
+
+def test_rewind_empty_history(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    import nbchat.core.db as dbmod
+    monkeypatch.setattr(dbmod, "load_history", lambda sid, limit=None: [])
+    out = app._cmd_rewind("")
+    assert "nothing to rewind" in out
+
+
+def test_rewind_list_shows_user_turns(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    _stateful_db(monkeypatch, _fork_rows())
+    calls = {}
+    monkeypatch.setattr(app, "_session_changed", lambda: calls.setdefault("changed", True))
+    monkeypatch.setattr(app, "_refresh_history_cache", lambda: calls.setdefault("cache", True))
+    out = app._cmd_rewind("")
+    assert "3 user turn(s)" in out
+    assert "hi" in out and "now Y" in out
+
+
+def test_rewind_apply_drops_last_turn(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    state = _stateful_db(monkeypatch, _fork_rows())
+    calls = {}
+    monkeypatch.setattr(app, "_session_changed", lambda: calls.setdefault("changed", True))
+    monkeypatch.setattr(app, "_refresh_history_cache", lambda: calls.setdefault("cache", True))
+    out = app._cmd_rewind("1")
+    assert "rewound" in out
+    assert len(state["rows"]) == 5  # the last user turn ("now Y") is dropped
+    assert all(r[1] != "now Y" for r in state["rows"])
+    assert calls.get("changed") is True and calls.get("cache") is True
+    import json as _json
+    g = _json.loads(state["meta"]["rewind_ghost"])
+    assert g["post_user"] == 2
+    assert len(g["rows"]) == 1
+
+
+def test_rewind_apply_bad_arg(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    _stateful_db(monkeypatch, _fork_rows())
+    out = app._cmd_rewind("abc")
+    assert "give a number" in out
+
+
+def test_rewind_apply_clamps_overlarge_n(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    state = _stateful_db(monkeypatch, _fork_rows())
+    calls = {}
+    monkeypatch.setattr(app, "_session_changed", lambda: calls.setdefault("changed", True))
+    monkeypatch.setattr(app, "_refresh_history_cache", lambda: calls.setdefault("cache", True))
+    out = app._cmd_rewind("99")
+    assert "rewound" in out
+    assert len(state["rows"]) == 0  # all 3 user turns dropped
+    import json as _json
+    g = _json.loads(state["meta"]["rewind_ghost"])
+    assert g["post_user"] == 0 and len(g["rows"]) == 6
+
+
+def test_rewind_apply_refuses_when_busy(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    state = _stateful_db(monkeypatch, _fork_rows())
+    app._turn_active = True  # busy is a read-only property over _turn_active
+    out = app._cmd_rewind("1")
+    assert "wait for the current turn" in out
+    assert len(state["rows"]) == 6  # unchanged
+
+
+def test_rewind_restore_roundtrip(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    state = _stateful_db(monkeypatch, _fork_rows())
+    calls = {}
+    monkeypatch.setattr(app, "_session_changed", lambda: calls.setdefault("changed", True))
+    monkeypatch.setattr(app, "_refresh_history_cache", lambda: calls.setdefault("cache", True))
+    app._cmd_rewind("1")  # 6 -> 5 rows, post_user=2
+    assert len(state["rows"]) == 5
+    out = app._cmd_rewind("restore")
+    assert "restored" in out
+    assert len(state["rows"]) == 6  # back to the full history
+    assert state["meta"].get("rewind_ghost", "") == ""  # ghost cleared
+
+
+def test_rewind_restore_no_ghost(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    _stateful_db(monkeypatch, _fork_rows())
+    out = app._cmd_rewind("restore")
+    assert "nothing to restore" in out
+
+
+def test_rewind_restore_rejects_after_new_turn(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    state = _stateful_db(monkeypatch, _fork_rows())
+    calls = {}
+    monkeypatch.setattr(app, "_session_changed", lambda: calls.setdefault("changed", True))
+    monkeypatch.setattr(app, "_refresh_history_cache", lambda: calls.setdefault("cache", True))
+    app._cmd_rewind("1")  # 6 -> 5 rows, post_user=2
+    state["rows"].append(("user", "new msg", "", "", "", 0))  # a new user turn
+    out = app._cmd_rewind("restore")
+    assert "can't restore" in out
+    assert state["meta"].get("rewind_ghost", "") == ""  # stale ghost cleared
+
+
+def test_rewind_listed_in_help():
+    from nbchat.tui2.app import ChatApp
+    assert "/rewind" in ChatApp._TUI2_NATIVE
+
 def _gitrepo(tmp_path):
     import subprocess as _sp
     d = tmp_path / "repo"

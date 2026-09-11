@@ -240,6 +240,12 @@ shell command (`!ls`); `!!` also stores the output for later.
   lists them and `/stash clear` empties them.  Complements the Ctrl+Q
   steering queue (which queues messages to *send*; the stash holds
   *drafts to compose later* and survives restarts).
+- **Rewind** — `/rewind [n|restore]` drops the last *n* user turn(s) and
+  everything after them from the current session (the #1-ranked survey
+  feature; complements `/checkpoint`+`/undo`, which revert *files*).
+  Bare `/rewind` lists your recent user turns with the number to pass.
+  The removed slice is kept recoverable (one level) via
+  `/rewind restore` until you start a new turn.
 - `/hotkeys` — the keybinding reference.
 - `/copy` — copies the last assistant message to the clipboard (OSC 52;
   silent no-op where the terminal lacks clipboard support).

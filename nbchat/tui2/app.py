@@ -1252,7 +1252,8 @@ class ChatApp(TerminalAgent):
                     "/goal", "/notify", "/theme", "/monitor", "/inbox",
                     "/team", "/browse", "/search", "/sup", "/voice",
                     "/fork", "/checkpoint", "/undo", "/find", "/diff",
-                    "/export", "/plan", "/retry", "/queue", "/tpl", "/editor", "/gstatus", "/stash")
+                    "/export", "/plan", "/retry", "/queue", "/tpl", "/editor", "/gstatus", "/stash",
+                    "/rewind")
 
     def _run_command(self, line: str) -> None:
         """Route a slash command.
@@ -1326,6 +1327,7 @@ class ChatApp(TerminalAgent):
             "  /editor [ctrl+e]  compose the draft in $EDITOR",
             "  /gstatus  git working-tree overview (branch/staged/unstaged/untracked)",
             "  /stash [push|pop [n]|clear]  stash/pop drafts (git-stash for input)",
+            "  /rewind [n|restore]  drop the last N user turns (restore to undo)",
             "  @<path>      file completion (type @ + a filename, pick a match)",
             "  /compact    force a context summarisation now",
             "  /copy       copy last reply to the clipboard",
@@ -1380,6 +1382,7 @@ class ChatApp(TerminalAgent):
             "/editor": self._cmd_editor,
             "/gstatus": self._cmd_gstatus,
             "/stash": self._cmd_stash,
+            "/rewind": self._cmd_rewind,
         }
         fn = handlers.get(cmd)
         try:
@@ -1638,6 +1641,127 @@ class ChatApp(TerminalAgent):
         self._note(f"forked into {self.session_id} ({where}); "
                    f"original {prev} is untouched")
         return f"fork: branched {where} -> {self.session_id}"
+
+    # ── /rewind (tui3: conversation rewind — go back N user turns) ──────
+
+    _REWIND_GHOST_MAX = 200  # max rows kept recoverable after a rewind
+
+    def _cmd_rewind(self, arg: str) -> str:
+        """``/rewind [n]`` — drop the last *n* user turn(s) from this session.
+
+        No arg lists your recent user turns (newest first) with the number to
+        pass.  ``/rewind <n>`` removes the last *n* user turn(s) and everything
+        after them, keeping the removed slice recoverable (one level) via
+        ``/rewind restore`` until you start a new user turn.  This rewinds the
+        *conversation* in the current session — /fork to back up first, /undo
+        for a git file revert.
+        """
+        a = (arg or "").strip()
+        if a.lower() in ("restore", "undo", "back"):
+            return self._rewind_restore()
+        if a:
+            if not a.isdigit():
+                return ("rewind: give a number (how many recent turns to drop) "
+                        "or leave it blank to list them")
+            return self._rewind_apply(int(a))
+        return self._rewind_list()
+
+    def _rewind_list(self) -> str:
+        import nbchat.core.db as _db
+        rows = _db.load_history(self.session_id)
+        user_idx = [i for i, r in enumerate(rows) if r[0] == "user"]
+        if not user_idx:
+            return "rewind: no user turns yet (nothing to rewind)"
+        lines = [f"rewind: {len(user_idx)} user turn(s); drop the last N with /rewind <N>"]
+        for k in range(1, min(8, len(user_idx)) + 1):
+            content = (rows[user_idx[-k]][1] or "").strip().replace("\n", " ")
+            if len(content) > 48:
+                content = content[:48] + "\u2026"
+            lines.append(f"  {k}  {content!r}")
+        lines.append("\u2192 /rewind 1 drops your last message + its reply")
+        return "\n".join(lines)
+
+    def _rewind_apply(self, n: int) -> str:
+        import nbchat.core.db as _db
+        if self.busy:
+            return "rewind: wait for the current turn to finish"
+        rows = _db.load_history(self.session_id)
+        user_idx = [i for i, r in enumerate(rows) if r[0] == "user"]
+        if not user_idx:
+            return "rewind: no user turns yet (nothing to rewind)"
+        n = max(1, min(n, len(user_idx)))
+        cut = user_idx[-n]
+        kept, removed = rows[:cut], rows[cut:]
+        post_user = len(user_idx) - n
+        preview = (rows[user_idx[-1]][1] or "").strip().replace("\n", " ")
+        if len(preview) > 40:
+            preview = preview[:40] + "\u2026"
+        ghost_ok = len(removed) <= self._REWIND_GHOST_MAX
+        if ghost_ok:
+            try:
+                _db._meta_set(self.session_id, "rewind_ghost", json.dumps(
+                    {"post_user": post_user,
+                     "rows": [[c for c in r] for r in removed]}))
+            except Exception:
+                ghost_ok = False
+        try:
+            _db.replace_session_history(self.session_id, [tuple(r) for r in kept])
+        except Exception as exc:
+            return f"rewind: failed ({type(exc).__name__}: {exc})"
+        self._refresh_history_cache()
+        self._session_changed()
+        rec = ("/rewind restore to undo (until your next turn)"
+               if ghost_ok else
+               "slice too large to auto-keep — /fork to back up next time")
+        return (f"rewound: removed {n} turn(s) (last was {preview!r}); {rec}")
+
+    def _rewind_restore(self) -> str:
+        import nbchat.core.db as _db
+        if self.busy:
+            return "rewind: wait for the current turn to finish"
+        try:
+            raw = _db._meta_get(self.session_id, "rewind_ghost")
+        except Exception:
+            raw = ""
+        if not raw:
+            return "rewind: nothing to restore (no pending rewind)"
+        try:
+            g = json.loads(raw)
+            ghost_rows = [tuple(r) for r in g.get("rows", [])]
+            post_user = int(g.get("post_user", -1))
+        except Exception:
+            return "rewind: restore failed (corrupt saved slice)"
+        if not ghost_rows:
+            _db._meta_set(self.session_id, "rewind_ghost", "")
+            return "rewind: nothing to restore (saved slice was empty)"
+        cur = _db.load_history(self.session_id)
+        cur_user = sum(1 for r in cur if r[0] == "user")
+        if cur_user != post_user:
+            _db._meta_set(self.session_id, "rewind_ghost", "")
+            return ("rewind: can't restore — you started a new turn after the "
+                    "rewind (saved slice cleared)")
+        try:
+            _db.replace_session_history(
+                self.session_id, [tuple(r) for r in (list(cur) + ghost_rows)])
+        except Exception as exc:
+            return f"rewind: restore failed ({type(exc).__name__}: {exc})"
+        _db._meta_set(self.session_id, "rewind_ghost", "")
+        self._refresh_history_cache()
+        self._session_changed()
+        return f"restored {len(ghost_rows)} row(s): undid the last rewind"
+
+    def _refresh_history_cache(self) -> None:
+        """Reload self.history / task log / summaries from the DB (same session)."""
+        import nbchat.core.db as _db
+        import nbchat.core.config as _cfg
+        try:
+            self.history = list(_db.load_history(
+                self.session_id,
+                limit=int(getattr(_cfg, "HISTORY_ROW_LIMIT", 2000))))
+            self.task_log = _db.load_task_log(self.session_id)
+            self._turn_summary_cache = _db.load_turn_summaries(self.session_id)
+        except Exception:
+            pass
 
     # ── /checkpoint + /undo (tui3: safe git-backed code revert) ────────
 
