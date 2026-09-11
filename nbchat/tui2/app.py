@@ -374,6 +374,12 @@ class ChatApp(TerminalAgent):
         # Browse mode (tui3): a key-capturing mode for reading/scrolling the
         # log without typing into the editor.  Toggled with Ctrl+O.
         self._browse = False
+        # Terminal-detached flag (tui3): set by the SIGHUP handler when the
+        # terminal disconnects (SSH drop / terminal closed).  On exit, if a
+        # turn is still running, the in-flight turn is given a chance to
+        # finish before the process exits (so the disconnect does not lose
+        # the work).  Additive; disabled with NBCHAT_NO_GRACEFUL_DETACH=1.
+        self._sighup = False
         # Leader/prefix key mode (tui3, opencode-style): Ctrl+X enters it; the
         # next key is a one-char command shortcut (l=load, p=palette,
         # e=editor, o=browse, t=thinking, r=search, q=quit).  The contextual
@@ -4408,6 +4414,27 @@ class ChatApp(TerminalAgent):
         self._note(f"♪ [voice] {text}")
         self._start_turn(text)
 
+    def _graceful_detach(self, timeout: float = 180.0) -> None:
+        """Let an in-flight turn finish when the terminal has detached.
+
+        Called on the exit path.  If the SIGHUP flag is set (the terminal
+        disconnected) and a turn thread is still alive, join it (bounded by
+        *timeout*) so the in-flight turn's result is persisted to the session
+        before the process exits.  A no-op otherwise (normal quit, or no
+        in-flight turn).  Additive; never raises.
+        """
+        if os.environ.get("NBCHAT_NO_GRACEFUL_DETACH") == "1":
+            return
+        if not self._sighup:
+            return
+        t = self._turn_thread
+        if t is None or not t.is_alive():
+            return
+        try:
+            t.join(timeout=timeout)
+        except Exception:
+            pass
+
     def run(self) -> int:
         # Redirect stderr to a log file for the session: the conversation
         # loop\'s logging warnings (mid-stream retries, …) would otherwise
@@ -4428,6 +4455,20 @@ class ChatApp(TerminalAgent):
         control = self._start_control()
         self._start_supervisor()
         self._start_voice()
+        # Graceful terminal-detach (tui3): when the terminal disconnects
+        # (SSH drop / terminal closed -> SIGHUP), flag it so the exit path can
+        # let an in-flight turn finish before the process dies.  Additive; a
+        # signal-handler problem can never take the TUI down.
+        import signal as _signal
+        _old_sighup = None
+        if os.environ.get("NBCHAT_NO_GRACEFUL_DETACH") != "1":
+            def _sighup_handler(signum, frame):
+                self._sighup = True
+            try:
+                _old_sighup = _signal.getsignal(_signal.SIGHUP)
+                _signal.signal(_signal.SIGHUP, _sighup_handler)
+            except Exception:
+                _old_sighup = None
         try:
             with self.term:
                 self._apply_auto_theme()
@@ -4437,6 +4478,20 @@ class ChatApp(TerminalAgent):
         except KeyboardInterrupt:
             pass
         finally:
+            # Graceful detach: if the terminal dropped (SIGHUP) and a turn is
+            # still running, give it a bounded chance to finish so the
+            # disconnect does not lose the work (the result is persisted to
+            # the session before the process exits).  Bounded so a stuck
+            # agent (e.g. an offline LLM) cannot hang the process forever.
+            try:
+                self._graceful_detach()
+            except Exception:
+                pass
+            if _old_sighup is not None:
+                try:
+                    _signal.signal(_signal.SIGHUP, _old_sighup)
+                except Exception:
+                    pass
             self._stop_voice()
             self._stop_supervisor()
             if control is not None:

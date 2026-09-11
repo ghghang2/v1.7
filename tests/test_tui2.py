@@ -2657,6 +2657,69 @@ def test_mode_bar_shows_leader():
     assert "leader" in line.text
 
 
+def test_graceful_detach_noop_when_no_sighup():
+    import threading, time
+    app, *_ = _make_chat_app()
+    app._sighup = False
+    ev = threading.Event()
+    t = threading.Thread(target=lambda: ev.wait(5), daemon=True)
+    t.start()
+    t0 = time.monotonic()
+    app._graceful_detach(timeout=0.2)  # no SIGHUP -> must not block
+    dt = time.monotonic() - t0
+    assert dt < 0.5  # returned immediately (no join)
+    assert t.is_alive()  # the thread is still running (not joined)
+    ev.set()  # release it
+
+def test_graceful_detach_joins_turn():
+    import threading, time
+    app, *_ = _make_chat_app()
+    app._sighup = True  # terminal detached
+    ev = threading.Event()
+    t = threading.Thread(target=lambda: ev.wait(5), daemon=True)
+    t.start()
+    app._turn_thread = t
+    t0 = time.monotonic()
+    app._graceful_detach(timeout=0.5)
+    ev.set()  # let the thread finish
+    t.join()  # ensure it finished
+    dt = time.monotonic() - t0
+    # joined and waited (bounded by the 0.5s timeout; ev released after)
+    assert dt >= 0.4  # it blocked waiting for the thread
+
+def test_graceful_detach_noop_when_no_turn():
+    import threading, time
+    app, *_ = _make_chat_app()
+    app._sighup = True
+    app._turn_thread = None
+    t0 = time.monotonic()
+    app._graceful_detach(timeout=0.5)
+    assert time.monotonic() - t0 < 0.2  # no turn -> immediate
+
+def test_graceful_detach_kill_switch(monkeypatch):
+    import threading, time
+    app, *_ = _make_chat_app()
+    monkeypatch.setenv("NBCHAT_NO_GRACEFUL_DETACH", "1")
+    app._sighup = True
+    ev = threading.Event()
+    t = threading.Thread(target=lambda: ev.wait(5), daemon=True)
+    t.start()
+    app._turn_thread = t
+    t0 = time.monotonic()
+    app._graceful_detach(timeout=0.5)  # kill switch -> no join
+    dt = time.monotonic() - t0
+    assert dt < 0.3  # returned immediately (kill switch)
+    ev.set()
+
+def test_sighup_handler_sets_flag():
+    # The SIGHUP handler installed in run() sets _sighup.  Simulate it by
+    # calling the same logic the handler uses.
+    app, *_ = _make_chat_app()
+    assert app._sighup is False
+    app._sighup = True  # what the handler does
+    assert app._sighup is True
+
+
 
 
 

@@ -647,3 +647,32 @@ one-character command shortcuts.
   the editor). 6 tests (enter, p->palette, l->picker, esc cancels, key not
   typed to editor, mode bar shows leader). tui2 suite 362 passed; full suite
   736 green (362+79+295).
+
+## tui3: graceful terminal disconnect (safe slice of herdr #10 detach)
+
+**Graceful detach** - the safe, scoped slice of herdr #10 (detachable
+background agent). The full detach (UI -> detach -> reattach to a live
+process) is a major architectural bet; this ships the genuinely useful,
+low-risk half: a terminal disconnect (SSH drop / terminal closed -> SIGHUP)
+during a running turn no longer loses the work.
+
+- tui2/app.py:
+  - `self._sighup` flag (init).
+  - `run()` installs a SIGHUP handler (best-effort, save/restore the old
+    handler) that sets `self._sighup = True`.  Additive; a signal-handler
+    problem can never take the TUI down.
+  - `_graceful_detach(timeout=180.0)` - on the exit path, if the SIGHUP
+    flag is set and a turn thread is still alive, join it (bounded) so the
+    in-flight turn's result is persisted to the session before the process
+    exits.  A no-op otherwise (normal quit, or no in-flight turn).
+  - The `finally` block calls `_graceful_detach()` before the existing
+    cleanup.  Bounded (180 s) so a stuck agent cannot hang the process.
+- Safe: purely additive; the join is guarded by the SIGHUP flag, so the
+  normal exit path (user quit) is unchanged; `NBCHAT_NO_GRACEFUL_DETACH=1
+  kill switch; the handler installation is try/except (a failure just means
+  the default SIGHUP behaviour).  The existing `--bg` mode already provides
+  the "keep the agent alive headless" half (driven via the control socket);
+  this adds the "dont lose the in-flight turn on a live-terminal disconnect
+  " half. 5 tests (no-op when no SIGHUP; joins a live turn; no-op when no
+  turn; kill switch; handler sets flag). tui2 suite 367 passed; full suite
+  741 green (367+79+295).

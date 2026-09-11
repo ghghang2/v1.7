@@ -421,8 +421,15 @@ shell command (`!ls`); `!!` also stores the output for later.
   Read-only commands answer synchronously; mutating ones are enqueued onto
   the UI thread and acked immediately (`{"queued": true}`), so a control
   client can never block or crash the TUI.
-- The remaining tui3 scope (detachable background agent) is tracked in
-  `docs/tui3_roadmap.md`.
+- **Graceful terminal disconnect.**  When the terminal drops (SSH drop /
+  terminal closed -> `SIGHUP`) during a running turn, the TUI flags the
+  disconnect and, on exit, gives the in-flight turn a bounded chance (default
+  up to 180 s) to finish before the process exits — so the disconnect does
+  not lose the work (the result is persisted to the session).  Bounded so a
+  stuck agent (e.g. an offline LLM) cannot hang the process.  `NBCHAT_NO_GRACEFUL_DETACH=1`
+  disables it.  Additive: a normal quit (no `SIGHUP`) is unaffected.
+- The remaining tui3 scope (full detachable background agent with reattach)
+  is tracked in `docs/tui3_roadmap.md`.
 
 The v1 print-based REPL is unchanged and remains the default; v2 is
 opt-in via the flag above.  Voice / email / supervisor / team surfaces
