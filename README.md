@@ -181,9 +181,12 @@ shell command (`!ls`); `!!` also stores the output for later.
   single data-driven `KEYMAP`, so they can never desync.
 - **Browse mode** — press `Ctrl+O` to read/scroll the log without typing:
   `j`/`k` step down/up, `PgUp`/`PgDn` page, `Home`/`End` jump; `Esc` (or
-  `Ctrl+O`) leaves and snaps back to the bottom.  The larger tui3 scope
-  (in-log search, visual copy, mouse, theming, config, socket API, detach)
-  is tracked in `docs/tui3_roadmap.md`.
+  `Ctrl+O`) leaves and snaps back to the bottom.  Inside browse mode,
+  `/` **searches the log** (type a query, Enter to find all matches,
+  `n`/`N` cycle to the next/previous match — the log jumps to it), and
+  `v` **copies the visible log** to your clipboard.
+- The larger tui3 scope (mouse, theming, config, socket API, detach) is
+  tracked in `docs/tui3_roadmap.md`.
 
 The v1 print-based REPL is unchanged and remains the default; v2 is
 opt-in via the flag above.  Voice / email / supervisor / team surfaces

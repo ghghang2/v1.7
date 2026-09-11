@@ -313,6 +313,19 @@ by one). The remaining tui3 scope (in-log `/` search, `v` visual copy,
 mouse, theming, user config, JSON socket API, detachable agent) is scoped
 in `docs/tui3_roadmap.md`.
 
+**tui3 wave 2 — in-log search + visual copy** (inside browse mode, purely
+additive, self-contained in `app.py`): `/` opens a query prompt rendered in
+the mode bar (type a case-insensitive substring, Enter to run; consecutive
+matching lines group into one match; the mode bar shows the live query then
+`match i/N`). `n`/`N` cycle to the next/previous match and the log jumps to
+bring it to the viewport bottom (offset clamped to content height); `Esc`
+clears the search, and `n` with no matches starts a fresh query. `v` copies
+the currently **visible** log viewport (rendered lines at the current
+offset) to the clipboard via the same OSC 52 escape `/copy` uses, and pushes
+a small "copied" toast. The `KEYMAP["browse"]` rows for `/` and `v` drive
+both the mode-bar hints and `/hotkeys`. Mouse, config/settings, theming,
+socket API and detach proceed in later tui3 waves (see the roadmap).
+
 ---
 
 ## Not addressed (out of scope for this pass, tracked in the port tracker)

@@ -73,6 +73,8 @@ KEYMAP = {
         ("j / k", "scroll down / up"),
         ("pgup / pgdn", "page down / up"),
         ("home / end", "jump to the top / bottom"),
+        ("/", "search the log (n / N next / prev)"),
+        ("v", "copy the visible log to clipboard"),
         ("esc / ctrl+o", "leave browse mode"),
     ),
 }
@@ -179,6 +181,12 @@ class ChatApp(TerminalAgent):
         # Browse mode (tui3): a key-capturing mode for reading/scrolling the
         # log without typing into the editor.  Toggled with Ctrl+O.
         self._browse = False
+        # In-log search (tui3 wave 2): active while a query is being typed
+        # (``input`` True) or matches are being cycled through (``input``
+        # False).  ``_search_matches`` = [(line_idx, snippet), ...].
+        self._logsearch = None
+        self._search_matches = []
+        self._search_idx = 0
 
         self._goal = None
         self._goal_budget = 20  # default auto-continue turn budget
@@ -539,10 +547,29 @@ class ChatApp(TerminalAgent):
             self._ui_refresh()
             return
         if self._browse:
+            # In-log search input takes precedence while a query is typed.
+            if self._logsearch is not None and self._logsearch["input"]:
+                self._logsearch_char(key)
+                return
             if key.name in ("escape", "esc"):
-                self._browse = False
-                self.log.offset = 0
+                if self._logsearch is not None:
+                    self._logsearch_close()
+                else:
+                    self._browse = False
+                    self.log.offset = 0
                 self._ui_refresh()
+                return
+            if key.name == "/":
+                self._logsearch_open()
+                return
+            if key.name == "n":
+                self._logsearch_next(True)
+                return
+            if key.name == "N":
+                self._logsearch_next(False)
+                return
+            if key.name == "v":
+                self._visual_copy()
                 return
             if key.name == "j":
                 self._scroll_log(-1)  # down / newer
@@ -1405,6 +1432,109 @@ class ChatApp(TerminalAgent):
         self.log.offset = max(0, min(self.log.offset + delta, max_off))
         self._ui_refresh()
 
+    # ── tui3 wave 2: in-log search + visual copy ─────────────────────────
+    @staticmethod
+    def _row_text(line) -> str:
+        return "".join(s.text for s in line.segments)
+
+    def _logsearch_open(self) -> None:
+        self._logsearch = {"query": "", "input": True}
+        self._search_matches = []
+        self._search_idx = 0
+        self._ui_refresh()
+
+    def _logsearch_close(self) -> None:
+        self._logsearch = None
+        self._search_matches = []
+        self._search_idx = 0
+        self._ui_refresh()
+
+    def _logsearch_char(self, key) -> None:
+        if self._logsearch is None or not self._logsearch["input"]:
+            return
+        if key.name == "backspace":
+            self._logsearch["query"] = self._logsearch["query"][:-1]
+        elif key.name == "enter":
+            self._logsearch_exec()
+            return
+        elif key.name in ("escape", "esc"):
+            self._logsearch_close()
+            return
+        elif key.name == "space":
+            self._logsearch["query"] += " "
+        elif key.name == "paste" and getattr(key, "payload", None):
+            self._logsearch["query"] += key.payload.replace("\n", " ")
+        else:
+            txt = _key_text(key)
+            if len(txt) == 1:
+                self._logsearch["query"] += txt
+        self._ui_refresh()
+
+    def _logsearch_exec(self) -> None:
+        q = (self._logsearch["query"].strip()
+             if self._logsearch else "")
+        if not q:
+            self._logsearch_close()
+            return
+        w = self.term.width
+        rows = self.log._all_rows(w)
+        ql = q.lower()
+        idxs = [i for i, r in enumerate(rows)
+                if ql in self._row_text(r).lower()]
+        # Group consecutive matching lines (same message) into one match.
+        groups = []  # [first_idx, last_idx, snippet]
+        for i in idxs:
+            if groups and i - groups[-1][1] <= 3:
+                groups[-1][1] = i
+            else:
+                groups.append([i, i, self._row_text(rows[i]).strip()[:70]])
+        self._search_matches = [(g[0], g[2]) for g in groups]
+        self._search_idx = 0
+        self._logsearch["input"] = False
+        if self._search_matches:
+            self._logsearch_jump(0)
+        else:
+            self._ui_refresh()
+
+    def _logsearch_jump(self, idx: int) -> None:
+        if not self._search_matches:
+            return
+        n = len(self._search_matches)
+        idx = idx % n
+        self._search_idx = idx
+        li = self._search_matches[idx][0]
+        w = self.term.width
+        total = len(self.log._all_rows(w))
+        log_rows = max(self.term.height - 3 - 1 - 4, 2)
+        max_off = max(0, total - log_rows)
+        target = total - 1 - li  # bring the match to the viewport bottom
+        self.log.offset = max(0, min(target, max_off))
+        self._ui_refresh()
+
+    def _logsearch_next(self, forward: bool = True) -> None:
+        if not self._search_matches:
+            self._logsearch_open()  # nothing found yet -> start a query
+            return
+        self._logsearch_jump(self._search_idx + (1 if forward else -1))
+
+    def _visual_copy(self) -> None:
+        """Copy the currently visible log viewport to the clipboard."""
+        w = self.term.width
+        rows = self.log._all_rows(w)
+        total = len(rows)
+        vis = getattr(self.log, "rows", 0) or max(self.term.height - 8, 2)
+        off = self.log.offset
+        lo = max(0, total - vis - off)
+        hi = max(lo, min(total, total - off))
+        text = "\n".join(self._row_text(r) for r in rows[lo:hi])
+        if not text.strip():
+            text = "(empty viewport)"
+        self._copy_to_clipboard(text)
+        self._notify.push(
+            "copied", f"{len(text.splitlines())} visible line(s)",
+            "ok", write=self._term_write)
+        self._ui_refresh()
+
     def _status_right(self) -> str:
         parts: list = []
         if self._ctx_budget > 0:
@@ -1524,6 +1654,17 @@ class ChatApp(TerminalAgent):
         hints = " · ".join(f"{k} {d}" for k, d in KEYMAP[mode][: _MODEBAR_HINTS])
         label = ("browse" if self._browse else "normal")
         text = f" mode: {label}   {hints}"
+        # In-log search overrides the hints with the live query / match pos.
+        if self._logsearch is not None:
+            q = self._logsearch["query"]
+            if self._logsearch["input"]:
+                text = f" search: {q}▏  (enter run · esc cancel)"
+            elif self._search_matches:
+                i = self._search_idx + 1
+                text = (f" match {i}/{len(self._search_matches)}: "
+                        f"{q}  (n/N cycle · esc clear)")
+            else:
+                text = f" search: '{q}'  no matches (esc clear)"
         if len(text) > w:
             text = text[: w - 1] + "…"
         return Line([

@@ -42,7 +42,27 @@ no existing binding changes:
   its exact keys.
 - **Browse mode**, toggled with **Ctrl+O** (free today; Ctrl+B is the
   editor's backward): `j`/`k` scroll the log, `Home`/`End` jump, `Esc` exits.
-  In-log `/` search and `v` visual copy land in wave 2.
 
-Waves 2+ (browse search/copy, mouse, config/settings, theming, socket API,
-detach) proceed in the build order above.
+## tui3 wave 2 (this pass)
+
+**In-log search + visual copy** (both inside browse mode, purely additive):
+
+- **`/` search the log** — opens a query prompt (rendered in the mode bar).
+  Type a case-insensitive substring, Enter to run.  Consecutive matching
+  lines are grouped into one match.  The mode bar shows the live query
+  while typing and `match i/N` once found.  `n` / `N` cycle to the next /
+  previous match and the log **jumps** to bring it into view (the offset is
+  set so the match sits at the viewport bottom, clamped to the content
+  height).  `Esc` clears the search; `n` with no matches starts a fresh
+  query.
+- **`v` visual copy** — copies the currently **visible** log viewport (the
+  rendered lines at the current scroll offset) to the clipboard via the
+  same best-effort OSC 52 escape `/copy` uses, and pushes a small "copied"
+  toast.
+
+Both are self-contained in `app.py` (no new files, no core changes).  The
+`KEYMAP["browse"]` rows for `/` and `v` drive both the mode-bar hints and
+`/hotkeys`.
+
+Waves 3+ (mouse, config/settings, theming, socket API, detach) proceed in
+the build order above.

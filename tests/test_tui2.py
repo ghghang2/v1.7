@@ -1641,3 +1641,89 @@ def test_browse_toggle_and_scroll():
     assert app._browse is True
     app._on_input(Key("ctrl+o"))
     assert app._browse is False
+
+
+# ── tui3 wave 2: in-log search + visual copy ──────────────────────────
+
+def _seed_log(app, texts):
+    from nbchat.tui2 import chat as chatc
+    for i, txt in enumerate(texts):
+        app.log.add(chatc.ChatMessage(role="user", text=txt))
+    app._scroll_log(0)
+
+
+def test_logsearch_open_type_exec():
+    app, *_ = _make_chat_app()
+    _seed_log(app, ["alpha one", "the needle here", "beta two",
+                    "another needle", "gamma three"])
+    app._on_input(Key("ctrl+o"))           # enter browse
+    app._on_input(Key("/"))                 # open search
+    assert app._logsearch is not None and app._logsearch["input"]
+    for ch in "needle":
+        app._on_input(Key(ch))
+    assert app._logsearch["query"] == "needle"
+    # mode bar shows the live query
+    frame = app._build_frame()
+    ftext = "\n".join("".join(s.text for s in ln.segments)
+                       for ln in frame.lines)
+    assert "search: needle" in ftext
+    app._on_input(Key("enter"))             # run
+    assert app._logsearch["input"] is False
+    assert len(app._search_matches) == 2
+    # mode bar shows the match position
+    frame = app._build_frame()
+    ftext = "\n".join("".join(s.text for s in ln.segments)
+                       for ln in frame.lines)
+    assert "match 1/2" in ftext
+
+
+def test_logsearch_next_prev_cycles():
+    app, *_ = _make_chat_app()
+    _seed_log(app, ["a1", "needle x", "b2", "needle y", "c3"])
+    app._on_input(Key("ctrl+o"))
+    app._on_input(Key("/"))
+    for ch in "needle":
+        app._on_input(Key(ch))
+    app._on_input(Key("enter"))
+    assert len(app._search_matches) == 2
+    i0 = app._search_idx
+    app._on_input(Key("n"))
+    assert app._search_idx == (i0 + 1) % 2
+    app._on_input(Key("N"))
+    assert app._search_idx == i0
+    # offset is always clamped to a valid range
+    w = app.term.width
+    total = len(app.log._all_rows(w))
+    assert 0 <= app.log.offset <= max(0, total - 2)
+
+
+def test_logsearch_no_matches():
+    app, *_ = _make_chat_app()
+    _seed_log(app, ["one", "two", "three"])
+    app._on_input(Key("ctrl+o"))
+    app._on_input(Key("/"))
+    for ch in "zzzz":
+        app._on_input(Key(ch))
+    app._on_input(Key("enter"))
+    assert app._search_matches == []
+    # esc clears the search
+    app._on_input(Key("escape"))
+    assert app._logsearch is None
+    # n with no matches re-opens a fresh search
+    app._on_input(Key("n"))
+    assert app._logsearch is not None and app._logsearch["input"]
+    app._on_input(Key("escape"))
+    assert app._logsearch is None
+
+
+def test_visual_copy_uses_clipboard():
+    app, *_ = _make_chat_app()
+    _seed_log(app, ["copied line one", "copied line two", "copied line three"])
+    app._on_input(Key("ctrl+o"))
+    captured = {}
+    app._copy_to_clipboard = lambda t: captured.setdefault("text", t)
+    app._on_input(Key("v"))
+    assert "text" in captured
+    assert "copied line one" in captured["text"]
+    # a toast was pushed
+    assert app._notify._queue, "visual copy should push a toast"
