@@ -3327,3 +3327,48 @@ def test_context_shows_auto_compact_state():
     assert "auto-compact on" in app._cmd_context("")
     app._auto_compact_enabled = False
     assert "auto-compact off" in app._cmd_context("")
+
+
+# ── /retry (re-run last user message) ─────────────────────────────
+def test_submit_captures_last_user_text(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    calls = []
+    monkeypatch.setattr(app, "_start_turn", lambda t: calls.append(t))
+    app._submit("hello there")
+    assert app._last_user_text == "hello there"
+    assert calls == ["hello there"]
+
+def test_retry_resends_last_message(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    calls = []
+    monkeypatch.setattr(app, "_start_turn", lambda t: calls.append(t))
+    app._submit("hello there")
+    out = app._cmd_retry("")
+    assert calls == ["hello there", "hello there"]
+    assert "re-sending" in out
+
+def test_retry_with_arg_overrides(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    calls = []
+    monkeypatch.setattr(app, "_start_turn", lambda t: calls.append(t))
+    app._submit("first")
+    app._cmd_retry("second question")
+    assert calls[-1] == "second question"
+    assert app._last_user_text == "second question"
+
+def test_retry_nothing_to_retry():
+    app, _, _, _ = _make_chat_app()
+    assert "nothing to retry" in app._cmd_retry("")
+
+def test_retry_busy_refuses(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    calls = []
+    monkeypatch.setattr(app, "_start_turn", lambda t: calls.append(t))
+    app._turn_active = True  # busy -> refuses to interrupt
+    out = app._cmd_retry("")
+    assert not calls
+    assert "wait" in out
+
+def test_retry_listed_in_help():
+    app, _, _, _ = _make_chat_app()
+    assert "/retry" in app._tui2_help_addendum()

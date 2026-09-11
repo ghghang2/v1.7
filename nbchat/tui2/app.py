@@ -204,6 +204,7 @@ class ChatApp(TerminalAgent):
         self._ctx_budget = 0.0
         self._auto_compact_due = False
         self._auto_compact_frac, self._auto_compact_enabled = self._auto_compact_cfg()
+        self._last_user_text = None
         self._tok_times: list = []
         self._turns = 0
         self._turn_mutated = False  # auto-checkpoint once per edit-window
@@ -901,6 +902,7 @@ class ChatApp(TerminalAgent):
         if text.startswith("!"):
             self._run_shell(text)
             return
+        self._last_user_text = text
         self._start_turn(text)
 
     def _run_shell(self, line: str) -> None:
@@ -1074,7 +1076,7 @@ class ChatApp(TerminalAgent):
                     "/goal", "/notify", "/theme", "/monitor", "/inbox",
                     "/team", "/browse", "/search", "/sup", "/voice",
                     "/fork", "/checkpoint", "/undo", "/find", "/diff",
-                    "/export", "/plan")
+                    "/export", "/plan", "/retry")
 
     def _run_command(self, line: str) -> None:
         """Route a slash command.
@@ -1142,6 +1144,7 @@ class ChatApp(TerminalAgent):
             "  /diff [--stat] [label]  review tracked-file changes (colorized)",
             "  /export [path]  save this session as a markdown file",
             "  /plan [on|off]  read-only research mode (blocks file edits)",
+            "  /retry [text] re-run your last message (or run a new one)",
             "  @<path>      file completion (type @ + a filename, pick a match)",
             "  /compact    force a context summarisation now",
             "  /copy       copy last reply to the clipboard",
@@ -1190,6 +1193,7 @@ class ChatApp(TerminalAgent):
             "/diff": self._cmd_diff,
             "/export": self._cmd_export,
             "/plan": self._cmd_plan,
+            "/retry": self._cmd_retry,
         }
         fn = handlers.get(cmd)
         try:
@@ -1644,6 +1648,24 @@ class ChatApp(TerminalAgent):
             self.system_prompt = self.system_prompt.replace(note, "")
         self._note("plan mode OFF — file edits re-enabled")
         return "plan mode OFF"
+
+    def _cmd_retry(self, arg: str) -> str:
+        """Re-run the last user message (or ``/retry <text>`` to run a new one).
+
+        Handy after a failed/unsatisfying turn or after you tweak the prompt:
+        it resends the last thing you asked without retyping it.  Refuses
+        while a turn is in flight (interrupting is what interjection/Enter does).
+        """
+        if self.busy:
+            return "retry: wait for the current turn to finish (press Enter to steer)"
+        text = arg.strip() if arg.strip() else (self._last_user_text or "").strip()
+        if not text:
+            return "retry: nothing to retry yet (send a message first)"
+        # Record it as the new "last user message" so a chained /retry works,
+        # then submit it as a normal turn.
+        self._last_user_text = text
+        self._start_turn(text)
+        return "retry: re-sending your last message"
 
     # ── /export (tui3: save a session as a markdown file) ───────────────
 

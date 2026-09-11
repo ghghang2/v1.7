@@ -217,6 +217,8 @@ shell command (`!ls`); `!!` also stores the output for later.
   turn finishes (off the render path; a dim note confirms it).  Toggle/tune with
   `NBCHAT_AUTO_COMPACT` (`0`/`off` disables, a float like `0.6` sets the threshold);
   `/context` shows the current setting.
+- `/retry [text]` — re-run your last message (or a new one) without retyping it;
+  handy after a failed/unsatisfying turn.  Refuses while a turn is in flight.
 - `/hotkeys` — the keybinding reference.
 - `/copy` — copies the last assistant message to the clipboard (OSC 52;
   silent no-op where the terminal lacks clipboard support).
