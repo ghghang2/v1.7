@@ -29,7 +29,10 @@ these warrant **tui3** rather than piling onto tui2:
 | 7 | **Detachable background agent** (reattach after disconnect) | 10 | L | Move the agent/turn worker into a long-lived supervised process; session + in-flight stream + pending approvals survive TUI exit / SSH drop. The headline "detach without stopping work". |
 
 **Build order** (follows herdr's, adjusted for what tui2 already has):
-1 → 2 → 3 → (4, 5 in parallel) → 6 → 7.
+1 → 2 → 3 → (4, 5 in parallel) → 6 → 7.  **Shipped so far:** wave 1
+(keymap + browse + mode bar), wave 2 (in-log search + visual copy),
+wave 3 (mouse wheel scroll).  Next: click-to-select, then config/settings
+and theming.
 
 ## tui3 wave 1 (this pass)
 
@@ -64,5 +67,24 @@ Both are self-contained in `app.py` (no new files, no core changes).  The
 `KEYMAP["browse"]` rows for `/` and `v` drive both the mode-bar hints and
 `/hotkeys`.
 
-Waves 3+ (mouse, config/settings, theming, socket API, detach) proceed in
-the build order above.
+## tui3 wave 3 (this pass)
+
+**Mouse wheel scrolling** (SGR-extended mouse reporting, purely additive):
+
+- `RawTerminal.enter()` now enables SGR mouse reporting
+  (`ESC[?1000h` button tracking + `ESC[?1006h` SGR encoding) after the
+  alternate screen / bracketed-paste setup, and `restore()` disables it —
+  so no mouse bytes leak into the shell afterwards.  Gated by
+  `NBCHAT_NO_MOUSE=1` (some SSH/serial links mangle the report).
+- `KeyReader` parses SGR mouse reports (`ESC[<btn;col;rowM/m`) into
+  `wheel-up` / `wheel-down` / `mouse-press` / `mouse-release` keys (with
+  `col,row` payload).  Wheel buttons 64/66 = up, 65/67 = down.  Unrecognised
+  `<`-CSI (bogus button codes) still fall through to the `unknown` swallow,
+  so the input buffer can never be corrupted.
+- `ChatApp._on_input` maps wheel-up/down to a 3-line `_scroll_log` in **any**
+  mode (normal or browse); button press/release are consumed for now
+  (click-to-select is a later wave).  The `↑N` indicator (already present for
+  PgUp scrollback) shows how far the log is scrolled from the bottom.
+
+Waves 4+ (click-to-select, config/settings, theming, socket API, detach)
+proceed in the build order above.

@@ -42,6 +42,10 @@ _SHOW_CURSOR = "\033[?25h"
 _HIDE_CURSOR = "\033[?25l"
 _BRACKETED_PASTE_ON = "\033[?2004h"
 _BRACKETED_PASTE_OFF = "\033[?2004l"
+# SGR-extended mouse reporting (wheel + button press/release).  Opt out
+# with NBCHAT_NO_MOUSE=1 (e.g. over some SSH/serial links that mangle it).
+_MOUSE_SGR_ON = "\033[?1000h\033[?1006h"
+_MOUSE_SGR_OFF = "\033[?1000l\033[?1006l"
 
 
 class RawTerminal:
@@ -83,6 +87,8 @@ class RawTerminal:
             self._write(
                 _ENTER_ALT_SCREEN + _HIDE_CURSOR + _BRACKETED_PASTE_ON
             )
+            if not os.environ.get("NBCHAT_NO_MOUSE"):
+                self._write(_MOUSE_SGR_ON)
             # Clear the screen and hide the cursor.  The differential
             # writer addresses every line absolutely (CUP), so the
             # cursor's initial position no longer matters; the clear
@@ -104,7 +110,8 @@ class RawTerminal:
             return
         if self._saved is not None:
             out = (
-                _BRACKETED_PASTE_OFF
+                _MOUSE_SGR_OFF
+                + _BRACKETED_PASTE_OFF
                 + _SHOW_CURSOR
                 + _LEAVE_ALT_SCREEN
             )

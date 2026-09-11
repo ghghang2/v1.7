@@ -66,6 +66,7 @@ KEYMAP = {
         ("ctrl+p", "command palette"),
         ("ctrl+r", "reverse search input history"),
         ("pgup/pgdn", "scroll the log up / down"),
+        ("wheel", "scroll the log (mouse)"),
         ("home/end", "jump to the top / bottom of the log"),
         ("!<cmd>", "run a shell command (!! stores output)"),
     ),
@@ -537,6 +538,17 @@ class ChatApp(TerminalAgent):
         # The session-picker modal captures all keys while it is open.
         if self._picker is not None:
             self._picker_key(key)
+            return
+        # Mouse (tui3 wave 3): wheel scrolls the log in any mode; button
+        # press/release are consumed for now (click-select is a follow-up).
+        if key.name == "wheel-up":
+            self._scroll_log(3)
+            return
+        if key.name == "wheel-down":
+            self._scroll_log(-3)
+            return
+        if key.name in ("mouse-press", "mouse-release"):
+            self._ui_refresh()
             return
         # Browse mode (tui3): Ctrl+O toggles it; while active it captures
         # keys for reading/scrolling the log instead of the editor.

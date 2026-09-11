@@ -323,8 +323,20 @@ clears the search, and `n` with no matches starts a fresh query. `v` copies
 the currently **visible** log viewport (rendered lines at the current
 offset) to the clipboard via the same OSC 52 escape `/copy` uses, and pushes
 a small "copied" toast. The `KEYMAP["browse"]` rows for `/` and `v` drive
-both the mode-bar hints and `/hotkeys`. Mouse, config/settings, theming,
-socket API and detach proceed in later tui3 waves (see the roadmap).
+both the mode-bar hints and `/hotkeys`.
+
+**tui3 wave 3 — mouse wheel scrolling** (SGR-extended mouse reporting,
+purely additive): `RawTerminal.enter()` now enables SGR mouse reporting
+(`ESC[?1000h` button tracking + `ESC[?1006h` SGR encoding) after the alt
+screen / bracketed-paste setup, and `restore()` disables it (so no mouse
+bytes leak into the shell); opt out with `NBCHAT_NO_MOUSE=1`. `KeyReader`
+parses SGR mouse reports (`ESC[<btn;col;rowM/m`) into `wheel-up` /
+`wheel-down` / `mouse-press` / `mouse-release` keys (buttons 64/66 = up,
+65/67 = down); unrecognised `<`-CSI still falls through to the `unknown`
+swallow. `ChatApp._on_input` maps wheel-up/down to a 3-line `_scroll_log`
+in any mode (normal or browse); button press/release are consumed for now
+(click-to-select is a later wave). The existing `↑N` indicator shows how far
+the log is scrolled from the bottom.
 
 ---
 

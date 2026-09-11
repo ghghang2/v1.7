@@ -1230,10 +1230,12 @@ def test_keyreader_lone_esc_and_legacy():
 
 
 def test_keyreader_unknown_csi_swallowed():
-    # A mouse report (unknown CSI) must be swallowed whole, not corrupted.
+    # An unrecognised CSI must be swallowed whole, not corrupted.  (A valid
+    # SGR mouse report is now *parsed* into a mouse/wheel key — see the
+    # wave-3 mouse tests — so use a bogus button code that stays unknown.)
     from nbchat.tui2.keys import KeyReader
     r = KeyReader()
-    ks = [k.name for k in r.feed("\x1b[<0;10;5M")]
+    ks = [k.name for k in r.feed("\x1b[<5;10;5M")]
     assert ks == ["unknown"]
 
 
@@ -1727,3 +1729,57 @@ def test_visual_copy_uses_clipboard():
     assert "copied line one" in captured["text"]
     # a toast was pushed
     assert app._notify._queue, "visual copy should push a toast"
+
+
+# ── tui3 wave 3: SGR mouse parsing + wheel scroll ─────────────────────
+
+def _mouse_keys(seq):
+    from nbchat.tui2.keys import KeyReader
+    return [k for k in KeyReader().feed(seq)]
+
+
+def test_mouse_wheel_sgr_parsing():
+    ks = _mouse_keys("\x1b[<64;10;5M")
+    assert [k.name for k in ks] == ["wheel-up"]
+    ks = _mouse_keys("\x1b[<65;10;5M")
+    assert [k.name for k in ks] == ["wheel-down"]
+    ks = _mouse_keys("\x1b[<0;10;5M")
+    assert ks[0].name == "mouse-press" and ks[0].payload == "10,5"
+    ks = _mouse_keys("\x1b[<3;10;5m")
+    assert ks[0].name == "mouse-release" and ks[0].payload == "10,5"
+
+
+def test_mouse_split_across_chunks():
+    from nbchat.tui2.keys import KeyReader
+    r = KeyReader()
+    assert r.feed("\x1b[<6") == []          # incomplete
+    ks = r.feed("4;10;5M")
+    assert [k.name for k in ks] == ["wheel-up"]
+
+
+def test_mouse_unknown_sgr_swallowed():
+    # a non-mouse CSI with "<" but malformed still yields no crash
+    ks = _mouse_keys("\x1b[<99;M")
+    assert all(k.name in ("unknown",) for k in ks) or ks == []
+
+
+def test_wheel_scrolls_log_and_click_consumed():
+    from nbchat.tui2 import chat as chatc
+    app, *_ = _make_chat_app()
+    for i in range(40):
+        app.log.add(chatc.ChatMessage(role="user", text=f"line {i}"))
+    app._scroll_log(0)
+    off0 = app.log.offset
+    app._on_input(Key("wheel-up"))
+    assert app.log.offset > off0
+    up = app.log.offset
+    app._on_input(Key("wheel-down"))
+    # one symmetric tick returns to the start (clamped if needed)
+    assert app.log.offset == max(0, up - 3)
+    app._on_input(Key("wheel-down"))  # clamped at the bottom
+    assert app.log.offset == max(0, up - 6)
+    # a click is consumed, not typed into the editor
+    app._on_input(Key("mouse-press", "10,5"))
+    assert app.editor.text() == ""
+    app._on_input(Key("mouse-release", "10,5"))
+    assert app.editor.text() == ""

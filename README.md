@@ -185,8 +185,13 @@ shell command (`!ls`); `!!` also stores the output for later.
   `/` **searches the log** (type a query, Enter to find all matches,
   `n`/`N` cycle to the next/previous match — the log jumps to it), and
   `v` **copies the visible log** to your clipboard.
-- The larger tui3 scope (mouse, theming, config, socket API, detach) is
-  tracked in `docs/tui3_roadmap.md`.
+- **Mouse wheel scrolling** — the mouse wheel (SGR-encoded) scrolls the
+  conversation log up/down in any mode, with the `↑N` indicator showing how
+  far you've scrolled from the bottom.  Opt out with `NBCHAT_NO_MOUSE=1`
+  (for links that mangle the mouse-report escape).  Click-to-select is a
+  later tui3 wave.
+- The larger tui3 scope (click-select, theming, config, socket API,
+  detach) is tracked in `docs/tui3_roadmap.md`.
 
 The v1 print-based REPL is unchanged and remains the default; v2 is
 opt-in via the flag above.  Voice / email / supervisor / team surfaces
