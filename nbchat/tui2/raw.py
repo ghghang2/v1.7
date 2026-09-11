@@ -146,6 +146,49 @@ class RawTerminal:
             return False
         self.width, self.height = w, h
         return True
+    def probe_appearance(self, deadline: float = 0.35) -> Optional[str]:
+        """Query the terminal's light/dark appearance via DECSTERA
+        (``CSI ? 996 n``).  Returns ``'light'``, ``'dark'``, or ``None``
+        when the terminal does not answer (unsupported / timed out).
+        Best-effort: never raises, and the read is bounded so a
+        non-responding terminal only adds a short delay.  Call it while raw
+        mode is active and before the render loop reads the input fd, so no
+        other reader contends for the response.
+        """
+        if self.fd < 0 or getattr(self, "_passthrough", False):
+            return None
+        import re
+        import select
+        import time
+        try:
+            self._write("\x1b[?996n")
+        except Exception:
+            return None
+        end = time.monotonic() + deadline
+        buf = b""
+        pat = re.compile(rb"\x1b\[\??996;([12]);")
+        while True:
+            remain = end - time.monotonic()
+            if remain <= 0:
+                break
+            try:
+                ready, _, _ = select.select([self.fd], [], [], remain)
+            except Exception:
+                break
+            if not ready:
+                continue
+            try:
+                chunk = os.read(self.fd, 256)
+            except OSError:
+                break
+            if not chunk:
+                break
+            buf += chunk
+            m = pat.search(buf)
+            if m:
+                return "dark" if m.group(1) == b"1" else "light"
+        return None
+
 
 
 # ── Event queue ───────────────────────────────────────────────────────────

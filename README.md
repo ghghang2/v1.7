@@ -322,6 +322,9 @@ shell command (`!ls`); `!!` also stores the output for later.
 - **Colour theming** — `/theme` switches the whole UI between the built-in
   `dark`, `light`, and `prime` colour sets live (every component re-colours
   on the next render), and the choice is remembered across sessions.
+  `/theme auto` (or `/settings theme auto`) auto-detects your terminal's
+  light/dark appearance (DECSTERA) and picks the matching theme at each start,
+  so a light terminal gets the light theme with no fuss.
 - **Persistent settings** — a few preferences survive across sessions,
   saved to `~/.nbchat/tui3.json` (override with `NBCHAT_TUI3_CONFIG`):
   thinking-block visibility (`Ctrl+T`), the toast / BEL / sound channels

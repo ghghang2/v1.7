@@ -2369,7 +2369,7 @@ class ChatApp(TerminalAgent):
 
     def _save_cfg(self) -> None:
         """Persist the current user settings (best-effort, never raises)."""
-        self._cfg.update({
+        vals = {
             "thinking_visible": bool(self._thinking_visible),
             "notify_toasts": bool(self._notify.toasts),
             "notify_bel": bool(self._notify.bel),
@@ -2377,8 +2377,13 @@ class ChatApp(TerminalAgent):
             "approval_enabled": bool(self._approval_enabled),
             "risky_tools": sorted(self._risky_tools),
             "scroll_tick": int(self._scroll_tick),
-            "theme": theme.current().name,
-        })
+        }
+        # Preserve the 'auto' theme preference (a setting, not a concrete
+        # theme) so auto-detect re-runs on the next start; otherwise persist
+        # the active theme name.
+        if self._cfg.get("theme") != "auto":
+            vals["theme"] = theme.current().name
+        self._cfg.update(vals)
         config.save(self._cfg)
 
     def _cmd_btw(self, arg: str) -> None:
@@ -2459,6 +2464,37 @@ class ChatApp(TerminalAgent):
         return (f"notifications — toasts: {n.toasts} · bel: {n.bel} · "
                 f"sound: {n.sound}")
 
+    def _apply_auto_theme(self) -> None:
+        """Auto light/dark (herdr #7): if the configured theme is 'auto',
+        query the terminal's appearance (DECSTERA) and switch to light or
+        dark.  Best-effort: on an unsupported terminal the app stays on the
+        default (dark).  Called once after raw mode is entered, before the
+        render loop reads the input fd.
+        """
+        if os.environ.get("NBCHAT_NO_AUTO_THEME"):
+            return
+        if self._cfg.get("theme") != "auto":
+            return
+        from . import theme
+        appearance = None
+        try:
+            appearance = self.term.probe_appearance()
+        except Exception:
+            appearance = None
+        chosen = "light" if appearance == "light" else (
+            "dark" if appearance == "dark" else None)
+        if chosen is None:
+            theme.set_active("dark")
+            return
+        theme.set_active(chosen)
+        for msg in self.log.messages:
+            msg.invalidate()
+        self._cfg["theme"] = "auto"  # persist the preference (re-detect)
+        try:
+            self._save_cfg()
+        except Exception:
+            pass
+
     def _cmd_theme(self, arg: str) -> str:
         """Switch the colour theme (tui3 wave 5).
 
@@ -2469,12 +2505,25 @@ class ChatApp(TerminalAgent):
         """
         from . import theme
         name = arg.strip().lower()
+        real = {t.name for t in theme.all_themes()}
         if not name:
             names = ", ".join(t.name for t in theme.all_themes())
-            return f"theme: {theme.current().name}  (available: {names})"
-        if name not in {t.name for t in theme.all_themes()}:
+            return (f"theme: {theme.current().name}  "
+                    f"(available: {names}, auto)")
+        if name == "auto":
+            # 'auto' is a preference, not a theme: persist it so every start
+            # re-detects the terminal's appearance (DECSTERA).  The actual
+            # probe runs at startup (no input-reader contention mid-session).
+            self._cfg["theme"] = "auto"
+            self._save_cfg()
+            cur = theme.current().name
+            if os.environ.get("NBCHAT_NO_AUTO_THEME"):
+                return "auto theme disabled (NBCHAT_NO_AUTO_THEME)"
+            return (f"theme: auto (auto-detects light/dark each start; "
+                    f"this session: {cur})")
+        if name not in real:
             names = ", ".join(t.name for t in theme.all_themes())
-            return f"unknown theme '{name}'  (available: {names})"
+            return f"unknown theme '{name}'  (available: {names}, auto)"
         applied = theme.set_active(name)
         # Force the logged turns to re-render with the new colours.
         for msg in self.log.messages:
@@ -2729,13 +2778,19 @@ class ChatApp(TerminalAgent):
         key = parts[0].lower()
         val = " ".join(parts[1:]).strip()
         if key == "theme":
-            valid = [t.name for t in theme.all_themes()]
+            valid = [t.name for t in theme.all_themes()] + ["auto"]
             if not val or val.lower() not in valid:
                 return (f"usage: /settings theme {'|'.join(valid)} "
                         f"(current: {theme.current().name})")
-            theme.set_active(val)
+            v = val.lower()
+            if v == "auto":
+                # A preference, not a theme: persist it; every start re-detects.
+                self._cfg["theme"] = "auto"
+                self._save_cfg()
+                return "theme -> auto (auto-detects light/dark each start)"
+            theme.set_active(v)
             self._save_cfg()
-            return "theme -> " + val
+            return "theme -> " + v
         if key == "scroll":
             if not val or not val.isdigit() or int(val) < 1:
                 return f"usage: /settings scroll <lines>=1 (current: {self._scroll_tick})"
@@ -3737,6 +3792,7 @@ class ChatApp(TerminalAgent):
         self._start_voice()
         try:
             with self.term:
+                self._apply_auto_theme()
                 self._install_approval_gate()
                 self._tui.start()
         except KeyboardInterrupt:

@@ -307,3 +307,34 @@ the status bar via `_status_right()`, right next to the `tasks N/M` todo pill.
 Zero backend change — it reads the existing queue list.  1 new unit test
 (`test_queue_pill_reflects_queue`); tui2 suite 297 passed; full suite 671 green
 (297+79+295).
+
+## tui3: auto light/dark theme (herdr #7, the low-risk slice)
+
+**Auto light/dark** (herdr survey #7 "host-theme sync + auto light/dark"): the
+full host-sync (truecolor re-palettizing) would need the 16-colour theme model
+reworked, so this ships the high-value, low-risk slice — detecting the
+terminal's light/dark appearance and picking the matching *existing* theme.
+
+- **Terminal probe** — `RawTerminal.probe_appearance(deadline=0.35)` sends
+  DECSTERA (`CSI ? 996 n`) and reads the report (`CSI ? 996 ; 1|2 ; …`),
+  returning `'light'` / `'dark'` / `None` (unsupported).  Bounded read (short
+  deadline), best-effort, never raises, so a non-responding terminal only adds
+  a brief delay.  Local `re`/`select`/`time` imports keep `raw.py` deps clean.
+- **Wiring** (all in `nbchat/tui2/app.py`) — `theme: auto` is a *preference*,
+  not a concrete theme: `_apply_auto_theme()` runs once after raw mode is
+  entered (before the render loop reads the input fd, so no reader contends
+  for the report), probes, and switches light/dark (dark fallback if
+  unsupported).  `theme.set_active('auto')` falls back to dark at init, so the
+  app always has a valid theme before the probe resolves it.  `/theme auto` and
+  `/settings theme auto` persist the preference.  Kill switch:
+  `NBCHAT_NO_AUTO_THEME=1`.
+- **`_save_cfg` auto-awareness** — a small fix so persisting settings does not
+  clobber the `'auto'` preference with the current concrete theme name
+  (otherwise auto-detect would silently revert to the last concrete theme).
+- **Default behaviour unchanged** — the default theme stays `dark`; `auto` is
+  opt-in.  On a real terminal (iTerm2/kitty/wezterm/…) DECSTERA answers in
+  <100 ms, so the re-detect is effectively free each start.
+- **Tests** — 7 new (probe light/dark/timeout/passthrough via a pty pair fed a
+  synthetic report; `_apply_auto_theme` picks light and persists the preference;
+  `/theme auto` and `/settings theme auto` persist `'auto'`; the no-arg `/theme`
+  lists `auto`).  tui2 suite 304 passed; full suite 678 green (304+79+295).

@@ -3003,6 +3003,80 @@ def test_queue_pill_reflects_queue(monkeypatch, tmp_path):
     assert app._queue_pill() == "3 queued"
     assert "3 queued" in app._status_right()
 
+def test_probe_appearance_light(monkeypatch, tmp_path):
+    import io, os, pty
+    from nbchat.tui2 import RawTerminal
+    master, slave = pty.openpty()
+    term = RawTerminal(io.StringIO(""), io.StringIO(""))
+    term.fd = master
+    term._passthrough = False
+    os.write(slave, b"\x1b[?996;2;0r")
+    res = term.probe_appearance(deadline=0.5)
+    assert res == "light"
+    os.close(master); os.close(slave)
+
+
+def test_probe_appearance_dark(monkeypatch, tmp_path):
+    import io, os, pty
+    from nbchat.tui2 import RawTerminal
+    master, slave = pty.openpty()
+    term = RawTerminal(io.StringIO(""), io.StringIO(""))
+    term.fd = master
+    term._passthrough = False
+    os.write(slave, b"\x1b[?996;1;3r")
+    res = term.probe_appearance(deadline=0.5)
+    assert res == "dark"
+    os.close(master); os.close(slave)
+
+
+def test_probe_appearance_timeout_is_none(monkeypatch, tmp_path):
+    import io, os, pty
+    from nbchat.tui2 import RawTerminal
+    master, slave = pty.openpty()
+    term = RawTerminal(io.StringIO(""), io.StringIO(""))
+    term.fd = master
+    term._passthrough = False
+    res = term.probe_appearance(deadline=0.1)
+    assert res is None
+    os.close(master); os.close(slave)
+
+
+def test_probe_appearance_passthrough_is_none(monkeypatch, tmp_path):
+    import io
+    from nbchat.tui2 import RawTerminal
+    term = RawTerminal(io.StringIO(""), io.StringIO(""))
+    term._passthrough = True
+    assert term.probe_appearance() is None
+
+
+def test_apply_auto_theme_picks_light(monkeypatch, tmp_path):
+    monkeypatch.setenv("NBCHAT_TUI3_CONFIG", str(tmp_path / "c.json"))
+    app, *_ = _make_chat_app()
+    from nbchat.tui2 import theme as _theme
+    app._cfg["theme"] = "auto"
+    monkeypatch.setattr(app.term, "probe_appearance", lambda deadline=0.35: "light")
+    app._apply_auto_theme()
+    assert _theme.current().name == "light"
+    assert app._cfg["theme"] == "auto"
+    _theme.set_active("dark")
+
+
+def test_theme_auto_persists_preference(monkeypatch, tmp_path):
+    monkeypatch.setenv("NBCHAT_TUI3_CONFIG", str(tmp_path / "c.json"))
+    app, *_ = _make_chat_app()
+    out = app._cmd_theme("auto")
+    assert "auto" in out and app._cfg["theme"] == "auto"
+    assert "auto" in app._cmd_theme("")
+    from nbchat.tui2 import theme as _theme
+    _theme.set_active("dark")
+
+
+def test_settings_theme_auto(monkeypatch, tmp_path):
+    monkeypatch.setenv("NBCHAT_TUI3_CONFIG", str(tmp_path / "c.json"))
+    app, *_ = _make_chat_app()
+    out = app._cmd_settings("theme auto")
+    assert "auto" in out and app._cfg["theme"] == "auto"
+
 def _gitrepo(tmp_path):
     import subprocess as _sp
     d = tmp_path / "repo"
