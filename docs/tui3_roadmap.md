@@ -31,8 +31,9 @@ these warrant **tui3** rather than piling onto tui2:
 **Build order** (follows herdr's, adjusted for what tui2 already has):
 1 → 2 → 3 → (4, 5 in parallel) → 6 → 7.  **Shipped so far:** wave 1
 (keymap + browse + mode bar), wave 2 (in-log search + visual copy),
-wave 3 (mouse wheel scroll) + 3b (click / drag-to-copy).  Next:
-config/settings and theming.
+wave 3 (mouse wheel scroll) + 3b (click / drag-to-copy),
+wave 4 (persistent user settings).  Next: theming, then socket API /
+detach.
 
 ## tui3 wave 1 (this pass)
 
@@ -98,5 +99,17 @@ header / editor / status are ignored.  A wheel scroll drops any pending
 anchor (the view is moving).  `KEYMAP["normal"]` documents "click/drag →
 copy one / a range of log lines".
 
-Waves 4+ (config/settings, theming, socket API, detach) proceed in the
-build order above.
+**tui3 wave 4 — persistent user settings** (self-contained, purely
+additive): a small defensive JSON settings module (`nbchat/tui2/config.py`,
+default `~/.nbchat/tui3.json`, override `NBCHAT_TUI3_CONFIG`) persists a
+few preferences across sessions.  `ChatApp.__init__` loads them into
+`_thinking_visible`, the `_notify` toast/BEL/sound channels,
+`_approval_enabled` / `_risky_tools`, and the wheel `scroll_tick`;
+`_save_cfg()` (best-effort, never raises) runs on each toggle
+(`Ctrl+T`, `/notify`, `/approve`) and in `run()`'s `finally` on exit.
+The wheel handler now scrolls by the configurable `scroll_tick`.  Loading
+merges over defaults and swallows I/O errors, so a config problem can
+never block the TUI.  Tests point `NBCHAT_TUI3_CONFIG` at a temp file so
+the real home directory is untouched.
+
+Waves 5+ (theming, socket API, detach) proceed in the build order above.

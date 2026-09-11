@@ -348,6 +348,15 @@ outside the log region (header / editor / status, rows beyond `_last_log_end`)
 are ignored, and a wheel scroll drops any pending anchor. `KEYMAP["normal"]`
 documents the binding.
 
+**tui3 wave 4 — persistent user settings:** `nbchat/tui2/config.py` loads
+and saves a small JSON settings file (default `~/.nbchat/tui3.json`,
+override `NBCHAT_TUI3_CONFIG`) holding the thinking-block visibility, the
+toast/BEL/sound channels, the tool-approval gate + risky-tool list, and the
+mouse-wheel scroll tick.  `ChatApp.__init__` merges the file over defaults
+(never raising); `_save_cfg()` runs on each toggle (`Ctrl+T`, `/notify`,
+`/approve`) and on exit (`run()` finally).  Purely additive; loading is
+defensive so a config problem cannot block the TUI.
+
 ---
 
 ## Not addressed (out of scope for this pass, tracked in the port tracker)

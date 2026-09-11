@@ -36,6 +36,13 @@ from nbchat.tui2.app import KEYMAP
 CYAN = Style(fg=36)
 BOLD = Style(bold=True)
 
+# Keep the persisted settings file (tui3 wave 4) out of the real home
+# directory: every config load/save in these tests hits this temp file.
+import tempfile as _tempfile  # noqa: E402
+CFG_FILE = os.path.join(_tempfile.mkdtemp(prefix="nbchat_tui3_cfg_"),
+                        "tui3.json")
+os.environ["NBCHAT_TUI3_CONFIG"] = CFG_FILE
+
 
 def text(line: str) -> Line:
     return Line([Segment(line)])
@@ -1861,3 +1868,49 @@ def test_mouse_row_payload_parse():
     assert app._mouse_row(Key("mouse-release", "3,42")) == 42
     assert app._mouse_row(Key("mouse-press", None)) is None
     assert app._mouse_row(Key("mouse-press", "bad")) is None
+
+
+# ── tui3 wave 4: user settings persistence ──────────────────────────
+
+def test_config_roundtrip():
+    from nbchat.tui2 import config
+    c = config.load()
+    c["thinking_visible"] = False
+    c["scroll_tick"] = 7
+    assert config.save(c)
+    c2 = config.load()
+    assert c2["thinking_visible"] is False
+    assert c2["scroll_tick"] == 7
+
+
+def test_app_loads_persisted_settings():
+    from nbchat.tui2 import config
+    config.save({"thinking_visible": False, "scroll_tick": 5,
+                 "notify_sound": True,
+                 "risky_tools": ["run_command", "send_email"]})
+    app, *_ = _make_chat_app()
+    assert app._thinking_visible is False
+    assert app._scroll_tick == 5
+    assert app._notify.sound is True
+    assert app._risky_tools == {"run_command", "send_email"}
+
+
+def test_toggle_thinking_persists():
+    from nbchat.tui2 import config
+    app, *_ = _make_chat_app()
+    app._save_cfg()
+    before = app._thinking_visible
+    app._toggle_thinking()
+    c = config.load()
+    assert c["thinking_visible"] == (not before)
+    app2, *_ = _make_chat_app()
+    assert app2._thinking_visible == (not before)
+
+
+def test_approve_off_persists():
+    from nbchat.tui2 import config
+    app, *_ = _make_chat_app()
+    app._cmd_approve("off")
+    c = config.load()
+    assert c["approval_enabled"] is False
+    assert c["risky_tools"] == sorted(app._risky_tools)

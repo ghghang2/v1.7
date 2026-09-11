@@ -193,7 +193,13 @@ shell command (`!ls`); `!!` also stores the output for later.
   release to copy that line / line-range to your clipboard (the `v` key in
   browse mode copies the whole visible viewport).  A small "copied" toast
   confirms it.
-- The larger tui3 scope (theming, config, socket API, detach) is tracked in
+- **Persistent settings** — a few preferences survive across sessions,
+  saved to `~/.nbchat/tui3.json` (override with `NBCHAT_TUI3_CONFIG`):
+  thinking-block visibility (`Ctrl+T`), the toast / BEL / sound channels
+  (`/notify`), the tool-approval gate and its risky-tool list (`/approve`),
+  and the mouse-wheel scroll tick.  They load at startup and save on each
+  toggle and on exit.
+- The larger tui3 scope (theming, socket API, detach) is tracked in
   `docs/tui3_roadmap.md`.
 
 The v1 print-based REPL is unchanged and remains the default; v2 is

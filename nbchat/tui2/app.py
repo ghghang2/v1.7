@@ -41,6 +41,7 @@ from .keys import Key
 from .keys import KeyReader
 from .raw import EventQueue, RawTerminal, TUIApp
 from .notify import NotifyStack
+from . import config
 from nbchat.tui.agent import TerminalAgent
 
 # <tool_call> blocks leak through the stream when the model emits them as
@@ -214,6 +215,20 @@ class ChatApp(TerminalAgent):
         self._tui.on_input = self._on_input
         # ~1 Hz heartbeat so the busy spinner advances between events.
         self._tui.clock_interval = 1.0
+
+        # ── Persisted user settings (tui3 wave 4) ──────────────────────
+        # Apply the user's saved preferences to the state above.  Loading
+        # is defensive (config.load never raises); saving is best-effort.
+        self._cfg = config.load()
+        self._thinking_visible = bool(self._cfg.get("thinking_visible", True))
+        self._notify.toasts = bool(self._cfg.get("notify_toasts", True))
+        self._notify.bel = bool(self._cfg.get("notify_bel", True))
+        self._notify.sound = bool(self._cfg.get("notify_sound", False))
+        self._approval_enabled = bool(self._cfg.get("approval_enabled", True))
+        self._risky_tools = set(
+            self._cfg.get("risky_tools",
+                          ["run_command", "push_to_github", "send_email"]))
+        self._scroll_tick = max(1, int(self._cfg.get("scroll_tick", 3) or 3))
 
     # ── session / history ───────────────────────────────────────────────
 
@@ -552,11 +567,11 @@ class ChatApp(TerminalAgent):
         # press/release are consumed for now (click-select is a follow-up).
         if key.name == "wheel-up":
             self._sel_anchor = None  # view is moving; drop any pending sel
-            self._scroll_log(3)
+            self._scroll_log(self._scroll_tick)
             return
         if key.name == "wheel-down":
             self._sel_anchor = None
-            self._scroll_log(-3)
+            self._scroll_log(-self._scroll_tick)
             return
         if key.name in ("mouse-press", "mouse-release"):
             self._mouse_select(key)
@@ -1005,6 +1020,19 @@ class ChatApp(TerminalAgent):
         except Exception:
             pass
 
+    def _save_cfg(self) -> None:
+        """Persist the current user settings (best-effort, never raises)."""
+        self._cfg.update({
+            "thinking_visible": bool(self._thinking_visible),
+            "notify_toasts": bool(self._notify.toasts),
+            "notify_bel": bool(self._notify.bel),
+            "notify_sound": bool(self._notify.sound),
+            "approval_enabled": bool(self._approval_enabled),
+            "risky_tools": sorted(self._risky_tools),
+            "scroll_tick": int(self._scroll_tick),
+        })
+        config.save(self._cfg)
+
     def _cmd_btw(self, arg: str) -> None:
         if not arg:
             self._note("usage: /btw <question>  (kept out of this session)")
@@ -1031,15 +1059,19 @@ class ChatApp(TerminalAgent):
         rest = a[1].strip() if len(a) > 1 else ""
         if sub in ("on", "enable"):
             self._approval_enabled = True
+            self._save_cfg()
             return "tool approval ON — risky tools will prompt"
         if sub in ("off", "disable"):
             self._approval_enabled = False
+            self._save_cfg()
             return "tool approval OFF — tools run without prompting"
         if sub == "add" and rest:
             self._risky_tools.add(rest)
+            self._save_cfg()
             return f"approval now required for: {sorted(self._risky_tools)}"
         if sub in ("rm", "remove") and rest:
             self._risky_tools.discard(rest)
+            self._save_cfg()
             return f"approval no longer required for: {rest}; " \
                    f"risky = {sorted(self._risky_tools)}"
         if sub == "list":
@@ -1067,6 +1099,7 @@ class ChatApp(TerminalAgent):
                 setattr(n, sub, False)
             else:
                 setattr(n, sub, not getattr(n, sub))
+            self._save_cfg()
             return f"{sub}: {getattr(n, sub)}"
         if sub == "test":
             kind = val if val in ("ok", "warn", "error", "info") else "ok"
@@ -1268,6 +1301,7 @@ class ChatApp(TerminalAgent):
                 msg.blocks = [b for b in full if b.kind != "thinking"] or None
             msg.invalidate()
         self._note("thinking " + ("shown" if self._thinking_visible else "hidden"))
+        self._save_cfg()
 
     # ── session picker modal ────────────────────────────────────────────
 
@@ -1777,6 +1811,7 @@ class ChatApp(TerminalAgent):
         except KeyboardInterrupt:
             pass
         finally:
+            self._save_cfg()
             self._remove_approval_gate()
             sys.stderr = saved_stderr
             if stderr_file is not None:
