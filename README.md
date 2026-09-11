@@ -219,6 +219,11 @@ shell command (`!ls`); `!!` also stores the output for later.
   `/context` shows the current setting.
 - `/retry [text]` — re-run your last message (or a new one) without retyping it;
   handy after a failed/unsatisfying turn.  Refuses while a turn is in flight.
+- **Steering queue (Ctrl+Q)** — while a turn runs, type a follow-up and
+  press `Ctrl+Q` to queue it; queued messages run one at a time as each
+  turn finishes.  `/queue` lists them, `/queue clear` empties the queue.
+  (Pressing `Enter` while a turn runs still interjects/interrupts, as
+  before — queueing is a separate, opt-in path.)
 - `/hotkeys` — the keybinding reference.
 - `/copy` — copies the last assistant message to the clipboard (OSC 52;
   silent no-op where the terminal lacks clipboard support).

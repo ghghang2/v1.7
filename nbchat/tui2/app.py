@@ -205,6 +205,7 @@ class ChatApp(TerminalAgent):
         self._auto_compact_due = False
         self._auto_compact_frac, self._auto_compact_enabled = self._auto_compact_cfg()
         self._last_user_text = None
+        self._queue: list = []
         self._tok_times: list = []
         self._turns = 0
         self._turn_mutated = False  # auto-checkpoint once per edit-window
@@ -453,6 +454,61 @@ class ChatApp(TerminalAgent):
 
         threading.Thread(target=_worker, daemon=True).start()
 
+    def _queue_key(self) -> None:
+        """Ctrl+Q: queue the current draft to run after the active turn.
+
+        While a turn is in flight the draft is appended to the queue (editor
+        cleared) and a note shows the pending count; _finalize_turn runs them
+        in order.  If no turn is running it just submits normally.
+        """
+        text = self.editor.text().strip()
+        if not text:
+            if self._queue:
+                self._note(f"queue: {len(self._queue)} pending (type a "
+                           f"message then Ctrl+Q to add)")
+            else:
+                self._note("queue: nothing to queue (editor is empty)")
+            self._ui_refresh()
+            return
+        if self.busy:
+            self._queue.append(text)
+            self.editor.clear()
+            self._note(f"queued (now {len(self._queue)} pending) — will run "
+                       f"after the current turn")
+        else:
+            self.editor.clear()
+            self._submit(text)
+        self._ui_refresh()
+
+    def _process_next_queued(self) -> None:
+        """Run the next queued follow-up after a turn fully winds down.
+
+        Called from _finalize_turn when nothing chained a new turn.  Uses the
+        same _turn_thread=None trick as the redirect path: we're inside the
+        winding-down worker thread (its is_alive() is still True), so clear
+        the handle to make _start_turn take the fresh-turn branch.
+        """
+        if not self._queue:
+            return
+        self._turn_thread = None
+        nxt = self._queue.pop(0)
+        remaining = len(self._queue)
+        self._note(f"queue: running your queued message ({remaining} "
+                   f"still pending)")
+        if self._tui._running:
+            self._start_turn(nxt)
+
+    def _cmd_queue(self, arg: str) -> str:
+        """Show or clear the steering queue (Ctrl+Q adds to it)."""
+        if arg.strip().lower() in ("clear", "c", "x", "reset"):
+            n = len(self._queue)
+            self._queue.clear()
+            return f"queue: cleared {n} message(s)"
+        if not self._queue:
+            return "queue: empty (Ctrl+Q queues a draft while a turn runs)"
+        rows = [f"  {i + 1}. {t[:60]}" for i, t in enumerate(self._queue)]
+        return f"queue: {len(self._queue)} pending" + chr(10) + chr(10).join(rows)
+
     def _print_user(self, text: str) -> None:
         self.log.add(chatc.ChatMessage(role="user", text=text))
         self._ui_refresh()
@@ -689,6 +745,8 @@ class ChatApp(TerminalAgent):
             # chaining a new turn — if the context window is over the
             # threshold, compact now (off the worker thread).
             self._maybe_auto_compact()
+            # Steering queue: run the next queued follow-up, if any.
+            self._process_next_queued()
 
     def _interrupt(self) -> None:
         if self.busy:
@@ -831,6 +889,9 @@ class ChatApp(TerminalAgent):
             return
         if key.name == "ctrl+r":
             self._open_search()
+            return
+        if key.name == "ctrl+q":
+            self._queue_key()
             return
         # @-file completion modal (tui3): while open it captures the
         # nav/accept keys (up/down/enter/tab/esc); printable chars and
@@ -1076,7 +1137,7 @@ class ChatApp(TerminalAgent):
                     "/goal", "/notify", "/theme", "/monitor", "/inbox",
                     "/team", "/browse", "/search", "/sup", "/voice",
                     "/fork", "/checkpoint", "/undo", "/find", "/diff",
-                    "/export", "/plan", "/retry")
+                    "/export", "/plan", "/retry", "/queue")
 
     def _run_command(self, line: str) -> None:
         """Route a slash command.
@@ -1145,6 +1206,7 @@ class ChatApp(TerminalAgent):
             "  /export [path]  save this session as a markdown file",
             "  /plan [on|off]  read-only research mode (blocks file edits)",
             "  /retry [text] re-run your last message (or run a new one)",
+            "  /queue [clear]  view/clear the Ctrl+Q follow-up queue",
             "  @<path>      file completion (type @ + a filename, pick a match)",
             "  /compact    force a context summarisation now",
             "  /copy       copy last reply to the clipboard",
@@ -1194,6 +1256,7 @@ class ChatApp(TerminalAgent):
             "/export": self._cmd_export,
             "/plan": self._cmd_plan,
             "/retry": self._cmd_retry,
+            "/queue": self._cmd_queue,
         }
         fn = handlers.get(cmd)
         try:

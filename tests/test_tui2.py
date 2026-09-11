@@ -3372,3 +3372,66 @@ def test_retry_busy_refuses(monkeypatch):
 def test_retry_listed_in_help():
     app, _, _, _ = _make_chat_app()
     assert "/retry" in app._tui2_help_addendum()
+
+
+# ── steering queue (Ctrl+Q) ───────────────────────────────────────
+def test_queue_key_queues_when_busy(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    app._turn_active = True  # a turn is in flight
+    app.editor.set_text("follow up later")
+    app._queue_key()
+    assert app._queue == ["follow up later"]
+    assert app.editor.text().strip() == ""
+
+def test_queue_key_submits_when_idle(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    submitted = []
+    monkeypatch.setattr(app, "_submit", lambda t: submitted.append(t))
+    app.editor.set_text("send this now")
+    app._queue_key()
+    assert submitted == ["send this now"]
+    assert app._queue == []
+
+def test_queue_key_empty_editor_notes(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    notes = []
+    monkeypatch.setattr(app, "_note", lambda t: notes.append(t))
+    app.editor.set_text("")
+    app._queue_key()
+    assert any("nothing to queue" in n for n in notes)
+
+def test_process_next_queued_runs_in_order(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    calls = []
+    monkeypatch.setattr(app, "_start_turn", lambda t: calls.append(t))
+    app._queue = ["first", "second"]
+    app._turn_thread = None
+    app._tui._running = True
+    app._process_next_queued()
+    assert calls == ["first"]
+    assert app._queue == ["second"]
+    app._process_next_queued()
+    assert calls == ["first", "second"]
+    assert app._queue == []
+
+def test_process_next_queued_empty_is_noop(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    calls = []
+    monkeypatch.setattr(app, "_start_turn", lambda t: calls.append(t))
+    app._queue = []
+    app._tui._running = True
+    app._process_next_queued()
+    assert not calls
+
+def test_cmd_queue_list_and_clear():
+    app, _, _, _ = _make_chat_app()
+    app._queue = ["alpha", "beta"]
+    out = app._cmd_queue("")
+    assert "2 pending" in out and "alpha" in out and "beta" in out
+    out = app._cmd_queue("clear")
+    assert "cleared 2" in out
+    assert app._queue == []
+
+def test_queue_listed_in_help():
+    app, _, _, _ = _make_chat_app()
+    assert "/queue" in app._tui2_help_addendum()
