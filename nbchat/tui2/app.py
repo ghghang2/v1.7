@@ -1253,7 +1253,7 @@ class ChatApp(TerminalAgent):
                     "/team", "/browse", "/search", "/sup", "/voice",
                     "/fork", "/checkpoint", "/undo", "/find", "/diff",
                     "/export", "/plan", "/retry", "/queue", "/tpl", "/editor", "/gstatus", "/stash",
-                    "/rewind", "/pin", "/unpin")
+                    "/rewind", "/pin", "/unpin", "/settings")
 
     def _run_command(self, line: str) -> None:
         """Route a slash command.
@@ -1329,6 +1329,7 @@ class ChatApp(TerminalAgent):
             "  /stash [push|pop [n]|clear]  stash/pop drafts (git-stash for input)",
             "  /rewind [n|restore]  drop the last N user turns (restore to undo)",
             "  /pin /unpin  pin/unpin this session (top of the picker)",
+            "  /settings [k v]  view / live-tune TUI settings (theme, scroll, toasts) ",
             "  @<path>      file completion (type @ + a filename, pick a match)",
             "  /compact    force a context summarisation now",
             "  /copy       copy last reply to the clipboard",
@@ -1386,6 +1387,7 @@ class ChatApp(TerminalAgent):
             "/rewind": self._cmd_rewind,
             "/pin": self._cmd_pin,
             "/unpin": self._cmd_unpin,
+            "/settings": self._cmd_settings,
         }
         fn = handlers.get(cmd)
         try:
@@ -2677,6 +2679,77 @@ class ChatApp(TerminalAgent):
             return "unpinned " + self.session_id
         except Exception as e:
             return "unpin: " + type(e).__name__ + ": " + str(e)
+
+    @staticmethod
+    def _parse_onoff(val: str):
+        v = (val or "").strip().lower()
+        if v in ("on", "1", "true", "yes", "y"):
+            return True
+        if v in ("off", "0", "false", "no", "n"):
+            return False
+        return None
+
+    def _settings_view(self) -> str:
+        lines = [
+            "TUI settings (persisted to ~/.nbchat/tui3.json):",
+            f"  theme     = {theme.current().name}    (dark|light|prime)",
+            f"  scroll    = {self._scroll_tick}    (lines per page up/down)",
+            f"  thinking  = {'on' if self._thinking_visible else 'off'}",
+            f"  toasts    = {'on' if self._notify.toasts else 'off'}    (turn-complete / idle toasts)",
+            f"  bell      = {'on' if self._notify.bel else 'off'}    (BEL on attention events)",
+            f"  sound     = {'on' if self._notify.sound else 'off'}    (needs NBCHAT_SOUND_DIR)",
+            f"  approve   = {'on' if self._approval_enabled else 'off'}    (tool-approval gate)",
+            f"  risky     = {', '.join(sorted(self._risky_tools))}",
+            "",
+            "set a value:  /settings <key> <value>   (e.g. /settings theme prime)",
+        ]
+        return "\n".join(lines)
+
+    def _cmd_settings(self, arg: str) -> str:
+        """``/settings [key value...]`` — view or live-tune TUI settings."""
+        parts = arg.split()
+        if not parts:
+            return self._settings_view()
+        key = parts[0].lower()
+        val = " ".join(parts[1:]).strip()
+        if key == "theme":
+            valid = [t.name for t in theme.all_themes()]
+            if not val or val.lower() not in valid:
+                return (f"usage: /settings theme {'|'.join(valid)} "
+                        f"(current: {theme.current().name})")
+            theme.set_active(val)
+            self._save_cfg()
+            return "theme -> " + val
+        if key == "scroll":
+            if not val or not val.isdigit() or int(val) < 1:
+                return f"usage: /settings scroll <lines>=1 (current: {self._scroll_tick})"
+            self._scroll_tick = max(1, int(val))
+            self._save_cfg()
+            return f"scroll -> {self._scroll_tick} line(s) per page"
+        if key in ("thinking", "toasts", "bell", "sound", "approve"):
+            flag = self._parse_onoff(val)
+            if flag is None:
+                return f"usage: /settings {key} on|off"
+            if key == "thinking":
+                self._thinking_visible = flag
+            elif key == "toasts":
+                self._notify.toasts = flag
+            elif key == "bell":
+                self._notify.bel = flag
+            elif key == "sound":
+                self._notify.sound = flag
+            else:
+                self._approval_enabled = flag
+            self._save_cfg()
+            return f"{key} -> {'on' if flag else 'off'}"
+        if key == "risky":
+            tools = [t for t in val.split() if t.strip()]
+            if not tools:
+                return "usage: /settings risky <tool1 tool2 ...>"
+            self._risky_tools = set(tools)
+            self._save_cfg()
+            return "risky tools -> " + ", ".join(sorted(tools))
+        return f"unknown setting {key!r} (run /settings for the list)"
 
     def _open_picker(self) -> None:
         from nbchat.core import db

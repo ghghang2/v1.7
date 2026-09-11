@@ -2909,6 +2909,41 @@ def test_filecomp_recency_missing_file_is_empty(monkeypatch, tmp_path):
     app, *_ = _make_chat_app()
     monkeypatch.setenv("NBCHAT_FILECOMP_RECENCY", str(tmp_path / "nope.json"))
     assert app._filecomp_recency() == []
+def test_settings_view_and_live_tune(monkeypatch, tmp_path):
+    monkeypatch.setenv("NBCHAT_TUI3_CONFIG", str(tmp_path / "t.json"))
+    app, *_ = _make_chat_app()
+    from nbchat.tui2 import theme
+    orig = theme.current().name
+    try:
+        v = app._cmd_settings("")
+        assert "TUI settings" in v and "theme" in v and "scroll" in v
+        r = app._cmd_settings("theme prime")
+        assert "theme" in r and theme.current().name == "prime"
+        import json as _json
+        saved = _json.loads((tmp_path / "t.json").read_text())
+        assert saved.get("theme") == "prime"
+        r = app._cmd_settings("scroll 5")
+        assert app._scroll_tick == 5 and "5" in r
+        r = app._cmd_settings("toasts off")
+        assert app._notify.toasts is False and "off" in r
+        assert "on" in app._cmd_settings("approve on") and app._approval_enabled is True
+        r = app._cmd_settings("risky rm push")
+        assert "rm" in app._risky_tools and "push" in app._risky_tools
+        assert "unknown" in app._cmd_settings("bogus 1")
+        assert "usage" in app._cmd_settings("toasts maybe")
+        assert "usage" in app._cmd_settings("scroll zero")
+        assert "usage" in app._cmd_settings("theme nope")
+    finally:
+        theme.set_active(orig)
+
+
+def test_settings_listed_in_help(monkeypatch, tmp_path):
+    monkeypatch.setenv("NBCHAT_TUI3_CONFIG", str(tmp_path / "t.json"))
+    app, *_ = _make_chat_app()
+    from nbchat.tui2.app import ChatApp
+    assert "/settings" in ChatApp._TUI2_NATIVE
+    help_text = app._tui2_help_addendum()
+    assert "/settings" in help_text
 def _gitrepo(tmp_path):
     import subprocess as _sp
     d = tmp_path / "repo"

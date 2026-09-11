@@ -253,6 +253,10 @@ shell command (`!ls`); `!!` also stores the output for later.
   session picker (Ctrl+L); `/unpin` un-pins it.  Pinned sessions are
   marked with a ★ and sort above the rest, so important sessions are
   always one jump away even as your session list grows.
+- **Settings** — `/settings` shows your TUI preferences and `/settings <key>
+  <value>` tunes one live (theme, scroll, thinking, toasts, bell, sound,
+  approve, risky) — persisted to `~/.nbchat/tui3.json` and applied without
+  a restart.
 - `/hotkeys` — the keybinding reference.
 - `/copy` — copies the last assistant message to the clipboard (OSC 52;
   silent no-op where the terminal lacks clipboard support).

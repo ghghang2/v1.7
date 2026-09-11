@@ -246,3 +246,23 @@ crash or corrupt state.  The "explore without risk" companion to the
 **Session pin (`/pin` / `/unpin`):** keeps the sessions you care about at the top of the session picker (survey #6 "session browser pin").  `_cmd_pin` stores a per-session `pinned` flag in `session_meta` (value `'1'`); `_cmd_unpin` clears it.  `_open_picker` reads the pinned ids in a single `SELECT session_id FROM session_meta WHERE key='pinned' AND value='1'` pass and builds each row as `(sid, label, is_pinned)`; a stable `entries.sort(key=lambda e: e[2], reverse=True)` puts pinned rows first while preserving the picker's existing recency order within each group, and pinned rows get a `\u2605 ` (★) prefix.  Additive; the picker's navigation/filter are untouched (they index the same `_picker_sessions` list, now pre-sorted).  3 new unit tests (pin set/clear via a stateful meta patch, pinned-first sort + star glyph via a fake `db._connect`, help-listed); tui2 suite 286 passed; full suite 660 green (286+79+295). E2E pty verified: a fresh `--new` session is not in the picker (no messages yet — the picker only lists sessions with ≥1 message), so the star was confirmed against a pre-populated session (1 message, booted with `python -m nbchat.tui2 --session pine2e`): `/pin` renders, the picker opens and shows the ★, `/quit` exits 0; throwaway DB session cleaned up.
 
 **@-completion frecency (survey #8):** recently-used `@`-files rank higher.  On `_filecomp_accept`, the chosen path is prepended to a recency list (capped at `_FILECOMP_RECENCY_MAX` = 50) persisted best-effort to `~/.nbchat/tui3-filecomp-recency.json` (override `NBCHAT_FILECOMP_RECENCY`) — all I/O wrapped so a hiccup never blocks completion.  `_file_matches` then does a stable post-sort of the `fuzzy_rank` top-match: files in the recency list (that also match the current query) come first, in recency order, with the rest keeping their fuzzy order.  `fuzzy_rank` itself is untouched; this is a clean additive re-sort of the already-ranked list.  3 new unit tests (note_accept records + persists most-recent-first, recency boost moves a recent-but-naturally-last match to the front for query 'a', missing recency file → empty list); tui2 suite 289 passed; full suite 663 green (289+79+295). E2E pty verified: booted in the repo, typed `@nbchat/t` (the fuzzy top match was `nbchat/tools/`), Tab accepted it, and the recency file was created with `['nbchat/tools/']`; /quit exited 0.
+
+## tui3: in-app settings surface (/settings)
+
+**Settings** (survey "in-app settings overlay + hot reload"): `/settings`
+shows the current TUI preferences and `/settings <key> <value>` tunes one live.
+Builds on the existing `~/.nbchat/tui3.json` persistence — no core change, pure
+surface.  The keys are: `theme` (dark|light|prime), `scroll` (lines per
+page up/down), `thinking` / `toasts` / `bell` / `sound` / `approve` (on|off),
+and `risky` (space-separated risky tool names).  Each setter updates the live
+instance attribute (theme via `theme.set_active`, the booleans via the app /
+`self._notify` attrs, `scroll` via `self._scroll_tick`) and calls `_save_cfg()`
+which re-reads the attributes and persists — so the change is applied AND
+remembered with no restart.  A `_parse_onoff` helper normalises on/off
+spellings.  Invalid values return a usage line.
+
+Implementation lives entirely in `nbchat/tui2/app.py` (`_cmd_settings`,
+_settings_view`, `_parse_onoff`), wired into the handlers dict, `_TUI2_NATIVE`,
+and the `/help` addendum.  2 new unit tests (view + live-tune every key +
+persistence + bad-value usage; settings listed in help/native set); tui2 suite
+291 passed; full suite 665 green (291+79+295).  E2E pty verified.
