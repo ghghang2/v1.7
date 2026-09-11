@@ -429,6 +429,15 @@ shell command (`!ls`); `!!` also stores the output for later.
   ```
   NBCHAT_CTL_SOCKET=~/.nbchat/tui2-bg.sock python -m nbchat.tui2.ctl log 20
   ```
+
+  `--attach <socket>` is the live "reattach" view: it tails that
+  conversation in the foreground (like `tail -f`), printing new messages as
+  they appear.  It is a pure read path (read-only; a socket error just ends
+  the tail).  `--interval <s>` sets the poll cadence (default 1.0 s):
+
+  ```
+  python -m nbchat.tui2 --attach ~/.nbchat/tui2-bg.sock --interval 0.5
+  ```
 - **Graceful terminal disconnect.**  When the terminal drops (SSH drop /
   terminal closed -> `SIGHUP`) during a running turn, the TUI flags the
   disconnect and, on exit, gives the in-flight turn a bounded chance (default

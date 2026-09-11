@@ -2107,6 +2107,34 @@ def test_log_fn_caps_messages():
     assert _log(2)["messages"][0]["role"] == "user"  # the last two are c, d
     assert _log(2)["messages"][1]["text"] == "d"
 
+def test_attach_role_prefix():
+    from nbchat.tui2.attach import _role_prefix
+    assert _role_prefix("user") == "you"
+    assert _role_prefix("assistant") == "nbchat"
+    assert _role_prefix("system") == "system"
+    assert _role_prefix("tool") == "tool"  # unknown -> the role itself
+
+def test_attach_run_connection_error(tmp_path):
+    from nbchat.tui2.attach import run as attach_run
+    path = str(tmp_path / "nope.sock")  # no TUI there
+    rc = attach_run(["--attach", path])
+    assert rc == 1  # connection failure -> non-zero
+
+def test_attach_main_dispatch(monkeypatch):
+    # The --attach flag in __main__.run dispatches to attach.run.
+    from nbchat.tui2 import attach as _attach
+    called = {}
+    def _fake_run(argv):
+        called["argv"] = argv
+        return 0
+    monkeypatch.setattr(_attach, "run", _fake_run)
+    import nbchat.tui2.__main__ as m
+    import sys
+    monkeypatch.setattr(sys, "argv", ["x", "--attach", "/tmp/foo.sock"])
+    rc = m.run()
+    assert rc == 0
+    assert called.get("argv") == ["--attach", "/tmp/foo.sock"]
+
 
 
 # ── tui3 wave 6: headless / background agent (--bg + nbchat-ctl bg) ────

@@ -15,6 +15,11 @@ def run() -> int:
         from .demo import run as demo_run
 
         return demo_run()
+    if "--attach" in argv or "-a" in argv:
+        # Reattach view: tail a running (typically --bg) TUI conversation.
+        from .attach import run as attach_run
+
+        return attach_run(argv)
     from .app import run as app_run
 
     return app_run(argv)

@@ -698,3 +698,23 @@ without a second terminal.
   behaviour for servers built without it). 3 tests (command dispatch +
   limit parsing; unsupported when no log_fn; the cap logic). tui2 suite 370
   passed; full suite 744 green (370+79+295).
+
+## tui3: --attach reattach view (herdr #10)
+
+**`--attach <socket>`** - the live "reattach" view of the background-agent
+workflow (a safe, scoped slice of herdr #10). It tails a running (typically
+`--bg`) TUI conversation in the foreground, printing new messages as they
+appear (like `tail -f`). A pure read path (read-only; a socket error just
+ends the tail).
+
+- tui2/attach.py (new): `run(argv)` - connects to the control socket,
+  issues the `log` command on a poll cadence (`--interval <s>`, default 1.0 s),
+  and prints the new/changed tail of the conversation. Ctrl+C detaches (rc 0);
+  a socket error ends the tail (rc 1).
+- tui2/__main__.py: `--attach` / `-a` dispatches to `attach.run` (before the
+  interactive app; `--v2` is stripped).
+- Safe: a brand-new entry point; the interactive TUI is untouched; read-only
+  (only the `log` command); a connection failure just prints a message and
+  exits 1. Verified E2E (a fake ControlServer with a log_fn -> the attach
+  tail printed the conversation). 3 tests (role prefix; connection error; main
+  dispatch). tui2 suite 373 passed; full suite 747 green (373+79+295).
