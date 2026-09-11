@@ -204,6 +204,7 @@ class ChatApp(TerminalAgent):
         self._tok_times: list = []
         self._turns = 0
         self._turn_mutated = False  # auto-checkpoint once per edit-window
+        self._plan_mode = False     # read-only research mode (blocks edits)
         self._file_mutating_tools = {"create_file", "make_change_to_file",
                                      "run_command"}
         self._loader = Loader("ready")
@@ -887,6 +888,10 @@ class ChatApp(TerminalAgent):
 
         def _gated(tool_name: str, args_json: str,
                    timeout: int | None = None) -> str:
+            if app._plan_mode and tool_name in app._file_mutating_tools:
+                return (f"[PLAN MODE] '{tool_name}' was blocked because plan "
+                        "mode is read-only. Do NOT retry the edit; finish "
+                        "your research and present a plan instead.")
             if tool_name in app._file_mutating_tools and not app._turn_mutated:
                 app._auto_checkpoint(tool_name)  # best-effort, never raises
                 app._turn_mutated = True
@@ -971,7 +976,7 @@ class ChatApp(TerminalAgent):
                     "/goal", "/notify", "/theme", "/monitor", "/inbox",
                     "/team", "/browse", "/search", "/sup", "/voice",
                     "/fork", "/checkpoint", "/undo", "/find", "/diff",
-                    "/export")
+                    "/export", "/plan")
 
     def _run_command(self, line: str) -> None:
         """Route a slash command.
@@ -1038,6 +1043,7 @@ class ChatApp(TerminalAgent):
             "  /find <query>         search messages across all sessions",
             "  /diff [--stat] [label]  review tracked-file changes (colorized)",
             "  /export [path]  save this session as a markdown file",
+            "  /plan [on|off]  read-only research mode (blocks file edits)",
             "  /compact    force a context summarisation now",
             "  /copy       copy last reply to the clipboard",
             "  /btw <q>    side question, kept out of this session",
@@ -1083,6 +1089,7 @@ class ChatApp(TerminalAgent):
             "/find": self._cmd_find,
             "/diff": self._cmd_diff,
             "/export": self._cmd_export,
+            "/plan": self._cmd_plan,
         }
         fn = handlers.get(cmd)
         try:
@@ -1489,6 +1496,49 @@ class ChatApp(TerminalAgent):
         nfiles = len(files)
         return (f"diff: {title} — {nfiles} file(s) changed"
                 + ("" if stat_only else "  ·  /undo reverts tracked files"))
+
+    # ── /plan (tui3: read-only research mode) ───────────────────────────
+
+    _PLAN_NOTE = (
+        chr(10) + chr(10)
+        + "[PLAN MODE] You are in read-only research mode. Do NOT create, "
+        "edit, or delete any files, and do NOT run mutating shell commands "
+        "(no writes, no git mutations, no installs). Only READ files, "
+        "SEARCH, and report what you find plus a concrete plan. If the user "
+        "asks you to change something, present the plan and wait — they will "
+        "turn plan mode off when ready."
+    )
+
+    def _cmd_plan(self, arg: str = "") -> str:
+        """``/plan [on|off]`` — toggle read-only research mode.
+
+        While active, file-mutating tools (create_file / make_change_to_file /
+        run_command) are blocked at the tool gate, the mode bar shows
+        ``plan``, and a read-only note is appended to the system prompt so the
+        model researches instead of editing.  Toggles with no arg; ``on`` /
+        ``off`` set explicitly.  Safe: it only ever blocks tools + notes.
+        """
+        a = (arg or "").strip().lower()
+        if a in ("on", "1", "yes", "true", "enable"):
+            want = True
+        elif a in ("off", "0", "no", "false", "disable"):
+            want = False
+        else:
+            want = not self._plan_mode
+        if want == self._plan_mode:
+            return f"plan mode is already {'on' if want else 'off'}"
+        self._plan_mode = want
+        note = self._PLAN_NOTE
+        if want:
+            if note not in self.system_prompt:
+                self.system_prompt += note
+            self._note("plan mode ON — read-only (file edits blocked); "
+                       "/plan off to exit")
+            return "plan mode ON (read-only research)"
+        if note in self.system_prompt:
+            self.system_prompt = self.system_prompt.replace(note, "")
+        self._note("plan mode OFF — file edits re-enabled")
+        return "plan mode OFF"
 
     # ── /export (tui3: save a session as a markdown file) ───────────────
 
@@ -2501,7 +2551,8 @@ class ChatApp(TerminalAgent):
         generated from the single ``KEYMAP`` source of truth."""
         mode = "browse" if self._browse else "normal"
         hints = " · ".join(f"{k} {d}" for k, d in KEYMAP[mode][: _MODEBAR_HINTS])
-        label = ("browse" if self._browse else "normal")
+        label = ("plan" if self._plan_mode
+                 else ("browse" if self._browse else "normal"))
         text = f" mode: {label}   {hints}"
         # In-log search overrides the hints with the live query / match pos.
         if self._logsearch is not None:

@@ -203,6 +203,11 @@ shell command (`!ls`); `!!` also stores the output for later.
   (user/assistant/tool sections, tool output fenced).  Defaults to
   `~/.nbchat/exports/` so it never pollutes the working tree; pass a path to
   choose.  Pairs with `/find` (search, then export a conversation).
+- `/plan [on|off]` — read-only research mode.  While on, file-mutating tools
+  (`create_file` / `make_change_to_file` / `run_command`) are blocked at the
+  tool gate and a read-only note is added to the system prompt, so the agent
+  researches and proposes a plan instead of editing.  The mode bar shows
+  `plan`.  Pairs with the safety suite (`/checkpoint` → `/diff` → `/undo`).
 - `/hotkeys` — the keybinding reference.
 - `/copy` — copies the last assistant message to the clipboard (OSC 52;
   silent no-op where the terminal lacks clipboard support).

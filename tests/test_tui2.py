@@ -3077,3 +3077,54 @@ def test_export_write_error(monkeypatch):
     _patch_history(monkeypatch, [("user", "x", "", "", "", 0)])
     out = app._cmd_export("/proc/nonexistent/nope/out.md")
     assert "could not write" in out
+
+
+# ── /plan (read-only research mode) ────────────────────────────────────
+
+def test_plan_toggle_system_prompt(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    assert app._plan_mode is False
+    out = app._cmd_plan("")          # bare toggle -> on
+    assert "ON" in out and app._plan_mode is True
+    assert app._PLAN_NOTE in app.system_prompt
+    out = app._cmd_plan("off")       # explicit off
+    assert "OFF" in out and app._plan_mode is False
+    assert app._PLAN_NOTE not in app.system_prompt
+    assert "already off" in app._cmd_plan("off")
+
+def test_plan_explicit_on_idempotent(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    out = app._cmd_plan("on")
+    assert "ON" in out and app._plan_mode is True
+    assert "already on" in app._cmd_plan("on")
+
+def test_plan_blocks_file_mutating_tool(monkeypatch):
+    import nbchat.core.tool_executor as te
+    orig = te.run_tool
+    called = []
+    def fake(tool_name, args_json, timeout=None):
+        called.append(tool_name)
+        return "RAN:" + tool_name
+    monkeypatch.setattr(te, "run_tool", fake)
+    app, _, _, _ = _make_chat_app()
+    app._install_approval_gate()      # wraps fake as the "original"
+    try:
+        app._plan_mode = True
+        out = te.run_tool("create_file", "{}")
+        assert "[PLAN MODE]" in out and "blocked" in out
+        assert called == []                    # the tool never ran
+        out2 = te.run_tool("read_file", "{}")  # non-mutating still runs
+        assert out2 == "RAN:read_file" and called == ["read_file"]
+        app._plan_mode = False                 # off re-enables edits
+        assert te.run_tool("create_file", "{}") == "RAN:create_file"
+    finally:
+        monkeypatch.setattr(te, "run_tool", orig)
+
+def test_plan_mode_bar_label(monkeypatch):
+    from nbchat.tui2 import frame as fr
+    app, _, _, _ = _make_chat_app()
+    app._plan_mode = True
+    line = app._mode_bar(100)
+    assert "plan" in line.text
+    app._plan_mode = False
+    assert "plan" not in app._mode_bar(100).text

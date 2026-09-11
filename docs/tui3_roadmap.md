@@ -217,3 +217,11 @@ markdown file (H1 title, an "Exported … · session … · N messages" line, th
 fenced).  No path → `~/.nbchat/exports/nbchat-<short-sid>-<ts>.md` (override dir
 with `NBCHAT_EXPORT_DIR`); a relative or absolute path is honoured.  The
 "share/document a conversation" companion to `/find`.
+
+**Plan mode:** `/plan [on|off]` — read-only research mode.  Toggles a
+`_plan_mode` flag that (1) blocks file-mutating tools at the tool gate with a
+clear "PLAN MODE … blocked" result the model can read, (2) appends a read-only
+note to the system prompt (removed cleanly on exit), and (3) shows `plan` in
+the mode bar.  Safe: it only ever blocks tools and annotates — it can never
+crash or corrupt state.  The "explore without risk" companion to the
+`/checkpoint` → `/diff` → `/undo` safety workflow.
