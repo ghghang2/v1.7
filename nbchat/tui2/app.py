@@ -970,7 +970,8 @@ class ChatApp(TerminalAgent):
                     "/refine", "/lessons", "/memory", "/btw", "/approve",
                     "/goal", "/notify", "/theme", "/monitor", "/inbox",
                     "/team", "/browse", "/search", "/sup", "/voice",
-                    "/fork", "/checkpoint", "/undo", "/find", "/diff")
+                    "/fork", "/checkpoint", "/undo", "/find", "/diff",
+                    "/export")
 
     def _run_command(self, line: str) -> None:
         """Route a slash command.
@@ -1036,6 +1037,7 @@ class ChatApp(TerminalAgent):
             "  /undo [label]         preview (no label) / revert tracked files",
             "  /find <query>         search messages across all sessions",
             "  /diff [--stat] [label]  review tracked-file changes (colorized)",
+            "  /export [path]  save this session as a markdown file",
             "  /compact    force a context summarisation now",
             "  /copy       copy last reply to the clipboard",
             "  /btw <q>    side question, kept out of this session",
@@ -1080,6 +1082,7 @@ class ChatApp(TerminalAgent):
             "/undo": self._cmd_undo,
             "/find": self._cmd_find,
             "/diff": self._cmd_diff,
+            "/export": self._cmd_export,
         }
         fn = handlers.get(cmd)
         try:
@@ -1486,6 +1489,74 @@ class ChatApp(TerminalAgent):
         nfiles = len(files)
         return (f"diff: {title} — {nfiles} file(s) changed"
                 + ("" if stat_only else "  ·  /undo reverts tracked files"))
+
+    # ── /export (tui3: save a session as a markdown file) ───────────────
+
+    def _session_markdown(self, sid: str) -> str:
+        """Build a clean, readable markdown document for a session's history.
+
+        Uses the full ``db.load_history`` rows (role + content + tool name) so
+        tool calls are labelled.  Pure/read-only — no I/O here.
+        """
+        from nbchat.core import db as _db
+        import datetime
+        rows = _db.load_history(sid)
+        title = _db.load_session_title(sid) or sid
+        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        parts = [f"# {title}", "",
+                 f"> Exported {now} · session `{sid}` · {len(rows)} messages",
+                 "", "---", ""]
+        for row in rows:
+            role = row[0]
+            content = (row[1] if len(row) > 1 else "") or ""
+            tool_name = (row[3] if len(row) > 3 else "") or ""
+            content = content.strip()
+            if not content and not tool_name:
+                continue
+            if role == "tool":
+                hdr = f"**tool** — `{tool_name}`" if tool_name else "**tool**"
+                parts.append(hdr)
+                if content:
+                    fence = "```"
+                    while fence in content:
+                        fence += "`"
+                    parts += ["", fence, content, fence, ""]
+                else:
+                    parts += ["", ""]
+            else:
+                parts += [f"**{role}**", "", content, ""]
+        return chr(10).join(parts).rstrip() + chr(10)
+
+    def _cmd_export(self, arg: str = "") -> str:
+        """``/export [path]`` — save this session as a markdown file.
+
+        Read-only over the DB; writes one file.  With no path it writes to
+        ``~/.nbchat/exports/nbchat-<short-sid>-<ts>.md`` (never pollutes the
+        working tree).  An explicit path (relative or absolute) is honoured.
+        """
+        from nbchat.core import db as _db
+        import datetime
+        a = (arg or "").strip()
+        rows = _db.load_history(self.session_id)
+        if not rows:
+            return "export: no messages in this session to export"
+        md = self._session_markdown(self.session_id)
+        if a:
+            path = a if os.path.isabs(a) else os.path.join(os.getcwd(), a)
+        else:
+            short = self.session_id.split(":")[-1][:8]
+            ts = datetime.datetime.now().strftime("%Y%m%d-%H%M")
+            base = os.environ.get("NBCHAT_EXPORT_DIR") or os.path.join(
+                os.path.expanduser("~"), ".nbchat", "exports")
+            path = os.path.join(base, f"nbchat-{short}-{ts}.md")
+        try:
+            d = os.path.dirname(os.path.abspath(path))
+            os.makedirs(d, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(md)
+        except Exception as exc:
+            return f"export: could not write {path}: {type(exc).__name__}: {exc}"
+        return f"export: wrote {len(rows)} messages -> {path}"
 
     # ── /team (tui3: multi-agent team runs, output relayed off-thread) ──
 

@@ -3020,3 +3020,60 @@ def test_diff_unknown_checkpoint(monkeypatch):
     monkeypatch.setattr(u, "list_checkpoints", lambda sid: [{"label": "auto"}])
     out = app._cmd_diff("nope")
     assert "no checkpoint named" in out and "auto" in out
+
+
+# ── /export (session → markdown file) ──────────────────────────────────
+
+def _patch_history(monkeypatch, rows, title="My Session"):
+    import nbchat.core.db as dbmod
+    monkeypatch.setattr(dbmod, "load_history", lambda sid, limit=None: [tuple(r) for r in rows])
+    monkeypatch.setattr(dbmod, "load_session_title", lambda sid: title)
+
+def test_export_writes_markdown(monkeypatch, tmp_path):
+    app, _, _, _ = _make_chat_app()
+    _patch_history(monkeypatch, [
+        ("user", "hello there", "", "", "", 0),
+        ("assistant", "hi! how can I help?", "", "", "", 0),
+    ])
+    path = str(tmp_path / "out.md")
+    out = app._cmd_export(path)
+    assert path in out and "2 messages" in out
+    txt = open(path, encoding="utf-8").read()
+    assert txt.startswith("# My Session")
+    assert "**user**" in txt and "hello there" in txt
+    assert "**assistant**" in txt and "hi! how can I help?" in txt
+    assert "session `tui:" in txt
+
+def test_export_tool_block_fenced(monkeypatch, tmp_path):
+    app, _, _, _ = _make_chat_app()
+    _patch_history(monkeypatch, [
+        ("user", "run ls", "", "", "", 0),
+        ("tool", "file1\nfile2", "t1", "run_command", "{}", 0),
+    ])
+    path = str(tmp_path / "t.md")
+    app._cmd_export(path)
+    txt = open(path, encoding="utf-8").read()
+    assert "run_command" in txt
+    assert "```" in txt and "file1" in txt and "file2" in txt
+
+def test_export_default_dir(monkeypatch, tmp_path):
+    app, _, _, _ = _make_chat_app()
+    _patch_history(monkeypatch, [("user", "x", "", "", "", 0)])
+    monkeypatch.setenv("NBCHAT_EXPORT_DIR", str(tmp_path / "exp"))
+    out = app._cmd_export("")
+    assert "wrote 1 messages" in out
+    base = tmp_path / "exp"
+    files = list(base.glob("nbchat-*.md"))
+    assert len(files) == 1 and files[0].read_text(encoding="utf-8").startswith("# ")
+
+def test_export_empty(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    _patch_history(monkeypatch, [])
+    out = app._cmd_export(str(tmp_path := __import__("tempfile").mkdtemp()) + "/n.md")
+    assert "no messages" in out
+
+def test_export_write_error(monkeypatch):
+    app, _, _, _ = _make_chat_app()
+    _patch_history(monkeypatch, [("user", "x", "", "", "", 0)])
+    out = app._cmd_export("/proc/nonexistent/nope/out.md")
+    assert "could not write" in out

@@ -210,3 +210,10 @@ Bare `/diff` = working tree vs `HEAD`; `--stat` = per-file summary; `<label>` =
 against a `/checkpoint` (or `last`).  This is the "review" step of the
 `/checkpoint` → `/diff` → `/undo` safety workflow.  Capped at 200 lines with a
 truncation hint (use `--stat` for large diffs).
+
+**Session export:** `/export [path]` — read-only over the DB; writes one clean
+markdown file (H1 title, an "Exported … · session … · N messages" line, then
+`**user**` / `**assistant**` / `**tool** — \`name\`` sections with tool output
+fenced).  No path → `~/.nbchat/exports/nbchat-<short-sid>-<ts>.md` (override dir
+with `NBCHAT_EXPORT_DIR`); a relative or absolute path is honoured.  The
+"share/document a conversation" companion to `/find`.
