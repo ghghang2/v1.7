@@ -357,6 +357,17 @@ mouse-wheel scroll tick.  `ChatApp.__init__` merges the file over defaults
 `/approve`) and on exit (`run()` finally).  Purely additive; loading is
 defensive so a config problem cannot block the TUI.
 
+**tui3 wave 5 — colour theming:** `/theme [dark|light|prime]` switches the
+whole UI's colours live and persists the choice.  Implemented with a
+`_ThemeRef` proxy in `theme.py`: the public `DARK` name is a stable object
+(forwarding every attribute to the currently-active theme), so components
+keep writing `DARK.<attr>` unchanged while `theme.set_active(name)`
+retargets the proxy in place — the switch is live everywhere with zero
+call-site edits.  `/theme` invalidates the logged turns (so they re-render
+with the new colours), fires a toast, and saves the choice to the settings
+file (a new `theme` key, applied at startup).  `LIGHT` / `PRIME` stay
+concrete `Theme` objects for lookup.
+
 ---
 
 ## Not addressed (out of scope for this pass, tracked in the port tracker)

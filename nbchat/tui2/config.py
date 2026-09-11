@@ -20,6 +20,7 @@ _DEFAULTS: Dict[str, Any] = {
     "approval_enabled": True,
     "risky_tools": ["run_command", "push_to_github", "send_email"],
     "scroll_tick": 3,
+    "theme": "dark",
 }
 
 
@@ -42,6 +43,15 @@ def load() -> Dict[str, Any]:
     except Exception:
         pass
     return cfg
+
+
+def set_theme_active(name: str) -> None:
+    """Apply a persisted theme name (best-effort, never raises)."""
+    try:
+        from . import theme
+        theme.set_active(name or "dark")
+    except Exception:
+        pass
 
 
 def save(cfg: Dict[str, Any]) -> bool:

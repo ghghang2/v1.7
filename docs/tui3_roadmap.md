@@ -32,8 +32,9 @@ these warrant **tui3** rather than piling onto tui2:
 1 → 2 → 3 → (4, 5 in parallel) → 6 → 7.  **Shipped so far:** wave 1
 (keymap + browse + mode bar), wave 2 (in-log search + visual copy),
 wave 3 (mouse wheel scroll) + 3b (click / drag-to-copy),
-wave 4 (persistent user settings).  Next: theming, then socket API /
-detach.
+wave 4 (persistent user settings), wave 5
+(colour theming via the `_ThemeRef` proxy).  Next: JSON socket API +
+`nbchat-ctl`, then detachable background agent.
 
 ## tui3 wave 1 (this pass)
 
@@ -112,4 +113,17 @@ merges over defaults and swallows I/O errors, so a config problem can
 never block the TUI.  Tests point `NBCHAT_TUI3_CONFIG` at a temp file so
 the real home directory is untouched.
 
-Waves 5+ (theming, socket API, detach) proceed in the build order above.
+**tui3 wave 5 — colour theming** (self-contained, purely additive):
+`/theme` switches the whole UI between the built-in `dark`, `light`, and
+`prime` colour sets.  The trick is a small `_ThemeRef` proxy in
+`theme.py`: the public `DARK` name is a stable object created once at
+import time that forwards every attribute (`DARK.accent`, `DARK.border`, …)
+to the *currently-active* theme.  Components keep writing `DARK.<attr>`
+unchanged, so `theme.set_active(name)` retargets the proxy in place and the
+switch is live everywhere with zero call-site edits.  `/theme` invalidates
+the logged turns so they re-render with the new colours, fires a toast, and
+persists the choice (`config.py` gained a `theme` key, applied at startup
+via `config.set_theme_active`).  `LIGHT` / `PRIME` remain concrete `Theme`
+objects for `get_theme` / `all_themes`.
+
+Waves 6+ (socket API, detach) proceed in the build order above.

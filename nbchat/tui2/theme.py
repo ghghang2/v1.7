@@ -118,21 +118,72 @@ def _prime() -> Theme:
     )
 
 
-DARK: Theme = _dark()
-LIGHT: Theme = _light()
-PRIME: Theme = _prime()
+# Concrete theme objects (the actual colour sets).
+_DARK_T: Theme = _dark()
+_LIGHT_T: Theme = _light()
+_PRIME_T: Theme = _prime()
 
 _BY_NAME: Dict[str, Theme] = {
-    DARK.name: DARK,
-    LIGHT.name: LIGHT,
-    PRIME.name: PRIME,
+    _DARK_T.name: _DARK_T,
+    _LIGHT_T.name: _LIGHT_T,
+    _PRIME_T.name: _PRIME_T,
 }
+
+
+class _ThemeRef:
+    """A stable module-level name that proxies attribute access to the
+    currently-active theme.
+
+    Components import ``DARK`` and keep writing ``DARK.accent`` etc.; the
+    proxy forwards every attribute to the active theme, so ``set_active``
+    (``/theme``) switches the colours everywhere without touching the
+    call sites.  ``DARK`` is created once at import time and its target is
+    mutated in place, so every ``from .theme import DARK`` binding shares
+    the same proxy.
+    """
+
+    def __init__(self, target: Theme):
+        self._target = target
+
+    def __getattr__(self, name: str):
+        # Only reached for names not found on the instance itself
+        # (i.e. not ``_target``), forwarding to the active theme.
+        return getattr(self._target, name)
+
+    def set_target(self, target: Theme) -> None:
+        self._target = target
+
+    @property
+    def active(self) -> Theme:
+        return self._target
+
+
+# The public ``DARK`` is the live proxy (defaulting to the dark theme); the
+# concrete LIGHT / PRIME remain available as real Theme objects for lookup.
+DARK = _ThemeRef(_DARK_T)
+LIGHT: Theme = _LIGHT_T
+PRIME: Theme = _PRIME_T
+
+
+def current() -> Theme:
+    """The currently-active theme."""
+    return DARK._target
+
+
+def set_active(name: str) -> Theme:
+    """Switch the active theme (case-insensitive); unknown -> dark.
+
+    Returns the theme that is now active.
+    """
+    theme = _BY_NAME.get(name.strip().lower(), _DARK_T)
+    DARK.set_target(theme)
+    return theme
 
 
 def get_theme(name: str) -> Theme:
     """Look up a theme by name (case-insensitive); defaults to dark."""
-    return _BY_NAME.get(name.strip().lower(), DARK)
+    return _BY_NAME.get(name.strip().lower(), _DARK_T)
 
 
 def all_themes() -> Tuple[Theme, ...]:
-    return (DARK, LIGHT, PRIME)
+    return (_DARK_T, _LIGHT_T, _PRIME_T)

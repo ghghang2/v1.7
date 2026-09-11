@@ -1914,3 +1914,47 @@ def test_approve_off_persists():
     c = config.load()
     assert c["approval_enabled"] is False
     assert c["risky_tools"] == sorted(app._risky_tools)
+
+
+# ── tui3 wave 5: colour theming ──────────────────────────────────────
+
+def test_theme_switch_and_persist():
+    from nbchat.tui2 import theme, config
+    app, *_ = _make_chat_app()
+    try:
+        out = app._cmd_theme("light")
+        assert theme.current().name == "light"
+        assert "theme: light" in out
+        # the DARK proxy follows the active theme
+        assert theme.DARK.name == "light"
+        # persisted
+        assert config.load()["theme"] == "light"
+        # unknown theme is rejected and leaves the active theme unchanged
+        out2 = app._cmd_theme("bogus")
+        assert "unknown theme" in out2
+        assert theme.current().name == "light"
+    finally:
+        theme.set_active("dark")
+
+
+def test_theme_load_on_start():
+    from nbchat.tui2 import theme, config
+    try:
+        config.save({"theme": "prime"})
+        app, *_ = _make_chat_app()
+        assert theme.current().name == "prime"
+        assert theme.DARK.name == "prime"
+    finally:
+        theme.set_active("dark")
+
+
+def test_theme_status_lists_available():
+    from nbchat.tui2 import theme
+    try:
+        app, *_ = _make_chat_app()
+        out = app._cmd_theme("")
+        assert theme.current().name in out
+        for t in theme.all_themes():
+            assert t.name in out
+    finally:
+        theme.set_active("dark")

@@ -37,6 +37,7 @@ from .components import Box, Container, Loader, StatusLine, Text, _SPINNER_FRAME
 from .editor import LineEditor
 from .frame import Frame, Line, Segment, Style
 from .theme import DARK
+from . import theme
 from .keys import Key
 from .keys import KeyReader
 from .raw import EventQueue, RawTerminal, TUIApp
@@ -229,6 +230,9 @@ class ChatApp(TerminalAgent):
             self._cfg.get("risky_tools",
                           ["run_command", "push_to_github", "send_email"]))
         self._scroll_tick = max(1, int(self._cfg.get("scroll_tick", 3) or 3))
+        # Active colour theme (persisted); the proxy in theme.py retargets
+        # so every component follows it from this point on.
+        config.set_theme_active(self._cfg.get("theme", "dark"))
 
     # ── session / history ───────────────────────────────────────────────
 
@@ -858,7 +862,7 @@ class ChatApp(TerminalAgent):
     # v1 print REPL.  Everything else falls through to v1 ``handle_command``.
     _TUI2_NATIVE = ("/context", "/hotkeys", "/copy", "/compact",
                     "/refine", "/lessons", "/memory", "/btw", "/approve",
-                    "/goal", "/notify")
+                    "/goal", "/notify", "/theme")
 
     def _run_command(self, line: str) -> None:
         """Route a slash command.
@@ -918,6 +922,7 @@ class ChatApp(TerminalAgent):
             "  /approve    tool-approval gate (on/off/add/rm/list)",
             "  /goal <x>   auto-continue until done or budget (stop)",
             "  /notify     toasts / BEL / sound (test)",
+            "  /theme      dark | light | prime (live + remembered)",
             "  /lessons    /memory  /refine   continual-harness",
             "  !<cmd>      run a shell command ( !! stores output )",
             "  Ctrl+T      show / hide thinking blocks",
@@ -942,6 +947,7 @@ class ChatApp(TerminalAgent):
             "/approve": self._cmd_approve,
             "/goal": self._cmd_goal,
             "/notify": self._cmd_notify,
+            "/theme": self._cmd_theme,
         }
         fn = handlers.get(cmd)
         try:
@@ -1030,6 +1036,7 @@ class ChatApp(TerminalAgent):
             "approval_enabled": bool(self._approval_enabled),
             "risky_tools": sorted(self._risky_tools),
             "scroll_tick": int(self._scroll_tick),
+            "theme": theme.current().name,
         })
         config.save(self._cfg)
 
@@ -1110,6 +1117,31 @@ class ChatApp(TerminalAgent):
             return "usage: /notify [toasts|bel|sound] [on|off] · /notify test [kind]"
         return (f"notifications — toasts: {n.toasts} · bel: {n.bel} · "
                 f"sound: {n.sound}")
+
+    def _cmd_theme(self, arg: str) -> str:
+        """Switch the colour theme (tui3 wave 5).
+
+        ``/theme`` — current theme.  ``/theme <name>`` — set (dark, light,
+        prime).  The switch is live: the proxy in ``theme.py`` retargets so
+        every component re-colours on the next render, and the choice is
+        persisted.
+        """
+        from . import theme
+        name = arg.strip().lower()
+        if not name:
+            names = ", ".join(t.name for t in theme.all_themes())
+            return f"theme: {theme.current().name}  (available: {names})"
+        if name not in {t.name for t in theme.all_themes()}:
+            names = ", ".join(t.name for t in theme.all_themes())
+            return f"unknown theme '{name}'  (available: {names})"
+        applied = theme.set_active(name)
+        # Force the logged turns to re-render with the new colours.
+        for msg in self.log.messages:
+            msg.invalidate()
+        self._cfg["theme"] = applied.name
+        self._save_cfg()
+        self._notify.push("theme", applied.name, "ok", write=self._term_write)
+        return f"theme: {applied.name}"
 
     def _goal_first_prompt(self, objective: str) -> str:
         return ("Work toward this goal: " + objective
