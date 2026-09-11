@@ -437,6 +437,18 @@ records an undo point so a recall can be undone with the usual undo binding.
 The binding is documented in the KEYMAP (so `/hotkeys` and the mode bar
 agree).
 
+**`/browse` + `/search` (web surface):** tui2-native commands over the
+`nbchat.tools.browser` engine (a stateless headless-Chromium tool that the
+agent already uses for function-calling).  In v1 there was no way for a user
+to fetch and read a web page without asking the agent to run the tool; tui2
+adds a direct surface.  The page fetch runs on a daemon thread (launching
+Chromium is slow) and the result is delivered via the `"call"` event, so the
+UI thread is never blocked and the screen is never corrupted — the same
+off-thread pattern as `/inbox` and `/team`.  `/browse <url>` shows the page
+title + truncated text; `/search <query>` browses a DuckDuckGo search.  A
+missing URL scheme is auto-corrected to `https://`; errors (network,
+bot-blocked) render as a friendly note rather than a crash.
+
 ---
 
 ## Not addressed (out of scope for this pass, tracked in the port tracker)

@@ -155,6 +155,11 @@ shell command (`!ls`); `!!` also stores the output for later.
   screen), so the interface stays live and intact.  `/team` shows the
   current/last status and final report; `/team stop` interrupts a running
   team.
+- `/browse <url>` — fetch a web page with the `nbchat.tools.browser` engine
+  (headless Chromium) and show its title + text in the log.  Runs off the UI
+  thread (the Chromium launch + fetch never freezes the interface); a missing
+  scheme is auto-corrected to `https://`.  `/search <query>` is a convenience
+  wrapper that browses a DuckDuckGo search for the query.
 - `/hotkeys` — the keybinding reference.
 - `/copy` — copies the last assistant message to the clipboard (OSC 52;
   silent no-op where the terminal lacks clipboard support).

@@ -951,7 +951,7 @@ class ChatApp(TerminalAgent):
     _TUI2_NATIVE = ("/context", "/hotkeys", "/copy", "/compact",
                     "/refine", "/lessons", "/memory", "/btw", "/approve",
                     "/goal", "/notify", "/theme", "/monitor", "/inbox",
-                    "/team")
+                    "/team", "/browse", "/search")
 
     def _run_command(self, line: str) -> None:
         """Route a slash command.
@@ -1043,6 +1043,8 @@ class ChatApp(TerminalAgent):
             "/monitor": self._cmd_monitor,
             "/inbox": self._cmd_inbox,
             "/team": self._cmd_team,
+            "/browse": self._cmd_browse,
+            "/search": self._cmd_search,
         }
         fn = handlers.get(cmd)
         try:
@@ -1145,6 +1147,63 @@ class ChatApp(TerminalAgent):
 
         threading.Thread(target=work, daemon=True).start()
         return "inbox: checking…"
+
+    # ── /browse + /search (tui3: web surface over the browser tool) ─────
+
+    def _browse_url(self, url: str, max_chars: int = 4000) -> str:
+        """Fetch a page's text via the ``nbchat.tools.browser`` engine.
+
+        Synchronous and testable: monkeypatch ``nbchat.tools.browser.browser``
+        in tests.  Returns a formatted ``title`` + truncated ``content``
+        string, or a friendly error note on failure.
+        """
+        import json as _json
+        from nbchat.tools.browser import browser as _browser
+        try:
+            raw = _browser(url, max_content_length=max_chars * 2)
+        except Exception as exc:
+            return f"browse: {type(exc).__name__}: {exc}"
+        try:
+            data = _json.loads(raw)
+        except Exception:
+            return f"browse: {str(raw)[:max_chars]}"
+        if data.get("error"):
+            return f"browse: {data.get('error')}"
+        title = data.get("title", "") or ""
+        content = (data.get("content", "") or "").strip()
+        if len(content) > max_chars:
+            content = content[:max_chars] + " …[truncated]"
+        head = f"browse: {data.get('url', url)}"
+        if title:
+            head += f" — {title}"
+        body = content or "(no readable text)"
+        return head + "\n" + body
+
+    def _cmd_browse(self, arg: str) -> str:
+        url = (arg or "").strip()
+        if not url:
+            return "browse: usage /browse <url>  (or /search <query>)"
+        if not re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", url):
+            url = "https://" + url
+        def work() -> None:
+            try:
+                out = self._browse_url(url)
+            except Exception as exc:
+                out = f"browse: {type(exc).__name__}: {exc}"
+            self.events.put("call", lambda o=out: self._note(o))
+        threading.Thread(target=work, daemon=True).start()
+        return "browse: loading…"
+
+    def _cmd_search(self, arg: str) -> str:
+        query = (arg or "").strip()
+        if not query:
+            return "search: usage /search <query>"
+        from urllib.parse import quote_plus
+        # DuckDuckGo's /html/ endpoint is bot-friendly and returns clean
+        # text; reuse the /browse pipeline for the fetch + display.
+        url = "https://duckduckgo.com/html/?q=" + quote_plus(query)
+        self._cmd_browse(url)
+        return f"search: {query}"
 
     # ── /team (tui3: multi-agent team runs, output relayed off-thread) ──
 

@@ -2408,3 +2408,82 @@ def test_editor_set_text_updates_buffer_and_undo():
     assert ed.text() == ""
     ed.redo()
     assert ed.text() == "hello"
+
+
+# ── /browse + /search (web surface over the browser tool) ────────────
+
+def _fake_browser_json(title="T", content="hello body", url=None):
+    import json
+    def fake(url, *a, **k):
+        return json.dumps({"status": "success",
+                           "url": url or "https://x.example/",
+                           "title": title, "content": content})
+    return fake
+
+def test_browse_url_formats_title_and_content(monkeypatch):
+    import nbchat.tools.browser as B
+    app, _, _, _ = _make_chat_app()
+    monkeypatch.setattr(B, "browser", _fake_browser_json(title="My Page", content="some text here"))
+    out = app._browse_url("https://x.example/")
+    assert "My Page" in out
+    assert "some text here" in out
+    assert out.startswith("browse:")
+
+
+def test_browse_url_truncates_long_content(monkeypatch):
+    import nbchat.tools.browser as B
+    app, _, _, _ = _make_chat_app()
+    long = "x" * 10000
+    monkeypatch.setattr(B, "browser", _fake_browser_json(content=long))
+    out = app._browse_url("https://x.example/", max_chars=100)
+    assert "[truncated]" in out
+    assert len(out) < 300
+
+
+def test_browse_url_error_note(monkeypatch):
+    import json, nbchat.tools.browser as B
+    app, _, _, _ = _make_chat_app()
+    def fake(url, *a, **k):
+        return json.dumps({"error": "net down", "hint": "retry"})
+    monkeypatch.setattr(B, "browser", fake)
+    out = app._browse_url("https://x.example/")
+    assert "net down" in out
+
+
+def test_cmd_browse_async_delivers_note(monkeypatch):
+    import nbchat.tools.browser as B
+    app, term, events, _ = _make_chat_app()
+    monkeypatch.setattr(B, "browser", _fake_browser_json(title="Live", content="async body"))
+    ack = app._cmd_browse("example.com")
+    assert "loading" in ack
+    _drain_calls(app, events)
+    joined = "\n".join(m.text for m in app.log.messages)
+    assert "async body" in joined
+    assert "Live" in joined
+
+
+def test_cmd_browse_usage():
+    app, _, _, _ = _make_chat_app()
+    assert "usage" in app._cmd_browse("")
+
+
+def test_cmd_search_usage():
+    app, _, _, _ = _make_chat_app()
+    assert "usage" in app._cmd_search("")
+
+
+def test_cmd_search_builds_duckduckgo_url(monkeypatch):
+    import nbchat.tools.browser as B
+    app, term, events, _ = _make_chat_app()
+    seen = {}
+    def fake(url, *a, **k):
+        import json
+        seen["url"] = url
+        return json.dumps({"status": "success", "url": url,
+                           "title": "results", "content": "search hits"})
+    monkeypatch.setattr(B, "browser", fake)
+    ack = app._cmd_search("hello world")
+    assert ack == "search: hello world"
+    _drain_calls(app, events)
+    assert "duckduckgo.com" in seen["url"]
+    assert "hello+world" in seen["url"]

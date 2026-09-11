@@ -47,7 +47,11 @@ relayed into the log off the UI thread (never to the raw screen), plus
 arrows walk the submitted-input history (Up = older, Down = back to the
 in-progress draft), complementing the existing `Ctrl+R` reverse search.  The
 `LineEditor` gained a `set_text()` (buffer replace + undo point) so recall is
-undoable.
+undoable; and **`/browse <url>` / `/search <query>`** — a web surface over the
+`nbchat.tools.browser` engine (headless Chromium via Playwright).  The page
+fetch runs off the UI thread (the Chromium launch never freezes the
+interface); `/browse` shows the page title + truncated text, and `/search`
+is a convenience wrapper that browses a DuckDuckGo search for the query.
 
 ## tui3 wave 1 (this pass)
 
