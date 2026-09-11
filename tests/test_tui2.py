@@ -3587,6 +3587,108 @@ def test_heartbeat_defers_when_busy():
 
 
 
+def test_autonomous_start_gated():
+    app, *_ = _make_chat_app()
+    started = []
+    app._start_turn = lambda text: started.append(text)
+    out = app._cmd_autonomous("fix the login bug")
+    assert "gated" in out
+    assert app._goal is not None
+    assert app._goal["objective"] == "fix the login bug"
+    assert app._autonomous_gate is True
+    assert len(started) == 1
+
+def test_autonomous_start_silent():
+    app, *_ = _make_chat_app()
+    started = []
+    app._start_turn = lambda text: started.append(text)
+    out = app._cmd_autonomous("fix the login bug --auto")
+    assert "silent" in out
+    assert app._goal["objective"] == "fix the login bug"
+    assert app._autonomous_gate is False
+    assert len(started) == 1
+
+def test_autonomous_status():
+    app, *_ = _make_chat_app()
+    app._goal = {"objective": "x", "remaining": 5, "budget": 20, "done": 3, "stopped": False}
+    app._autonomous_gate = True
+    out = app._cmd_autonomous("")
+    assert "gate on" in out
+    assert "3/20" in out
+
+def test_autonomous_status_none():
+    app, *_ = _make_chat_app()
+    out = app._cmd_autonomous("")
+    assert "no active autonomous run" in out
+
+def test_autonomous_go_no_goal():
+    app, *_ = _make_chat_app()
+    out = app._cmd_autonomous("go")
+    assert "no active goal" in out
+
+def test_autonomous_go_continues():
+    app, *_ = _make_chat_app()
+    app._goal = {"objective": "x", "remaining": 5, "budget": 20, "done": 2, "stopped": False}
+    app._autonomous_gate = True
+    app._tui._running = True
+    started = []
+    app._start_turn = lambda text: started.append(text)
+    out = app._cmd_autonomous("go")
+    assert "continuing" in out
+    assert len(started) == 1
+    assert app._goal["done"] == 3
+    assert app._goal["remaining"] == 4
+
+def test_autonomous_stop():
+    app, *_ = _make_chat_app()
+    app._goal = {"objective": "x", "remaining": 5, "budget": 20, "done": 2, "stopped": False}
+    app._autonomous_gate = True
+    out = app._cmd_autonomous("stop")
+    assert "stopped" in out
+    assert app._goal is None
+    assert app._autonomous_gate is False
+
+def test_goal_finish_gate_pauses():
+    app, *_ = _make_chat_app()
+    app._goal = {"objective": "x", "remaining": 5, "budget": 20, "done": 2, "stopped": False}
+    app._autonomous_gate = True
+    app._tui._running = True
+    started = []
+    notes = []
+    app._start_turn = lambda text: started.append(text)
+    app._note = lambda text: notes.append(text)
+    chained = app._goal_finish("still working")
+    assert chained is False
+    assert started == []
+    assert any("autonomous gate" in n for n in notes)
+    assert app._goal["done"] == 2  # budget NOT advanced while gated
+
+def test_goal_finish_chains_when_silent():
+    app, *_ = _make_chat_app()
+    app._goal = {"objective": "x", "remaining": 5, "budget": 20, "done": 2, "stopped": False}
+    app._autonomous_gate = False
+    app._tui._running = True
+    started = []
+    app._start_turn = lambda text: started.append(text)
+    chained = app._goal_finish("still working")
+    assert chained is True
+    assert len(started) == 1
+    assert app._goal["done"] == 3
+
+def test_goal_finish_declared_done():
+    app, *_ = _make_chat_app()
+    app._goal = {"objective": "x", "remaining": 5, "budget": 20, "done": 2, "stopped": False}
+    app._autonomous_gate = False
+    app._tui._running = True
+    started = []
+    app._start_turn = lambda text: started.append(text)
+    chained = app._goal_finish("GOAL COMPLETE - all done")
+    assert chained is False
+    assert app._goal["stopped"] is True
+    assert started == []
+
+
+
 def test_export_tool_block_fenced(monkeypatch, tmp_path):
     app, _, _, _ = _make_chat_app()
     _patch_history(monkeypatch, [

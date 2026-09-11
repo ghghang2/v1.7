@@ -372,6 +372,10 @@ class ChatApp(TerminalAgent):
 
         self._goal = None
         self._goal_budget = 20  # default auto-continue turn budget
+        # Autonomous approval gate (/autonomous): when True, the goal
+        # auto-continue PAUSES after each turn and prompts the user instead
+        # of silently chaining.  Off by default (/goal keeps auto-chaining).
+        self._autonomous_gate = False
         # Phrases the model can emit to mark the goal achieved.
         self._goal_done_markers = ("goal complete", "goal: complete",
                                    "goal achieved", "[goal done]",
@@ -868,6 +872,39 @@ class ChatApp(TerminalAgent):
         low = text.lower()
         return any(m in low for m in self._goal_done_markers)
 
+    def _goal_finish(self, msg_text: str) -> bool:
+        """Handle a goal turn's completion.
+
+        Returns ``True`` when a new continuation turn was started (silent
+        auto-continue), ``False`` otherwise (declared done, approval-gate
+        pause, or budget exhausted).  Lives here (not inline in
+        ``_finalize_turn``) so the gate / done / chain decision is
+        unit-testable in isolation.
+        """
+        g = self._goal
+        if g is None or g.get("stopped"):
+            return False
+        if self._goal_declared_done(msg_text):
+            g["stopped"] = True
+            self._note("goal: model reported it complete - stopping "
+                       "auto-continue")
+            return False
+        if self._autonomous_gate:
+            # Approval gate: pause the chain and prompt the user.
+            self._note(
+                "autonomous gate: turn done (%d continuation turns used, "
+                "%d auto-turns left) \u00b7 /autonomous go = continue \u00b7 "
+                "/autonomous auto = keep going silently \u00b7 "
+                "/autonomous stop = halt" % (g["done"], g["remaining"]))
+            return False
+        nxt = self._goal_next_prompt()
+        if nxt is not None:
+            self._turn_thread = None
+            if self._tui._running:
+                self._start_turn(nxt)
+                return True
+        return False
+
     def _finalize_turn(self) -> None:
         self._close_thinking()
         self.log.offset = 0  # a new reply lands: snap back to the bottom
@@ -909,19 +946,10 @@ class ChatApp(TerminalAgent):
                 chained = True
         elif self._goal is not None and not self._goal.get("stopped"):
             # Goal auto-continue (only when the user has not redirected this
-            # turn).  The model can mark the goal achieved with a completion
-            # phrase; otherwise chain the next turn until the budget runs out.
-            if self._goal_declared_done(msg.text):
-                self._goal["stopped"] = True
-                self._note("goal: model reported it complete — stopping "
-                           "auto-continue")
-            else:
-                nxt = self._goal_next_prompt()
-                if nxt is not None:
-                    self._turn_thread = None
-                    if self._tui._running:
-                        self._start_turn(nxt)
-                        chained = True
+            # turn).  Declared-done / approval-gate / silent-chain decision
+            # lives in _goal_finish so it is unit-testable in isolation.
+            if self._goal_finish(msg.text):
+                chained = True
         # Turn-complete toast — only when the turn actually ended (no
         # redirect / goal continue).  Quiet by default: the focused chat's
         # own turn fires no BEL/sound (herdr suppresses the active pane);
@@ -1330,7 +1358,7 @@ class ChatApp(TerminalAgent):
                     "/team", "/browse", "/search", "/sup", "/voice",
                     "/fork", "/checkpoint", "/undo", "/find", "/diff",
                     "/export", "/plan", "/retry", "/queue", "/tpl", "/editor", "/gstatus", "/stash",
-                    "/rewind", "/pin", "/unpin", "/settings", "/todos", "/project", "/heartbeat")
+                    "/rewind", "/pin", "/unpin", "/settings", "/todos", "/project", "/heartbeat", "/autonomous")
 
     def _run_command(self, line: str) -> None:
         """Route a slash command.
@@ -1410,6 +1438,7 @@ class ChatApp(TerminalAgent):
             "  /todos          show the live agent task list (progress pill)",
             "  /project        show the AGENTS.md / CLAUDE.md auto-loaded at start",
             "  /heartbeat every <dur> <instruction>   fire a recurring turn when idle",
+            "  /autonomous <objective> [--auto]   auto-continue with an approval gate",
             "  @<path>      file completion (type @ + a filename, pick a match)",
             "  /compact    force a context summarisation now",
             "  /copy       copy last reply to the clipboard",
@@ -1471,6 +1500,7 @@ class ChatApp(TerminalAgent):
             "/todos": self._cmd_todos,
             "/project": self._cmd_project,
             "/heartbeat": self._cmd_heartbeat,
+            "/autonomous": self._cmd_autonomous,
         }
         fn = handlers.get(cmd)
         try:
@@ -2718,6 +2748,77 @@ class ChatApp(TerminalAgent):
                     "finishes)")
         self._start_turn(self._goal_first_prompt(objective))
         return f"goal started: {objective} (budget {self._goal_budget})"
+
+    def _cmd_autonomous(self, arg: str) -> str:
+        """``/autonomous`` - autonomous run with an approval gate.
+
+        Like ``/goal`` (auto-continue toward an objective), but PAUSES after
+        each turn and asks you to continue instead of silently chaining.
+        Commands:
+
+        - ``/autonomous <objective>`` - start a gated autonomous run.
+        - ``/autonomous <objective> --auto`` - start silently (like ``/goal``).
+        - ``/autonomous go`` - run the next continuation turn (gate stays on).
+        - ``/autonomous auto`` - switch to silent auto-continue + next turn.
+        - ``/autonomous stop`` / ``/autonomous clear`` - stop the run.
+        - ``/autonomous`` - status.
+        """
+        toks = (arg or "").split()
+        if len(toks) == 1 and toks[0].lower() in ("go", "auto", "stop", "clear"):
+            sub = toks[0].lower()
+            g = self._goal
+            if sub == "go":
+                if g is None or g.get("stopped"):
+                    return "autonomous: no active goal to continue"
+                nxt = self._goal_next_prompt()
+                if nxt is None:
+                    return "autonomous: nothing to continue (goal done or budget hit)"
+                self._turn_thread = None
+                if self._tui._running:
+                    self._start_turn(nxt)
+                return "autonomous: continuing (gate still on)"
+            if sub == "auto":
+                self._autonomous_gate = False
+                if g is None or g.get("stopped"):
+                    return "autonomous: no active goal (auto-continue off)"
+                nxt = self._goal_next_prompt()
+                if nxt is not None:
+                    self._turn_thread = None
+                    if self._tui._running:
+                        self._start_turn(nxt)
+                return "autonomous: auto-continue on (gate off)"
+            # stop / clear
+            self._autonomous_gate = False
+            if g is not None:
+                g["stopped"] = True
+            self._goal = None
+            return "autonomous: stopped and cleared"
+        if not toks:
+            g = self._goal
+            if g is None:
+                return ("no active autonomous run - /autonomous <objective> to "
+                        "start (gated auto-continue; --auto for silent)")
+            gate = "on" if self._autonomous_gate else "off (auto)"
+            state = "running" if not g.get("stopped") else "stopped"
+            return (f"autonomous ({state}, gate {gate}): {g['objective']}\n"
+                    f"turns: {g['done']}/{g['budget']}\n"
+                    "/autonomous go - /autonomous auto - /autonomous stop")
+        # Start a new run: /autonomous <objective> [--auto]
+        silent = toks[-1].lower() in ("--auto", "-a")
+        objective = " ".join(toks[:-1]) if silent else arg
+        if not objective:
+            return "autonomous: no objective given"
+        self._goal = {"objective": objective,
+                      "remaining": self._goal_budget,
+                      "budget": self._goal_budget, "done": 0,
+                      "stopped": False}
+        self._autonomous_gate = not silent
+        mode = "silent" if silent else "gated"
+        if self.busy:
+            return (f"autonomous set ({mode}): {objective}\n"
+                    "(a turn is in flight - it starts after it finishes)")
+        self._start_turn(self._goal_first_prompt(objective))
+        return f"autonomous started ({mode}): {objective} (budget {self._goal_budget})"
 
     def _btw_worker(self, arg: str) -> None:
         try:

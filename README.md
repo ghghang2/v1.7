@@ -289,6 +289,13 @@ shell command (`!ls`); `!!` also stores the output for later.
   `/goal stop`.  `/goal` for status · `/goal stop` · `/goal clear` ·
   `/goal budget <n>`.  A `goal K/N` pill tracks progress on the status
   line.
+- `/autonomous <objective> [--auto]` — an autonomous run with an **approval
+  gate** (prime-agent): like `/goal` it auto-continues toward the objective,
+  but **pauses after each turn** and asks you to continue. `/autonomous go`
+  runs the next turn (gate stays on), `/autonomous auto` switches to silent
+  auto-continue (like `/goal`), `/autonomous stop` halts. `--auto` starts it
+  silently. The gate is the difference from `/goal`: you keep a hand on the
+  wheel without retyping the objective.
 - `/name <title>` — alias for v1's `/title`.
 - Bare `/load` (no id) opens the **session picker**: type to fuzzy-filter,
   `↑/↓` move, `Enter` loads, `Esc`/`Ctrl+C` cancel.

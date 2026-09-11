@@ -415,3 +415,40 @@ task, without keeping a terminal hand on the wheel.
   clear; usage on bad args; fires when idle; does NOT fire when the window has
   not elapsed; defers while a turn thread is alive).  tui2 suite 317 passed;
   full suite 691 green (317+79+295).
+
+## tui3: /autonomous (approval-gated auto-continue, prime-agent gap)
+
+**`/autonomous <objective> [--auto]`** (prime-agent runner-up: "/autonomous
+gate loop"): the existing `/goal` auto-continues toward an objective but does
+so *silently* — the agent keeps chaining turns until the budget runs out or the
+model says `GOAL COMPLETE`.  That is powerful but hard to keep in check.  This
+adds the **approval gate**: the run still auto-continues, but **pauses after
+each turn** and asks you to continue, so you keep a hand on the wheel without
+retyping the objective.
+
+- **`/autonomous <objective>`** — start a gated run (default).  **`--auto`**
+  starts it silently (identical to `/goal`).  The gate is the differentiator:
+  with it on, each turn completes and the app shows a gate note instead of
+  chaining.
+- **`/autonomous go`** — run the next continuation turn (gate stays on).  **
+  `/autonomous auto`** — switch to silent auto-continue + run the next turn
+  (now behaves like `/goal`).  **`/autonomous stop`** / **`/autonomous clear`**
+  — stop and clear.  **`/autonomous`** — status (state, gate on/off, turns
+  `K/N`).
+- **Reuses the goal machinery, `/goal` is unchanged** — the gate is a single
+  `self._autonomous_gate` flag.  The goal-completion decision (declared-done /
+  gate-pause / silent-chain) was extracted from `_finalize_turn` into
+  **`_goal_finish(msg_text) -> bool`** so the gate / done / chain logic is
+  unit-testable in isolation; `/finalize_turn` now just calls it and sets
+  `chained`.  When the gate is on, `_goal_finish` shows the note and returns
+  False (no chain); `/autonomous go` / `auto` then call `_goal_next_prompt`
+  (which advances the budget) and start the turn.  Budget accounting is
+  identical to `/goal`.
+- **Default off** — `/goal` keeps silently auto-continuing; `/autonomous` is
+  opt-in.  No new threads; the gate is checked in the existing turn-complete
+  path (worker thread) and driven by slash commands (UI thread).
+- **Tests** — 10 new (start gated / start silent; status on / none; `go` with no
+  goal; `go` continues + advances budget; `stop` clears; `_goal_finish` pauses
+  when gated (no chain, note shown, budget NOT advanced); `_goal_finish` chains
+  when silent; `_goal_finish` stops on `GOAL COMPLETE`).  tui2 suite 327 passed;
+  full suite 701 green (327+79+295).
