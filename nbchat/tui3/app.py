@@ -39,7 +39,7 @@ class ChatApp(_Tui2ChatApp):
     """
 
     #: tui3-native slash commands (intercepted before the tui2 dispatch).
-    _TUI3_NATIVE = ("/trace", "/budget", "/reflect", "/verify")
+    _TUI3_NATIVE = ("/trace", "/budget", "/reflect", "/verify", "/health")
 
     def __init__(self, term, events, *args, **kwargs):
         super().__init__(term, events, *args, **kwargs)
@@ -65,6 +65,7 @@ class ChatApp(_Tui2ChatApp):
             "/budget": self._cmd_budget,
             "/reflect": self._cmd_reflect,
             "/verify": self._cmd_verify,
+            "/health": self._cmd_health,
         }
         fn = handlers.get(cmd)
         if fn is None:
@@ -438,15 +439,158 @@ class ChatApp(_Tui2ChatApp):
         return text
 
     def _status_right(self) -> str:
-        """The tui2 status line with the tui3 verifier pill appended."""
+        """The tui2 status line with the tui3 verifier + health pills."""
         base = super()._status_right()
         try:
-            pill = self._verify_pill()
-            if pill:
-                base = (base + "  " + pill) if base else pill
+            parts = [p for p in (self._verify_pill(), self._health_pill()) if p]
+            if parts:
+                extra = "  ".join(parts)
+                base = (base + "  " + extra) if base else extra
         except Exception:
             pass
         return base
+
+    # -- Candidate B: /health (objective long-run rot monitor) -------------
+    # Inspired by How Fast Do Agents Rot (agents degrade sharply past
+    # benchmark horizons) + The Unreliable Progress Bar (self-reported
+    # progress is untrustworthy - use objective signals: message count,
+    # verifier score, test trend, time since last verified progress).
+    def _health_data(self) -> dict:
+        """Compute objective long-run health signals for the current session.
+
+        Returns a dict with keys: ``messages``, ``turns``,
+        ``verifier_score``, ``verifier_clean``, ``test_trend``
+        (up/down/flat/none), ``mins_since_progress`` (float or None),
+        ``rot`` (bool), ``rot_reasons`` (list).  Every signal is OBJECTIVE
+        (read from the DB / the verifier), never self-reported.
+        """
+        import json
+        from datetime import datetime, timezone
+
+        import nbchat.core.db as db
+
+        sid = self.session_id
+        out = {"messages": 0, "turns": 0, "verifier_score": None,
+               "verifier_clean": False, "test_trend": "none",
+               "mins_since_progress": None, "rot": False, "rot_reasons": []}
+        try:
+            rows = db.load_history(sid)
+        except Exception as exc:
+            out["error"] = str(exc)
+            return out
+        out["messages"] = len(rows)
+        out["turns"] = sum(1 for r in rows if r[0] == "user")
+        # Verifier score (from Candidate A).
+        v = self._verify_data()
+        if v.get("source") != "none" and v.get("total", 0) > 0:
+            out["verifier_score"] = int(round(100.0 * v["passed"] / v["total"]))
+            out["verifier_clean"] = v.get("clean", False)
+        # Test trend: the last two run_tests pass-rates.
+        rates = []
+        for row in rows:
+            try:
+                role, content, tool_id, tool_name, tool_args, error_flag = row
+            except Exception:
+                continue
+            if role == "tool" and tool_name == "run_tests":
+                try:
+                    data = json.loads(content)
+                except Exception:
+                    data = None
+                if isinstance(data, dict) and "passed" in data:
+                    passed = int(data.get("passed", 0) or 0)
+                    failed = int(data.get("failed", 0) or 0)
+                    errors = int(data.get("errors", 0) or 0)
+                    total = passed + failed + errors
+                    rates.append(passed / total if total else 0.0)
+        if len(rates) >= 2:
+            delta = rates[-1] - rates[-2]
+            if delta > 0.01:
+                out["test_trend"] = "up"
+            elif delta < -0.01:
+                out["test_trend"] = "down"
+            else:
+                out["test_trend"] = "flat"
+        # Time since the last verified progress (a passing run_tests row).
+        try:
+            with db._connect() as conn:
+                cur = conn.execute(
+                    "SELECT ts FROM chat_log WHERE session_id=? AND role=? "
+                    "AND tool_name=? ORDER BY id DESC LIMIT 1",
+                    (sid, "tool", "run_tests"))
+                r = cur.fetchone()
+            if r and r[0]:
+                dt = datetime.strptime(r[0], "%Y-%m-%d %H:%M:%S")
+                now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+                delta = (now_utc - dt).total_seconds() / 60.0
+                if delta >= 0:
+                    out["mins_since_progress"] = round(delta, 1)
+        except Exception:
+            pass
+        # Compute the rot flag + reasons (objective signals only).
+        if out["messages"] > 200:
+            out["rot_reasons"].append("context bloat (%d messages)" % out["messages"])
+        if out["verifier_score"] is not None and out["verifier_score"] < 50:
+            out["rot_reasons"].append("low verifier score (%d%%)" % out["verifier_score"])
+        if out["test_trend"] == "down":
+            out["rot_reasons"].append("test trend regressing")
+        if out["mins_since_progress"] is not None and out["mins_since_progress"] > 30:
+            out["rot_reasons"].append(
+                "%dm since last verified progress" % int(out["mins_since_progress"]))
+        out["rot"] = bool(out["rot_reasons"])
+        return out
+
+    def _cmd_health(self, arg: str) -> str:
+        """Show the objective long-run health (rot monitor) for this session.
+
+        ``/health`` computes objective health signals - message count
+        (context bloat), turn count, the current verifier score, the
+        test-suite trend, and the time since the last verified progress -
+        and reports whether the session is at RISK of "rotting".  Every
+        signal is objective (never self-reported).
+        """
+        d = self._health_data()
+        if d.get("error"):
+            return "health: failed to load: %s" % d["error"]
+        lines = []
+        lines.append("health  %s" % ("ROT RISK" if d["rot"] else "ok"))
+        lines.append("  messages %d   turns %d" % (d["messages"], d["turns"]))
+        if d["verifier_score"] is not None:
+            lines.append("  verifier score %d%%   (clean: %s)"
+                         % (d["verifier_score"], d["verifier_clean"]))
+        lines.append("  test trend: %s" % d["test_trend"])
+        if d["mins_since_progress"] is not None:
+            lines.append("  %dm since last verified progress"
+                         % int(d["mins_since_progress"]))
+        if d["rot"]:
+            lines.append("  ROT reasons:")
+            for reason in d["rot_reasons"]:
+                lines.append("    - %s" % reason)
+            lines.append("  (consider /compact, checkpointing, or a fresh session)")
+        return chr(10).join(lines)
+
+    def _health_pill(self) -> str:
+        """A live status-line pill: the objective rot indicator (only when at
+        risk - the status line is already busy, so a healthy session shows
+        nothing)."""
+        now = time.monotonic()
+        cache = getattr(self, "_health_pill_cache", None)
+        if cache is not None and now - cache[0] < 0.5:
+            return cache[1]
+        text = ""
+        try:
+            d = self._health_data()
+            if d["rot"]:
+                if d["mins_since_progress"] is not None and d["mins_since_progress"] > 30:
+                    text = "ROT %dm" % int(d["mins_since_progress"])
+                elif d["verifier_score"] is not None and d["verifier_score"] < 50:
+                    text = "ROT %d%%" % d["verifier_score"]
+                else:
+                    text = "ROT"
+        except Exception:
+            text = ""
+        self._health_pill_cache = (now, text)
+        return text
 
 def run(argv: list | None = None) -> int:
     """``python -m nbchat.tui3`` entry point.
