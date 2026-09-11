@@ -2147,3 +2147,72 @@ def test_cmd_monitor_is_native_and_safe():
     fresh = _make_chat_app()[0]
     out = fresh._cmd_monitor("")
     assert isinstance(out, str) and out
+
+# ── /inbox (tui3: unseen-email browsing, off-thread) ───────────────────
+
+def _fake_email(uid, sender, subject):
+    from types import SimpleNamespace
+    from datetime import datetime
+    return SimpleNamespace(uid=uid, from_addr=sender, subject=subject,
+                           date=datetime(2026, 7, 12, 9, 30),
+                           body="", message_id=uid, x_nbchat="")
+
+
+def test_inbox_peek_lists_unseen(monkeypatch):
+    app, term, events, _ = _make_chat_app()
+    from nbchat.core import email_inbox
+    msgs = [_fake_email("1", "alice@example.com", "Hello"),
+            _fake_email("2", "bob@example.com", "Re: hi")]
+    monkeypatch.setattr(email_inbox, "peek_unseen", lambda **k: msgs)
+    out = app._inbox_peek(None)
+    assert "inbox: 2 unseen" in out
+    assert "alice@example.com: Hello" in out
+    assert "bob@example.com: Re: hi" in out
+
+
+def test_inbox_peek_reads_body(monkeypatch):
+    app, term, events, _ = _make_chat_app()
+    from nbchat.core import email_inbox
+    msgs = [_fake_email("1", "alice@example.com", "Hello")]
+    monkeypatch.setattr(email_inbox, "peek_unseen", lambda **k: msgs)
+    monkeypatch.setattr(email_inbox, "fetch_body", lambda uid: "the body text")
+    out = app._inbox_peek(1)
+    assert "alice@example.com" in out
+    assert "the body text" in out
+
+
+def test_inbox_peek_out_of_range(monkeypatch):
+    app, term, events, _ = _make_chat_app()
+    from nbchat.core import email_inbox
+    monkeypatch.setattr(email_inbox, "peek_unseen",
+                        lambda **k: [_fake_email("1", "a@x", "s")])
+    out = app._inbox_peek(5)
+    assert "no unseen message #5" in out
+
+
+def test_cmd_inbox_is_native_and_async_delivers(monkeypatch):
+    app, term, events, _ = _make_chat_app()
+    from nbchat.core import email_inbox
+    assert "/inbox" in app._TUI2_NATIVE
+    # usage guard
+    assert app._cmd_inbox("abc").startswith("inbox: usage")
+    # async ack, then the result is delivered via a "call" event (UI thread)
+    msgs = [_fake_email("1", "alice@example.com", "Hello")]
+    monkeypatch.setattr(email_inbox, "peek_unseen", lambda **k: msgs)
+    ack = app._cmd_inbox("")
+    assert ack.startswith("inbox: checking")
+    call = None
+    deadline = time.time() + 2
+    while time.time() < deadline:
+        for kind, payload in events.drain():
+            if kind == "call":
+                call = payload
+        if call is not None:
+            break
+        time.sleep(0.01)
+    assert call is not None
+    before = len(app.log.messages)
+    call()
+    assert len(app.log.messages) == before + 1
+    assert "Hello" in app.log.messages[-1].text
+

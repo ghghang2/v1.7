@@ -139,6 +139,12 @@ shell command (`!ls`); `!!` also stores the output for later.
 - `/monitor` — live per-session metrics from the monitoring engine
   (cache similarity / invalidation, per-tool call counts and error rates,
   any detected warnings).
+- `/inbox [n]` — browse unseen email: `/inbox` lists headers (position,
+  sender, subject, date), `/inbox 2` reads the body of unseen message #2.
+  Read-only (nothing is marked read — the `--email` bridge owns that) and
+  runs the IMAP round-trip off the UI thread, so the interface never
+  freezes.  Requires `GHG_APP_PASSWORD` (Gmail app password); with no
+  credential it notes that and stops cleanly.
 - `/hotkeys` — the keybinding reference.
 - `/copy` — copies the last assistant message to the clipboard (OSC 52;
   silent no-op where the terminal lacks clipboard support).

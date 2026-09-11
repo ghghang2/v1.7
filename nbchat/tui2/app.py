@@ -863,7 +863,7 @@ class ChatApp(TerminalAgent):
     # v1 print REPL.  Everything else falls through to v1 ``handle_command``.
     _TUI2_NATIVE = ("/context", "/hotkeys", "/copy", "/compact",
                     "/refine", "/lessons", "/memory", "/btw", "/approve",
-                    "/goal", "/notify", "/theme", "/monitor")
+                    "/goal", "/notify", "/theme", "/monitor", "/inbox")
 
     def _run_command(self, line: str) -> None:
         """Route a slash command.
@@ -918,6 +918,7 @@ class ChatApp(TerminalAgent):
             "TUI v2 extras (not in v1):",
             "  /context    model + context window + compression stats",
             "  /monitor    live session metrics (cache / tools / warnings)",
+            "  /inbox [n]  list / read unseen email (read-only, off-thread)",
             "  /compact    force a context summarisation now",
             "  /copy       copy last reply to the clipboard",
             "  /btw <q>    side question, kept out of this session",
@@ -951,6 +952,7 @@ class ChatApp(TerminalAgent):
             "/notify": self._cmd_notify,
             "/theme": self._cmd_theme,
             "/monitor": self._cmd_monitor,
+            "/inbox": self._cmd_inbox,
         }
         fn = handlers.get(cmd)
         try:
@@ -1007,6 +1009,52 @@ class ChatApp(TerminalAgent):
         if not text:
             return "monitor: no metrics recorded yet this session"
         return text
+
+    def _inbox_peek(self, n: int | None) -> str:
+        """Synchronous peek at unseen email (may touch the network / raise).
+
+        Returns formatted text: a numbered header list when *n* is ``None``,
+        or the full body of unseen message #*n* when it is an int.  Designed
+        to run on a worker thread (see :meth:`_cmd_inbox`)."""
+        from nbchat.core import email_inbox
+
+        msgs = email_inbox.peek_unseen(limit=20)
+        if not msgs:
+            return "inbox: no unseen messages"
+        if n is None:
+            lines = [f"inbox: {len(msgs)} unseen"]
+            for i, m in enumerate(msgs, 1):
+                date = m.date.strftime("%m-%d %H:%M") if m.date else "?"
+                lines.append(f"  {i}. [{date}] {m.from_addr}: {m.subject}")
+            lines.append("  (/inbox <n> to read one — read-only; nothing is marked read)")
+            return "\n".join(lines)
+        if not (1 <= n <= len(msgs)):
+            return f"inbox: no unseen message #{n} (have {len(msgs)})"
+        m = msgs[n - 1]
+        body = email_inbox.fetch_body(m.uid)
+        return f"inbox: [{m.from_addr}] {m.subject}\n{body}"
+
+    def _cmd_inbox(self, arg: str) -> str:
+        """Browse the unseen inbox (tui3).  The IMAP peek runs on a daemon
+        thread and the result is delivered via a ``"call"`` event, so the UI
+        thread is never blocked by the network round-trip.  Read-only:
+        nothing is marked read (the ``--email`` bridge owns that)."""
+        n = None
+        if arg:
+            try:
+                n = int(arg)
+            except ValueError:
+                return "inbox: usage /inbox [n]   (n = position in the unseen list)"
+
+        def work() -> None:
+            try:
+                out = self._inbox_peek(n)
+            except Exception as exc:
+                out = f"inbox: {type(exc).__name__}: {exc}"
+            self.events.put("call", lambda: self._note(out))
+
+        threading.Thread(target=work, daemon=True).start()
+        return "inbox: checking…"
 
     def _cmd_hotkeys(self, arg: str) -> str:
         """Generated from the single ``KEYMAP`` source of truth."""

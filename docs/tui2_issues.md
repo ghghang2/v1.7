@@ -401,6 +401,16 @@ subsystem); the data is accumulated by the conversation loop as the session
 runs, so it is live.  Returns a friendly note when nothing has been recorded
 yet (e.g. a fresh session before the first turn).
 
+**`/inbox` (unseen-email browsing):** a tui2-native slash command over the
+existing `nbchat.core.email_inbox` IMAP engine.  `/inbox` lists unseen
+messages (position, date, sender, subject); `/inbox <n>` fetches and shows the
+full body of unseen message #*n*.  Read-only — nothing is marked read (the
+`--email` auto-bridge owns marking read).  The IMAP round-trip runs on a
+daemon thread and the result is delivered through the `"call"` event, so the
+UI thread is never blocked by the network call.  Requires `GHG_APP_PASSWORD`;
+without it the command reports the missing credential and stops cleanly (the
+same guard `email_inbox.peek_unseen` already raises).
+
 ---
 
 ## Not addressed (out of scope for this pass, tracked in the port tracker)

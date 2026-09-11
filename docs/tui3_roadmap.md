@@ -34,10 +34,12 @@ these warrant **tui3** rather than piling onto tui2:
 wave 3 (mouse wheel scroll) + 3b (click / drag-to-copy),
 wave 4 (persistent user settings), wave 5
 (colour theming via the `_ThemeRef` proxy), wave 6 (external control
-socket + `nbchat-ctl`), wave 6+ (detached background agent: `--bg` headless mode + `nbchat-ctl bg` launcher).  All seven roadmap items are now shipped.  Also added: `/monitor`
-— live per-session observability (cache similarity / invalidation, per-tool
-call counts and error rates, detected warnings) surfaced read-only from the
-existing `nbchat.core.monitoring` engine (no new subsystem).
+socket + `nbchat-ctl`), wave 6+ (detached background agent: `--bg` headless mode + `nbchat-ctl bg` launcher).  All seven roadmap items are now shipped.  Also added (surface-only, read-only, no new
+subsystems): `/monitor` — live per-session observability (cache similarity /
+invalidation, per-tool call counts and error rates, detected warnings) from
+the `nbchat.core.monitoring` engine; and `/inbox [n]` — unseen-email browsing
+(list headers / read a body) from the `nbchat.core.email_inbox` engine,
+run off the UI thread so the IMAP round-trip never freezes the interface.
 
 ## tui3 wave 1 (this pass)
 
