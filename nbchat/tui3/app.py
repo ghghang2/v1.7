@@ -18,7 +18,11 @@ from __future__ import annotations
 
 import sys
 
-from nbchat.tui2.app import ChatApp as _Tui2ChatApp, run as _tui2_run
+from typing import List
+
+from nbchat.tui2.app import ChatApp as _Tui2ChatApp, _to_lines, run as _tui2_run
+from nbchat.tui2.components import Box
+from nbchat.tui2.frame import Line
 
 #: The tui3 version label (wave 2 on top of the tui2 base).
 VERSION = "tui3"
@@ -143,6 +147,67 @@ class ChatApp(_Tui2ChatApp):
         if not lines:
             return summary + "  (nothing matched the filter)"
         return summary + "\n" + "\n".join(lines)
+
+    # -- Phase 2: approval diff-preview (HITL upgrade) --------------------
+    def _tool_description(self, tool: str) -> str:
+        """Look up a human description of a tool from the tool registry."""
+        try:
+            import nbchat.tools as _tools
+            for t in _tools.TOOLS:
+                if t.name == tool:
+                    return (t.description or "").strip()
+        except Exception:
+            pass
+        return ""
+
+    def _tool_preview(self, tool: str, args: str) -> str:
+        """Build a short human preview of the intended tool change.
+
+        For the common tool shapes (a file path, a command), this surfaces the
+        key detail a reviewer actually needs to approve/deny, instead of a raw
+        arg blob.
+        """
+        a = (args or "").strip()
+        if not a:
+            return ""
+        obj = None
+        try:
+            import json as _json
+            obj = _json.loads(a)
+        except Exception:
+            obj = None
+        if isinstance(obj, dict):
+            for key in ("path", "file", "file_path", "command", "cmd", "url"):
+                if key in obj and obj[key] is not None:
+                    val = str(obj[key]).strip()
+                    if val:
+                        return val[:120]
+        return a[:120]
+
+    def _approval_lines(self, w: int):
+        """Render the pending tool-approval prompt with a richer preview.
+
+        Phase 2 (HITL upgrade): show the tool name + a short description (from
+        the tool registry) + a preview of the intended change (the key detail
+        a reviewer needs), instead of just the tool name + a raw arg blob.
+        """
+        a = self._approval
+        tool = (a or {}).get("tool", "?")
+        args = (a or {}).get("args", "")
+        inner = w - 4
+        lines: List[Line] = []
+        desc = self._tool_description(tool)
+        if desc:
+            head = "\u25b8 " + tool + "  -  " + desc[:56]
+        else:
+            head = "\u25b8 " + tool
+        lines.extend(_to_lines(head, inner))
+        preview = self._tool_preview(tool, args)
+        lines.extend(_to_lines(preview if preview else "(no args)", inner))
+        lines.extend(_to_lines("y approve \u00b7 n deny \u00b7 a always", inner))
+        lines = lines[:3]  # keep the prompt to 3 inner rows
+        return Box(title="approve tool", lines=lines, clip=True).render(w)
+
 
 
 def run(argv: list | None = None) -> int:

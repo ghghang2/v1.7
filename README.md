@@ -490,10 +490,15 @@ python -m nbchat.tui --v3        # dispatch to the v3 app
   errored steps; `/trace tools` shows only the tool calls. Reads the existing
   conversation history (no new data plumbing). Inspired by CrewAI tracing &
   observability + LangGraph durable execution.
+* **Phase 2 — approval diff-preview** (HITL upgrade): the tool-approval
+  modal now shows the tool's registry description + a short preview of the
+  intended change (the key detail a reviewer needs - e.g. the file path or the
+  command), instead of just the tool name + a raw arg blob. The tui2
+  approval gate is unchanged; this is a tui3-only rendering upgrade.
+  Inspired by Google ADK tool confirmation + LangGraph human-in-the-loop.
 
-More phases (approval diff-preview, `/budget` cost tracking, a deeper
-plan-act-reflect loop) are tracked in `docs/research_multagent_harnesses.md`
-and `docs/tui3_roadmap.md`.
+More phases (`/budget` cost tracking, a deeper plan-act-reflect loop) are
+tracked in `docs/research_multagent_harnesses.md` and `docs/tui3_roadmap.md`.
 
 ---
 

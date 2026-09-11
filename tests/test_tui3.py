@@ -172,3 +172,80 @@ def test_run_command_passes_through_other(monkeypatch, tmp_path):
         assert called["super"]
     finally:
         Tui3ChatApp._run_command_orig = None
+
+
+# -- Phase 2: approval diff-preview (HITL upgrade) ------------------------
+def _approval_text(app, width=80):
+    """Render the approval modal and return its joined plain text."""
+    fr = app._approval_lines(width)
+    return "\n".join(ln.text for ln in fr)
+
+
+def test_approval_lines_with_description(monkeypatch, tmp_path):
+    app, term, events = _make_tui3_app(monkeypatch, tmp_path)
+    app._approval = {"tool": "run_command", "args": "{\"command\": \"pytest tests/ -q\"}"}
+    txt = _approval_text(app)
+    # The registry description of run_command is surfaced
+    assert "Execute a shell command" in txt
+    # The preview surfaces the command
+    assert "pytest tests/ -q" in txt
+    # The answer prompt is present
+    assert "y approve" in txt
+
+
+def test_approval_lines_preview_path(monkeypatch, tmp_path):
+    app, term, events = _make_tui3_app(monkeypatch, tmp_path)
+    app._approval = {"tool": "create_file", "args": "{\"path\": \"src/new.py\"}"}
+    txt = _approval_text(app)
+    # The preview surfaces the file path
+    assert "src/new.py" in txt
+
+
+def test_approval_lines_unknown_tool_fallback(monkeypatch, tmp_path):
+    app, term, events = _make_tui3_app(monkeypatch, tmp_path)
+    app._approval = {"tool": "mystery_tool", "args": "{\"x\": 1}"}
+    txt = _approval_text(app)
+    # The raw tool name is shown (no registry description), args as a blob
+    assert "mystery_tool" in txt
+    assert "x" in txt
+    assert "y approve" in txt
+
+
+def test_approval_lines_no_args(monkeypatch, tmp_path):
+    app, term, events = _make_tui3_app(monkeypatch, tmp_path)
+    app._approval = {"tool": "run_command", "args": ""}
+    txt = _approval_text(app)
+    assert "(no args)" in txt
+
+
+def test_tool_description_lookup(monkeypatch, tmp_path):
+    app, term, events = _make_tui3_app(monkeypatch, tmp_path)
+    assert "shell command" in app._tool_description("run_command").lower()
+    # Unknown tool returns empty
+    assert app._tool_description("no_such_tool") == ""
+
+
+def test_tool_preview_command(monkeypatch, tmp_path):
+    app, term, events = _make_tui3_app(monkeypatch, tmp_path)
+    assert app._tool_preview("run_command", "{\"command\": \"ls -la\"}") == "ls -la"
+
+
+def test_tool_preview_path(monkeypatch, tmp_path):
+    app, term, events = _make_tui3_app(monkeypatch, tmp_path)
+    assert app._tool_preview("create_file", "{\"path\": \"a/b.py\"}") == "a/b.py"
+
+
+def test_tool_preview_falls_back_to_raw(monkeypatch, tmp_path):
+    app, term, events = _make_tui3_app(monkeypatch, tmp_path)
+    # A dict with none of the known keys falls back to the raw (truncated) string
+    out = app._tool_preview("send_email", "{\"to\": \"a@b.c\", \"subject\": \"hi\"}")
+    assert "a@b.c" in out
+    # Non-JSON args fall back to the raw string
+    assert app._tool_preview("x", "plain text arg") == "plain text arg"
+
+
+def test_approval_lines_is_tui3_override(monkeypatch, tmp_path):
+    from nbchat.tui2.app import ChatApp as Tui2ChatApp
+    app, term, events = _make_tui3_app(monkeypatch, tmp_path)
+    # The tui3 override is a distinct method (not the tui2 base method)
+    assert Tui3ChatApp._approval_lines is not Tui2ChatApp._approval_lines

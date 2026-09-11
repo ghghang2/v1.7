@@ -785,11 +785,26 @@ execution.
   `/trace` on a fresh session shows "no history"). tui3 suite 10 passed; tui2
   suite 376 passed; v1 suite 79 passed (no regression).
 
+### Phase 2 - approval diff-preview (HITL upgrade) - DONE
+
+The tool-approval modal now shows the tool's registry description + a short
+preview of the intended change (the key detail a reviewer needs - the file
+path, the command, or the URL), instead of just the tool name + a raw arg
+blob. The tui2 approval gate is unchanged; this is a tui3-only rendering
+upgrade (the tui3 `ChatApp` overrides `_approval_lines`). The preview parses
+the tool args as JSON and surfaces the most relevant key (path/file/command/
+url); it falls back to a truncated raw arg string when no known key is
+present. Inspired by Google ADK tool confirmation + LangGraph
+human-in-the-loop.
+
+- nbchat/tui3/app.py: `_tool_description(tool)` (registry lookup),
+  `_tool_preview(tool, args)` (JSON key extraction), and the `_approval_lines`
+  override (tool + description + preview). 9 new tests.
+- Safe: purely additive; the tui2 approval gate is unchanged. tui3 suite 19
+  passed; tui2 376 + v1 79 (no regression).
+
 ### Next phases (tracked)
 
-- **Phase 2 - approval diff-preview** (HITL upgrade): upgrade the existing
-  tool-approval gate to show a clearer preview of the intended change
-  (inspired by Google ADK tool confirmation + LangGraph human-in-the-loop).
 - **Phase 3 - `/budget`** (cost/token tracking + budgets): a cost/token view
   with per-session totals and an optional token budget (inspired by the
   harnesses cost tracking + LiteLLM budgets).
